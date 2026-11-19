@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased
+- Geometry Nodes parity: five reusable node groups (Tessera Fluid Source, Particle Cloud, Surface, Thermal, Environment) that carry the fluid features as plain geometry and attributes (`fm_velocity`, `fm_temperature`, `fm_pressure`, `fm_density`, `fm_mass`, `fm_color`, `fm_fluid_id`, `fm_viscosity`, `fm_cohesion`, `fm_mix_rate`, `fm_reaction`, `fm_emission`, `fm_flame_color`, ambient attributes), with density volume and welded surface mesh outputs; usable in any node tree, including other extensions' groups.
+- The per-fluid group `Tessera Fluid <name>` now has every fluid input (density, mass, temperature, velocity, viscosity, cohesion, mixing rate, heat, reactions, environment, render mode, scale) and outputs (points with attributes, density volume, surface, statistics); existing per-fluid groups are rebuilt once.
+- Add menu entry "Tessera" in the Geometry Nodes editor, panel buttons (node editor sidebar and 3D view Tessera tab), library `arc_flow/library/tessera_nodes.blend` (`tools/build_node_library.py`).
+- Tests: `tests/test_gn_blender.py`, `tests/test_gn_fluid_blender.py` (stock-node chain and a second extension-style group evaluated headless on 5.2.3 and 5.3.0).
 - Projection Remesh: **Symmetrize**. When the detected mirror plane has enough confidence (default on, minimum confidence 0.5) the quad output is made truly mirror-symmetric even if the source or its triangulation is not: choose the trusted side (Auto = the side with more detail, Left, Right, Average) and a strength 0..1; matched vertex pairs, seam vertices exactly on the plane, leftover triangles at the seam get a second tolerant join, every vertex stays projected on the original surface. The operator reports mirror asymmetry before/after (max/mean, fraction of the bounding diagonal) and the deviation from the source.
 - Large meshes: PAIR symmetrizes positions and snaps the seam (topology follows the source triangulation, not mirror-paired); REDUCE is an exact topological mirror, now also for planes off the origin or tilted (the reference surface is taken into the plane frame).
 

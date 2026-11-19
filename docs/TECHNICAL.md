@@ -195,6 +195,45 @@ spinning gear tangential momentum, solid displaces fluid, parcel expansion with 
 `blender --factory-startup -b --python tests/test_fluidmode_blender.py` (modes and panels, lava lamp build, frame stepping, attributes, node groups,
 scrubbing, Assign Selected, Cycles CPU renders; passes on 5.2.3 and 5.3.0). Renders: `docs/render_fluid.py`.
 
+## Geometry Nodes sockets
+
+Everything the Fluid mode panel controls and everything its solver produces is also available as plain Geometry Nodes sockets and attributes, so it can be wired into any node tree, including trees and node groups from other extensions. Nothing in the groups is specific to this add-on beyond attribute names: a user group reads `fm_temperature` with a Named Attribute node like any other attribute.
+
+**Audit (what had sockets before this change)**
+
+| Feature | Combustion mode | Fluid mode | Now |
+|---|---|---|---|
+| Render (points / ray march / splat) | `AF_Points`, `AF_RayMarch`, `AF_Splat` groups: instance object / collection, scale, subdivisions, density, voxel size, radius scale | same render groups, plus `Tessera Mesh Per Particle` | unchanged |
+| Physics / math cards | `AF_Phys_*` (Value, Scale), `AF_Math_*`, `AF_Cards_*` chains | not used | unchanged |
+| Density, mass, temperature, velocity, viscosity, colour | none (render attributes only: `af_radius`, `af_tn`, `af_speed`, `af_fmix`, `af_alpha`, `af_fcol`) | inputs on `Tessera Fluid <name>` but not all, outputs passed the geometry through | all on `Tessera Fluid <name>`, `Tessera Fluid Source`, `Tessera Particle Cloud`; combustion points are accepted too (`af_fcol` is read as the colour) |
+| Cohesion, mixing rate, specific heat, heat input | none | none | inputs on the fluid group, Source, Cloud, Thermal |
+| Reactions / transmutation (heat release, progress), flame colour, emission | flame model in Python only | REACT rules in Python only | `Tessera Thermal`: Heat Release, Reaction Progress, `fm_reaction`, `fm_flame_color`, `fm_emission` |
+| Pressure | `pressure_now` readout, no socket | none | `fm_pressure` (ideal gas or ambient + hydrostatic), Mean Pressure output |
+| Environment (gravity, ambient pressure, temperature, wind) | none | none | `Tessera Environment` and the same inputs on the fluid group; `fm_ambient_pressure`, `fm_ambient_density`, `fm_wind`, `fm_gravity` |
+| Shape / spawn controls | none | panel only | `Tessera Fluid Source`: Spawn Mode, Spacing, Seed, Max Particles. On the per-fluid group, Shape / Container / Fill / Gas Parcels are mirrors of the panel (read-only information: the solver spawns from the panel) |
+| Render mode, scale | per render group | per render group | `Render Mode`, `Scale`, `Voxel Size`, `Radius Scale` sockets; `Render` output |
+| Density volume, surface mesh | ray march group only | `AFFMS_*` mesh object only | outputs `Density Volume` and `Surface` of the Source, Surface and fluid groups |
+| Projection Remesh, Boolean Projection | operators on meshes (the result is a normal mesh object, usable with Object Info) | | no sockets: they are one-shot mesh operations, not per-point state |
+
+**Node groups** (Add menu of the Geometry Nodes editor: *Tessera* submenu, or the *Tessera node groups* panel in the editor sidebar and the 3D view sidebar tab; the panel in the 3D view adds a modifier to the active object). Groups are appended from `arc_flow/library/tessera_nodes.blend` (rebuilt by `tools/build_node_library.py` after a change in `tessera_nodes.py`; a test checks that the library matches the code) and built in place when the library is missing or older. Existing groups keep your edits unless their `tessera_gn_version` is older than the code.
+
+| Group | Inputs | Outputs |
+|---|---|---|
+| Tessera Fluid Source | Shape, Spacing, Spawn Mode (0 volume lattice, 1 surface, 2 vertices, 3 existing points), Seed, Max Particles, Density, Mass, Temperature, Velocity, Viscosity, Cohesion, Mixing Rate, Colour, Fluid ID, Gas, Specific Heat, Heat Added, Heat Release, Reaction Progress, Gravity, Ambient Pressure, Ambient Temperature, Scale, Render Mode, Voxel Size, Build Volume And Surface | Particles / Geometry (points), Density Volume, Surface, Render (points, volume or surface by Render Mode), Particle Count, Total Mass, Mean Temperature, Mean Pressure, Max Speed |
+| Tessera Particle Cloud | Geometry, Density, Temperature, Velocity, Colour, Fluid ID, Mass, Viscosity, Cohesion, Mixing Rate, Radius, Scale (defaults apply only where the points lack the attribute) | Geometry, Particle Count, Total Mass, Mean Density, Mean Temperature, Max Speed |
+| Tessera Thermal | Geometry, Gas, Gravity, Ambient Pressure, Molar Mass, Specific Heat, Heat Added, Heat Release, Reaction Progress, Ignition Temperature, Flame Temperature | Geometry, Mean Pressure, Mean Temperature, Max Temperature |
+| Tessera Environment | Geometry, Gravity, Ambient Pressure, Ambient Temperature, Molar Mass, Wind, Reference Height | Geometry, Gravity, Ambient Pressure, Ambient Temperature, Ambient Density, Scale Height, Wind |
+| Tessera Surface | Geometry (points), Voxel Size, Radius, Radius Scale, Density, Threshold, Smooth | Geometry / Surface (welded mesh with attributes transferred from the nearest particle), Density Volume |
+| Tessera Fluid `<name>` (one per fluid, on the particle object) | all of the above fluid inputs plus Mass, Volume, No Container, Container, Shape, Fill, Gas Parcels, Wind, Molar Mass, Radius Scale | Geometry (the solver's points with the attributes below), Free Fluid, Density Volume, Surface, Render, Particle Count, Total Mass, Mean Density, Mean / Max Temperature, Mean Pressure, Max Speed |
+
+Point attributes (POINT domain): `fm_velocity` (vector), `fm_temperature`, `fm_pressure`, `fm_density`, `fm_mass`, `fm_color` (colour; the composition colour), `fm_fluid_id` (int), `fm_viscosity`, `fm_cohesion`, `fm_mix_rate`, `af_radius`, `fm_reaction`, `fm_emission`, `fm_flame_color`, `fm_ambient_pressure`, `fm_ambient_density`, `fm_wind`, `fm_gravity`. The solver writes `fm_velocity`, `fm_temperature`, `fm_density`, `fm_fluid_id`, `fm_color`, `af_radius`; the groups fill every other attribute.
+
+Modifier outputs: Blender evaluates only the first Geometry output of a modifier; the other outputs (volume, surface, statistics) are for use inside a node tree, where the group is nested. `Density Volume` and `Surface` are built lazily: only when `Render Mode` is not 0 or `Build Volume And Surface` is on, so the points path costs 0.02 s for the lamp wax. Spawn Mode 0 is meant for closed meshes (Mesh to Volume fills the interior); Spawn Mode 1 and 2 work on any mesh.
+
+Limits: the pressure is an estimate (ideal gas for gases, ambient + rho g depth for liquids; depth is measured from the highest particle of the cloud), not the solver's projection pressure; the composition is exposed as the colour and the fluid id, not as a species vector (an attribute cannot hold a variable-length vector); the per-fluid inputs Mass, Volume, Fill, Gas Parcels, Shape and Container mirror the panel and do not drive the solver (changing them in the modifier changes the attributes but not the simulation); setting an Object socket on a nodes modifier from Python hangs headless Blender 5.2.3 and 5.3.0, so the library groups take shapes through the modifier's input geometry and use Material nodes with pointers set inside the group.
+Tests: `blender -b --factory-startup --python tests/test_gn_blender.py` (groups, Source modes, Environment, Thermal, a stock-node chain with Set Position, Instance on Points, Set Material, Subdivision Surface, Volume to Mesh and Mesh to Volume, a second extension-style group in the chain, library, menu), `tests/test_gn_fluid_blender.py` (the lava lamp's solver particles through the fluid group); both pass on 5.2.3 and 5.3.0.
+
+
 ## Support
 - Bugs and questions: https://github.com/DART-Skyboard/tessera-projection/issues
 - Source: https://github.com/DART-Skyboard/tessera-projection (GPL-3.0-or-later)
