@@ -1174,6 +1174,16 @@ def _symmetry_setup(work, st, diag):
     R, t = plane_frame(det["normal"], det["point"])
     M = Matrix([[*R[0], t[0]], [*R[1], t[1]], [*R[2], t[2]], [0, 0, 0, 1]])
     work.transform(M)
+    # vertices that nearly lie on the plane join it before the cut: otherwise the bisect leaves sliver triangles (and,
+    # after the join, a dense line of sliver quads) along the seam
+    snapped = 0
+    for v in work.verts:
+        if v.link_edges:
+            el = sum(e.calc_length() for e in v.link_edges) / len(v.link_edges)
+            if 0.0 < abs(v.co.x) <= 0.25 * el:
+                v.co.x = 0.0
+                snapped += 1
+    rep["seam_snapped_vertices"] = snapped
     work.normal_update()
     st.use_symmetry = True
     st.axis = "X"
@@ -1285,6 +1295,22 @@ def remesh_bmesh(src_bm, st, quadriflow_fn=None, ref_bvh=None, ref_sample_V=None
         loose = [v for v in bm.verts if not v.link_faces]
         if loose:
             bmesh.ops.delete(bm, geom=loose, context='VERTS')
+        # weld seam vertices that the cut left much closer than the local edge length, then drop what degenerated
+        seam_v = [v for v in bm.verts if v.co[ax] == 0.0]
+        if len(seam_v) > 3:
+            seam_set = set(seam_v)
+            lens = sorted(e.calc_length() for e in bm.edges if e.verts[0] in seam_set and e.verts[1] in seam_set)
+            if lens:
+                bmesh.ops.remove_doubles(bm, verts=seam_v, dist=0.05 * lens[len(lens) // 2])
+                for v in bm.verts:
+                    if abs(v.co[ax]) <= tol:
+                        v.co[ax] = 0.0
+                cleanup_bmesh(bm, 0.0, dissolve_degenerate=True, remove_loose=True, recalc_normals=False)
+        flat = [f for f in bm.faces if all(v.co[ax] == 0.0 for v in f.verts)]       # fins lying in the plane
+        if flat:
+            bmesh.ops.delete(bm, geom=flat, context='FACES')
+        rep["seam_welded"] = True
+        rep["seam_flat_faces_removed"] = len(flat)
         half = True
     join_to_quads(bm, st.join_angle, st.join_shape)
     seam_info = None

@@ -592,6 +592,16 @@ def test_symmetrize():
                sz["kept_side"], rep["symmetry"].get("side_reason")))
         ok(rep["output"]["tris"] == 0, "%s: no odd triangles left (seam triangles %s)" % (side, rep["after_join"].get("seam")))
         res[side] = sz
+        if side == "AUTO":
+            bm = bmesh.new(); bm.from_mesh(new.data)
+            nn = np.array(sy["normal"]); pp = np.array(sy["point"])
+            Vn = np.array([v.co[:] for v in bm.verts]); dg = R._bbox_diag(Vn)
+            on = [f for f in bm.faces if any(abs((np.array(v.co[:]) - pp) @ nn) < 1e-4 * dg for v in f.verts)]
+            ar = np.array([f.calc_area() for f in bm.faces]); ao = np.array([f.calc_area() for f in on])
+            asp = np.array([max(e.calc_length() for e in f.edges) / max(min(e.calc_length() for e in f.edges), 1e-12) for f in on])
+            ok(len(on) > 20 and ao.min() > 0.01 * np.median(ar) and float((asp > 6).mean()) < 0.3,
+               "AUTO: seam faces regular (%d faces, min area %.3f of median, %.0f%% with aspect > 6)" % (len(on), ao.min() / np.median(ar), 100 * float((asp > 6).mean())))
+            bm.free()
     ok(res["AVERAGE"]["deviation_from_source"]["max"] < 0.8 * max(res["LEFT"]["deviation_from_source"]["max"], res["RIGHT"]["deviation_from_source"]["max"]) + 1e-4,
        "AVERAGE splits the error (max dev %.4f vs LEFT %.4f / RIGHT %.4f)" % (res["AVERAGE"]["deviation_from_source"]["max"],
                                                                             res["LEFT"]["deviation_from_source"]["max"], res["RIGHT"]["deviation_from_source"]["max"]))
