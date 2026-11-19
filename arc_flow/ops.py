@@ -467,7 +467,7 @@ class AF_OT_export_abc(Operator, ExportHelper):
         return {'FINISHED'}
 
 
-# ----------------------------------------------------------------------------- feedback + demo
+# ----------------------------------------------------------------------------- feedback + example
 class AF_OT_add_feedback_plane(Operator):
     bl_idname = "arcflow.add_feedback_plane"
     bl_label = "Add Feedback Plane"
@@ -503,12 +503,14 @@ class AF_OT_assign_feedback(Operator):
 
 class AF_OT_demo(Operator):
     bl_idname = "arcflow.demo"
-    bl_label = "Load Demo: Single Engine"
+    bl_label = "Load Example: Single Engine"
     bl_description = "Single rocket engine from Blender primitives: RP-1 and LOX tanks, two pipes, chamber and nozzle, ready to Build"
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, ctx):
         from . import demos
+        if getattr(ctx.scene, 'arc_flow_fm', None) is not None:
+            ctx.scene.arc_flow_fm.mode = 'COMBUSTION'
         self.report({'INFO'}, demos.build_single(ctx.scene))
         return {'FINISHED'}
 

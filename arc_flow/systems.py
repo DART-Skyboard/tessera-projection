@@ -3,7 +3,7 @@
 Scene side of `core.systems`: reads the parts into feature records, finds joints (cavity overlaps), detects independent
 systems, crossfeed links and linked groups, runs the lumped outcome model on the timeline, and drives the rupture visuals
 (breach jet emitters, flash light, glowing breach disc).  Also the "interactive physics context" scan (environment, moving /
-rigid / mechanical bodies) that auto-initialises assets, the single- and twin-engine demos built from Blender primitives.
+rigid / mechanical bodies) that auto-initialises assets, the single- and twin-engine examples built from Blender primitives.
 
 The outcome model is a simplified tracer-level model (see core/systems.py), not CFD.
 """

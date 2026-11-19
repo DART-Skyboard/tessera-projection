@@ -50,7 +50,6 @@ class AF_PT_main(_Base, Panel):
             r.prop(af, "frame_start"); r.prop(af, "frame_end")
         row = l.row(align=True)
         row.operator("arcflow.refresh", icon='FILE_REFRESH')
-        row.operator("arcflow.demo", icon='MOD_FLUIDSIM')
 
 
 class AF_PT_parts(_Base, Panel):

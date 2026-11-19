@@ -1,4 +1,4 @@
-"""Systems panel, Re-detect, Auto roles and the twin-engine demo operator (Tessera Projection / LOTBCBP)."""
+"""Systems panel, Re-detect, Auto roles and the twin-engine example operator (Tessera Projection / LOTBCBP)."""
 import bpy
 from bpy.types import Operator, Panel
 
@@ -9,7 +9,7 @@ ICON = {'idle': 'PAUSE', 'running': 'PLAY', 'enhanced': 'SOLO_ON', 'failed': 'CA
 
 class AF_OT_demo_twin(Operator):
     bl_idname = "arcflow.demo_twin"
-    bl_label = "Load Demo: Twin Engines + Crossfeed"
+    bl_label = "Load Example: Twin-engine crossfeed"
     bl_description = ("Two engines side by side built from Blender primitives and a straight crossfeed pipe between them. "
                       "Variant Good: engine A's oxidizer tank into engine B's chamber manifold (enhanced). Bad: engine A's hot chamber into "
                       "engine B's fuel tank (failure). Press Build / Play")
@@ -17,6 +17,8 @@ class AF_OT_demo_twin(Operator):
 
     def execute(self, ctx):
         from . import demos
+        if getattr(ctx.scene, 'arc_flow_fm', None) is not None:
+            ctx.scene.arc_flow_fm.mode = 'COMBUSTION'
         self.report({'INFO'}, demos.build_twin(ctx.scene))
         return {'FINISHED'}
 
@@ -60,8 +62,6 @@ class AF_PT_systems(Panel):
         af = sc.arc_flow
         st = systems.ST
         col = l.column(align=True)
-        col.operator("arcflow.demo", icon='MOD_FLUIDSIM')
-        col.operator("arcflow.demo_twin", icon='MOD_FLUIDSIM')
         if bpy.data.objects.get("AF_Crossfeed") is not None:
             r = l.row(align=True)
             r.prop(af, "sys_crossfeed", toggle=True)

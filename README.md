@@ -63,12 +63,12 @@ The fast path pairs triangles into quads, so it keeps the source triangulation's
 </p>
 
 <p align="center">
-  <img src="docs/renders/engine_beauty.png" width="48%" alt="Single rocket engine demo: brushed-metal tanks, pipes, chamber and nozzle with a heated exhaust spill">
+  <img src="docs/renders/engine_beauty.png" width="48%" alt="Single rocket engine example: brushed-metal tanks, pipes, chamber and nozzle with a heated exhaust spill">
   <img src="docs/renders/engine_xray.png" width="48%" alt="Same engine in X-ray view: propellant inside the tanks, feed lines and chamber">
 </p>
 
 - Parts are grouped into independent **systems**; roles (container, transport, chamber) and requirements are detected automatically and re-detected when parts move or connect.
-- **Demos built from Blender's default primitives:** a single engine and twin engines with a crossfeed pipe, with a Good and a Bad variant that end in enhanced combustion or a wall rupture.
+- **Examples built from Blender's default primitives (Tessera > Examples):** a single engine and twin engines with a crossfeed pipe, with a Good and a Bad variant that end in enhanced combustion or a wall rupture.
 - **Environment card:** Earth, Mars, Venus, Titan and Jupiter atmospheres with editable gas mixes, driving ambient pressure, drag and plume spread.
 - Points, Ray-march and Gaussian render paths (Cycles verified), with Geometry Nodes groups for every card.
 
@@ -112,7 +112,7 @@ From source: `./build.sh` validates and builds the zip into `dist/`.
 ## Quick start
 
 - **Remesh:** select a mesh, open *Tessera > Projection Remesh*, press **Analyse Topology** to see triangles and odd faces, then **Projection Remesh**.
-- **Fluids:** *Tessera > Tessera Projection > Add Demo Rig*, then **Build**. Try **Load Demo: Twin Engines + Crossfeed**.
+- **Fluids:** open *Tessera > Examples* (collapsed at the top of the Tessera tab), press **Example: Single engine** or **Example: Twin-engine crossfeed**, then **Build**.
 
 ## Status and roadmap
 

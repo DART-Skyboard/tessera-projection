@@ -1,5 +1,5 @@
-"""Demo rigs built from Blender's own mesh primitives (bmesh cylinder / cone / UV sphere / cube, torus segments):
-a cheap-looking rocket engine (two tanks, two pipes, chamber, nozzle) and the twin-engine crossfeed demo."""
+"""Example rigs built from Blender's own mesh primitives (bmesh cylinder / cone / UV sphere / cube, torus segments):
+a cheap-looking rocket engine (two tanks, two pipes, chamber, nozzle) and the twin-engine crossfeed example."""
 import math
 
 import bmesh
@@ -118,7 +118,7 @@ def ensure_fluids(scene):
 
 
 def build_engine(scene, prefix, dx, p_tank, fu, ox, dy=0.0, tag=""):
-    """One engine in the demo layout: fuel tank, oxidizer tank, two lines, chamber, nozzle, decorative torus flanges.
+    """One engine in the example layout: fuel tank, oxidizer tank, two lines, chamber, nozzle, decorative torus flanges.
     Returns dict of the part objects."""
     n = lambda s: "AF_%s%s" % (prefix, s)
     P = {}
@@ -173,7 +173,7 @@ def build_single(scene):
     fu, ox = ensure_fluids(scene)
     _clear_rig(scene)
     build_engine(scene, "", 0.0, 6.0e5, fu, ox)
-    return _finish(scene, "Single engine demo added (two tanks, two pipes, chamber, nozzle). Press Build.")
+    return _finish(scene, "Single-engine example loaded (two tanks, two pipes, chamber, nozzle). Press Build.")
 
 
 # ----------------------------------------------------------------------------- twin engines + crossfeed
@@ -217,11 +217,11 @@ def build_twin(scene):
     from . import systems
     systems.ST.reset()
     systems.mark_dirty()
-    return "Twin engine demo added: engine A (20 bar feed) and engine B (6 bar feed) with a crossfeed pipe (%s variant)." % af.sys_variant
+    return "Twin-engine example loaded: engine A (20 bar feed) and engine B (6 bar feed) with a crossfeed pipe (%s variant)." % af.sys_variant
 
 
 def apply_option(scene, what):
-    """Variant / toggle of the twin demo changed."""
+    """Variant / toggle of the twin-engine example changed."""
     af = scene.arc_flow
     cf = bpy.data.objects.get("AF_Crossfeed")
     if cf is None:
