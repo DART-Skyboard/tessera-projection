@@ -1,9 +1,6 @@
 # Tessera Projection: technical reference
 
 Full technical notes, measured benchmarks and honest limits. For an overview see the [README](../README.md).
-# Tessera Projection for Blender
-
-Collision, Boolean and quad-remesh projection for any mesh, plus the Arc Flow fluid simulation built on it.
 
 **LOTBCBP = Level Of Tessellation Boolean Collision Body Projection** (called LOTCBP before 0.2.0).
 Collision bodies are resolved by a base signed-distance field plus virtual tessellation bricks that are generated on demand
