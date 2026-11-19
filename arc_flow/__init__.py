@@ -7,6 +7,7 @@ from . import ops, panels, props, runtime
 from . import retopo_ops, retopo_panel  # Quad Remesh (LOTBCBP)
 from . import systems_ops  # Systems, crossfeed demos (Tessera Projection)
 from . import fluidmode_ops, fluidmode_panel, fluidmode_props  # Fluid mode (Tessera Projection)
+from . import thermal, windtunnel  # thermal readback, wind tunnel builder
 from . import tessera_nodes  # reusable Tessera node groups, Add menu entry
 from . import surfaces_ops, surfaces_panel, surfaces_props  # surface sources, fluid volumes, Examples panel
 
@@ -22,9 +23,11 @@ def register():
     fluidmode_props.register(); fluidmode_ops.register(); fluidmode_panel.register()
     surfaces_props.register(); surfaces_ops.register(); surfaces_panel.register()
     tessera_nodes.register()
+    thermal.register(); windtunnel.register()
 
 
 def unregister():
+    windtunnel.unregister(); thermal.unregister()
     tessera_nodes.unregister()
     surfaces_panel.unregister(); surfaces_ops.unregister(); surfaces_props.unregister()
     fluidmode_panel.unregister(); fluidmode_ops.unregister(); fluidmode_props.unregister()
