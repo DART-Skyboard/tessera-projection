@@ -29,7 +29,7 @@ for f in range(1, frame + 1):
     sc.frame_set(f)
 fm = sc.arc_flow_fm
 for fl in fm.fluids:
-    fl.particle_scale = 1.5 if which == 'emit' else 0.5
+    fl.particle_scale = 1.5 if which == 'emit' else 0.7
 # every fluid point object stays; hide the helper marker meshes in the render
 for o in bpy.data.objects:
     if o.get('af_volume_points'):
@@ -39,7 +39,7 @@ so = bpy.data.objects.new("TS_Sun", ld); sc.collection.objects.link(so); so.rota
 cam = bpy.data.cameras.new("TS_Cam"); co = bpy.data.objects.new("TS_Cam", cam); sc.collection.objects.link(co); sc.camera = co
 cam.lens = 40
 tgt = mathutils.Vector((0.0, 0, 0.25)) if which == 'emit' else mathutils.Vector((0, 0, 1.3))
-co.location = (0.0, -2.2, 0.8) if which == 'emit' else (0.0, -9.0, 2.5)
+co.location = (0.0, -2.2, 0.8) if which == 'emit' else (0.0, -12.0, 3.0)
 co.rotation_euler = (tgt - co.location).to_track_quat('-Z', 'Y').to_euler()
 w = bpy.data.worlds.new("w"); w.use_nodes = True
 w.node_tree.nodes['Background'].inputs[0].default_value = (0.05, 0.06, 0.08, 1)
