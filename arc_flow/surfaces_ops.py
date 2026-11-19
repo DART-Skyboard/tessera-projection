@@ -605,8 +605,8 @@ def load_surface_example(scene, which='EMIT'):
         o.location, o.rotation_euler = loc, rot
         col.objects.link(o)
         return o
-    belt = plane("SRF_Belt", 0.45, (0.0, 0.0, 0.0))
-    nozzle = plane("SRF_Nozzle", 0.06, (-0.25, 0.0, 0.7), (math.pi, 0, 0))     # faces down
+    belt = plane("SRF_Belt", 0.8, (-0.5, 0.0, 0.0))
+    nozzle = plane("SRF_Nozzle", 0.06, (-0.1, 0.0, 0.7), (math.pi, 0, 0))     # faces down
     for o in (belt, nozzle):
         for p in o.data.polygons:
             p.select = True
@@ -622,9 +622,9 @@ def load_surface_example(scene, which='EMIT'):
     fl = fluid_of(scene, e)
     fl.color = (0.2, 0.55, 1.0)
     # the belt slides sideways (keyframed): the viscous layer drags the fluid with it
-    belt.location = (0, 0, 0)
+    belt.location = (-0.5, 0, 0)
     belt.keyframe_insert('location', frame=1)
-    belt.location = (0.6, 0, 0)
+    belt.location = (0.4, 0, 0)
     belt.keyframe_insert('location', frame=72)
     for fc in (belt.animation_data.action.fcurves if hasattr(belt.animation_data.action, 'fcurves') else []):
         for kp in fc.keyframe_points:

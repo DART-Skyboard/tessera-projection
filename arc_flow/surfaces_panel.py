@@ -31,6 +31,36 @@ def register_example(group, label, idname, **props):
         lst.append((label, idname, props))
 
 
+LOADERS = {}     # key -> (callable(scene) -> message, description)
+
+
+def register_loader(group, label, key, fn, description=""):
+    """Add an example that is built by a Python function: fn(scene) -> status message.  Shown in the Examples panel as 'Example: <label>'."""
+    LOADERS[key] = (fn, description)
+    register_example(group, label, "arcflow.example_load", key=key)
+
+
+class AF_OT_example_load(bpy.types.Operator):
+    bl_idname = "arcflow.example_load"
+    bl_label = "Load Example"
+    bl_options = {'REGISTER', 'UNDO'}
+    key: bpy.props.StringProperty(default="")
+
+    @classmethod
+    def description(cls, ctx, props):
+        return LOADERS.get(props.key, (None, ""))[1]
+
+    def execute(self, ctx):
+        ent = LOADERS.get(self.key)
+        if ent is None:
+            self.report({'ERROR'}, "Unknown example %r" % self.key)
+            return {'CANCELLED'}
+        msg = ent[0](ctx.scene)
+        FO.mark_dirty()
+        self.report({'INFO'}, msg if isinstance(msg, str) and msg else "Example loaded. Press Build.")
+        return {'FINISHED'}
+
+
 class AF_PT_examples(_Base, Panel):
     bl_idname = "AF_PT_examples"
     bl_label = "Examples"
@@ -161,7 +191,7 @@ def prepare():
                     cls.bl_options = set(cls.bl_options) - {'DEFAULT_CLOSED'}
 
 
-CLASSES = (AF_PT_examples, AF_UL_srf, AF_PT_srf)
+CLASSES = (AF_OT_example_load, AF_PT_examples, AF_UL_srf, AF_PT_srf)
 
 
 def register():

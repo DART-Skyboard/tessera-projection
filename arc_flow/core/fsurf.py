@@ -248,6 +248,12 @@ class EmissionSurface(_Surface):
         ang = self.spread * np.sqrt(rng.random(k))
         dirv = n * np.cos(ang)[:, None] + r * np.sin(ang)[:, None]
         V = dirv * self.speed + self.velocity + self.vel[s]
+        # each particle is born at a random moment of the step: age it by u (free flight under gravity for a liquid), so the frame's particles
+        # form a continuous stream instead of a bunch that moves as one
+        u = rng.random((k, 1)) * dt
+        g = np.asarray(S.env.g, float) if not S.gas[f] else np.zeros(3)
+        X = X + V * u + 0.5 * g[None, :] * u * u
+        V = V + g[None, :] * u
         T = np.full(k, S.defs[f]['temperature'] if self.temperature is None else self.temperature)
         grow(S, f, X, V, T)
         self.emitted += k
