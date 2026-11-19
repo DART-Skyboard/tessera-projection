@@ -348,6 +348,9 @@ class AF_Scene(PropertyGroup):
     env: PointerProperty(type=AF_Env)
     # modes
     continuous: BoolProperty(name="Continuous flow", default=True, description="On: containers refill as they are used.  Off: containers deplete until empty", update=_update_sync)
+    chemistry: BoolProperty(name="Burn propellants", default=True, description="Fuel and oxidiser particles that meet in a chamber react into flame gas (flame model of the web app), the chamber builds pressure, the nozzle chokes and expands the gas, the flame cools into smoke", update=_update_sync)
+    domain_radius: FloatProperty(name="Exhaust domain radius", default=300.0, min=1.0, unit='LENGTH', description="Exhaust and smoke fade out over the outer quarter of this radius around the assembly and are removed at it", update=_update_sync)
+    particle_budget: IntProperty(name="Particle budget", default=30000, min=0, description="Most particles alive at once (0 = unlimited); the oldest smoke is removed first and tank refills wait", update=_update_sync)
     xray: BoolProperty(name="X-ray", default=True, description="See through the parts and light the fluid inside; thermal / stress tint on the surfaces", update=_xray_changed)
     xray_opacity: FloatProperty(name="Wall opacity", default=0.12, min=0.0, max=1.0)
     xray_emission: FloatProperty(name="Interior light", default=3.0, min=0.0, description="Artificial emission added to the fluid so it is visible inside closed parts")

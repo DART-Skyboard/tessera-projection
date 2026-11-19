@@ -120,3 +120,11 @@ def settle(S, dt=1.0 / 24.0, max_steps=120, tol=None, quick=False, progress=None
     out = dict(steps=steps, converged=bool(calm >= 3) or quick, mean_speed=ms, mode=mode, quick=bool(quick), layers=layer_heights(S),
                overflow=overflow_report(S), pressure=hydrostatic_report(S))
     return out
+
+
+def level_select(h, frac, n_min=0):
+    """Shared by Fluid mode and combustion tanks: indices of the sample points that fill a vessel to a fraction of its volume, lowest first.
+    `h` is each point's height against gravity; the points are ordered along it and the lowest `frac` of them are kept (at least n_min)."""
+    n = len(h)
+    k = min(n, max(int(round(n * min(max(frac, 0.0), 1.0))), n_min))
+    return np.argsort(h, kind='stable')[:k]

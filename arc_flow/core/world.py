@@ -6,6 +6,8 @@ import numpy as np
 from . import fluids as F
 from . import materials as M
 from .sdf import _trilerp
+from . import burn as BURN
+from . import fillsettle as FS
 
 CONNECTED, PLUGGED, OPEN = 'CONNECTED', 'PLUGGED', 'OPEN'
 
@@ -41,7 +43,9 @@ class Env:
 class Params:
     def __init__(self, continuous=True, net_res=40, vmax=60.0, max_sub=6, refine_budget=12,
                  flight_factor=2.0, spill_life=25.0, radius_scale=1.0, ignition_gain=1.0,
-                 ignition=None, seed=1, lotbcbp=True, cd=0.8, t_lo=273.15):
+                 ignition=None, seed=1, lotbcbp=True, cd=0.8, t_lo=273.15,
+                 chemistry=False, igniter=True, burn_rate=40.0, gas_expand=2.0, cool_tau=0.9, plume_growth=0.35, max_plume_radius=0.45,
+                 smoke_T=950.0, jet_drag=0.04, gas_buoy=0.25, smoke_life=12.0, domain_radius=300.0, domain_fade=0.25, max_alive=0):
         self.__dict__.update(locals()); del self.__dict__['self']
 
 
@@ -312,6 +316,8 @@ class World:
         for si, s in enumerate(self.sources):
             self.psrc[s['lo']:s['hi']] = si
             self.pfluid[s['lo']:s['hi']] = s['fluid']
+        if self.p.chemistry:
+            BURN.setup(self)
         self.reset()
 
     def reset(self):
@@ -327,6 +333,8 @@ class World:
         for si, s in enumerate(self.sources):
             if s['kind'] == 'C':
                 self._init_container(si)
+        if self.p.chemistry:
+            BURN.reset(self)
 
     # ------------------------------------------------------------------ container filling
     def _gdir(self):
@@ -375,8 +383,7 @@ class World:
         slots = np.arange(s['lo'], s['lo'] + n0)
         if has_cavity:
             if fs['spec']['kind'] == 'LIQUID' and cav_vol > 0 and fill_vol < cav_vol * 0.999:
-                h = -(pts @ self._gdir())                 # height along -gravity
-                keep = np.argsort(h)[:max(int(len(pts) * fill_vol / cav_vol), n0)]
+                keep = FS.level_select(-(pts @ self._gdir()), fill_vol / cav_vol, n0)      # the shared level-set selection (lowest points along gravity)
                 pts = pts[keep]
             pick = self.rng.integers(0, len(pts), n0)
             self.pos[slots] = pts[pick]
@@ -416,6 +423,8 @@ class World:
             return
         dead = np.flatnonzero(self.state[s['lo']:s['hi']] == 0) + s['lo']
         k = int(min(need, max(8, int(0.15 * s['n0']))))
+        if self.p.max_alive > 0 and int((self.state > 0).sum()) + k > self.p.max_alive:
+            return
         if len(dead) < k:       # pool exhausted: recycle the oldest free (spilled / vented) particles of this source
             free = np.flatnonzero(self.state[s['lo']:s['hi']] == 2) + s['lo']
             free = free[np.argsort(-self.age[free])][:k - len(dead)]
@@ -435,6 +444,8 @@ class World:
         self.mass[sl] = s['rho'] * pv
         self.rad[sl] = (3 * pv / (4 * math.pi)) ** (1 / 3) * self.p.radius_scale * 1.6
         self.pin[sl] = s['part']
+        if self.p.chemistry:
+            self.kind[sl] = 0; self.fade[sl] = 1.0; self.home[sl] = -1
 
     # ------------------------------------------------------------------ emitters
     def _emit(self, si, dt):
@@ -501,6 +512,8 @@ class World:
         self.mass[slots] = self._fluid_rho(s['fluid']) * pv
         self.rad[slots] = (3 * pv / (4 * math.pi)) ** (1 / 3) * self.p.radius_scale * 1.6
         self.pin[slots] = -1
+        if self.p.chemistry:
+            self.kind[slots] = 0; self.fade[slots] = 1.0; self.home[slots] = -1
 
     # ------------------------------------------------------------------ stepping
     def step(self, dt):
@@ -546,6 +559,10 @@ class World:
                 _l, _m, _c, _o, cavs = self.query(self.pos[samp])
                 self._refine(self.pos[samp], cavs)
         self._thermal(dt)
+        if p.chemistry:
+            BURN.react(self, dt)
+            BURN.chamber_update(self, dt)
+            BURN.life_cycle(self, dt)
 
     def _src_arrays(self):
         dp = np.array([s['dp'] for s in self.sources])
@@ -583,7 +600,17 @@ class World:
                 vcap = np.maximum(v_or * cont, 1.0)
             else:
                 acc = np.zeros_like(x); vcap = np.full(len(x), 1.0)
+            gasm = (self.kind[con] > 0) if p.chemistry else np.zeros(len(con), bool)
+            if gasm.any() and net is not None and self.nozzle is not None:
+                Tg = np.maximum(self.temp[con][gasm], 300.0)
+                dpg = np.maximum(self.bstats['P_c'] - env.pressure, 0.0)
+                rho_g = np.maximum(self.bstats['P_c'] * self.exh_M / (F.R_GAS * Tg), 0.05)
+                acc[gasm] = dirv[gasm] * (dpg / (rho_g * (phi[gasm] + net['L0'])))[:, None] * (reach & (gn[:, 0] > 1e-6))[gasm][:, None]
+                vcap = np.array(vcap, float)
+                vcap[gasm] = np.maximum(BURN.gas_speed_cap(self, phi[gasm], np.maximum(rad_loc[gasm], self.nozzle['r_t'])), 1.0)
             visc = np.array([self.fluids[f]['spec']['visc'] for f in range(len(self.fluids))])[self.pfluid[con]]
+            if p.chemistry:
+                visc = np.where(gasm, 0.0, visc)
             kd = 1.5 + 400.0 * visc
             v = (v + (acc + g) * h) * np.exp(-kd * h)[:, None]
             sp = np.linalg.norm(v, axis=1)
@@ -615,6 +642,15 @@ class World:
                 vn = np.sum(v[ii] * nrm, axis=1)
                 out = vn > 0
                 v[ii] -= (1.1 * np.where(out, vn, 0.0))[:, None] * nrm
+            if p.chemistry and vent.any():
+                gv = np.flatnonzero(vent & (self.kind[con] > 0))
+                if len(gv):
+                    okv = BURN.vent_gate(self, con[gv], h)
+                    held = gv[~okv]
+                    if len(held):
+                        x[held] -= v[held] * h             # the throat only passes its choked mass flow: the rest waits in the nozzle
+                        v[held] *= 0.2
+                        vent[held] = False
             self.pos[con] = x; self.vel[con] = v
             self.pin[con] = np.where(legal < 0, owner, -1)
             if vent.any():
@@ -631,14 +667,24 @@ class World:
                     jd /= np.linalg.norm(jd, axis=1, keepdims=True)
                     sps = np.linalg.norm(self.vel[gs], axis=1)
                     vj = np.maximum(np.minimum(p.cd * np.sqrt(2 * dp_s[self.psrc[gs]] / rho_s[self.psrc[gs]]), p.vmax), sps)
+                    if p.chemistry and self.nozzle is not None:
+                        gg = self.kind[gs] > 0
+                        if gg.any():
+                            vj = np.where(gg, max(self.bstats['v_exit'], self.bstats['v_throat'] * 0.4) * self.bstats['vscale'], vj)
                     self.vel[gs] = jd * vj[:, None]
                     self.state[gs] = 2; self.age[gs] = 0; self.pin[gs] = -1
+                    if p.chemistry:
+                        BURN.afterburn(self, gs)
                     self.stats['leaked'] += len(gs)
         # ---------- free flight
         fre = np.flatnonzero(self.state == 2)
         if len(fre):
             x = self.pos[fre]; v = self.vel[fre]
             rho_p = np.array([self._fluid_rho(f) for f in range(len(self.fluids))])[self.pfluid[fre]]
+            if p.chemistry:
+                kg_ = self.kind[fre] > 0
+                if kg_.any():
+                    rho_p = np.where(kg_, BURN.gas_rho(self, self.temp[fre]), rho_p)
             rho_a = env.atmo_fluid_density if hasattr(env, 'atmo_fluid_density') else env.density
             rp = np.maximum(self.rad[fre], 1e-4)
             coef = 0.375 * 0.47 * (rho_a / rho_p) / rp
@@ -646,10 +692,17 @@ class World:
             u = v - env.wind
             sp = np.linalg.norm(u, axis=1)
             klin = 4.5 * env.mu / (rho_p * rp * rp)             # Stokes drag of the ambient gas (viscosity of the mix at T)
+            if p.chemistry:
+                kg2 = self.kind[fre] > 0
+                coef = np.where(kg2, coef * p.jet_drag, coef)          # a jet keeps its momentum (parcels are not isolated spheres: entrainment is not resolved)
+                klin = np.where(kg2, klin * p.jet_drag, klin)
+                geff = np.where(kg2[:, None], geff * p.gas_buoy, geff)
             cd_eff = coef * sp + klin
             v = (v + (geff + cd_eff[:, None] * env.wind) * h) / (1.0 + cd_eff * h)[:, None]
             # gas exhaust expansion: a gas particle expands isentropically from its source pressure to the ambient pressure
             gas_f = np.array([self.fluids[f]['spec']['kind'] == 'GAS' for f in range(len(self.fluids))])[self.pfluid[fre]]
+            if p.chemistry:
+                gas_f = gas_f & (self.kind[fre] == 0)
             if gas_f.any():
                 r0 = np.array([s.get('r0', 0.0) for s in self.sources])[self.psrc[fre]]
                 Pj = np.array([s.get('P', env.pressure) for s in self.sources])[self.psrc[fre]]
@@ -658,7 +711,8 @@ class World:
                 tgt = r0 * ratio
                 grow = gas_f & (r0 > 0)
                 self.rad[fre] = np.where(grow, self.rad[fre] + (tgt - self.rad[fre]) * (1.0 - math.exp(-h / 0.3)), self.rad[fre])
-            # gas-like jets spread
+            if p.chemistry:
+                BURN.free_gas(self, fre, x, v, h)
             x = x + v * h
             self.age[fre] += h
             if env.ground_on:
@@ -668,7 +722,10 @@ class World:
                     x[below, 2] = gz + self.rad[fre][below] * 0.5
                     vz = v[below, 2]
                     v[below, 2] = np.where(vz < 0, -0.15 * vz, vz)
-                    v[below, 0] *= (1.0 - min(3.0 * h, 0.9)); v[below, 1] *= (1.0 - min(3.0 * h, 0.9))
+                    if p.chemistry:
+                        BURN.ground_jet(self, fre, x, v, below, h)
+                    else:
+                        v[below, 0] *= (1.0 - min(3.0 * h, 0.9)); v[below, 1] *= (1.0 - min(3.0 * h, 0.9))
             if len(self.active):
                 legal, matU, cavU, owner, cavs = self.query(x)
                 viol = matU < 0.0
@@ -720,13 +777,17 @@ class World:
             ign = (min(fuel, oxid) / max(fuel, oxid, 1)) if (fuel and oxid) else 0.0
         ign = float(np.clip(ign * self.p.ignition_gain, 0.0, 1.0))
         self.ignition = ign
+        if self.p.chemistry:
+            inch = np.zeros_like(inch)       # heat comes from the reaction (core/burn.py), not from a relaxation toward the flame temperature
         if ign > 0 and inch.any():
             flame = np.array([fl['spec']['flame_t'] for fl in self.fluids])[self.pfluid[al]]
             tgt = flame * ign + self.temp[al] * (1 - ign)
             a = 1.0 - math.exp(-dt / 0.25)
             self.temp[al] = np.where(inch, self.temp[al] + (tgt - self.temp[al]) * a, self.temp[al])
         # free particles relax to ambient slowly
-        fr = self.state[al] == 2
+        fr = (self.state[al] == 2)
+        if self.p.chemistry:
+            fr = fr & (self.kind[al] == 0)
         a2 = 1.0 - math.exp(-dt / 6.0)
         self.temp[al] = np.where(fr, self.temp[al] + (env.temp - self.temp[al]) * a2, self.temp[al])
         # part lumped thermal model
@@ -758,10 +819,13 @@ class World:
                     temp=self.temp.astype(np.float32), rad=self.rad.astype(np.float32),
                     part_T=self.part_T.astype(np.float32), part_stress=self.part_stress.astype(np.float32),
                     part_heat=self.part_heat.astype(np.float32), part_press=self.part_press.astype(np.float32),
-                    ignition=np.float32(self.ignition))
+                    ignition=np.float32(self.ignition),
+                    **(dict(kind=self.kind.copy(), soot=self.soot.astype(np.float32), fade=self.fade.astype(np.float32), smk=self.smk.astype(np.float32)) if self.p.chemistry else {}))
 
     def restore(self, snap):
         self.pos[:] = snap['pos']; self.vel[:] = snap['vel']; self.state[:] = snap['state']
         self.temp[:] = snap['temp']; self.rad[:] = snap['rad']
+        if self.p.chemistry and 'kind' in snap:
+            self.kind[:] = snap['kind']; self.soot[:] = snap['soot']; self.fade[:] = snap['fade']; self.smk[:] = snap['smk']
         self.part_T[:] = snap['part_T']; self.part_stress[:] = snap['part_stress']
         self.part_heat[:] = snap['part_heat']; self.part_press[:] = snap['part_press']

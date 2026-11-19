@@ -236,7 +236,7 @@ def build_world(scene):
         a = fl[names.index(e.atmo_fluid)]
         env.density = F.density_at(a['spec'], e.pressure, e.temperature)
     prm = W.Params(continuous=af.continuous, net_res=af.net_res, vmax=af.vmax, max_sub=af.max_substeps, radius_scale=af.radius_scale,
-                   seed=af.seed, lotbcbp=af.lotbcbp)
+                   seed=af.seed, lotbcbp=af.lotbcbp, chemistry=af.chemistry, domain_radius=af.domain_radius, max_alive=af.particle_budget, flight_factor=(12.0 if af.chemistry else 2.0))
     world = W.World(parts, fl, env, prm)
     if cav_objs:
         world.on_moved = _refresh_cavity_fields
