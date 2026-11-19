@@ -225,5 +225,12 @@ bpy.ops.object.select_all(action='DESELECT'); ob.select_set(True); bpy.context.v
 bpy.ops.arcflow.add_tessera_modifier(group="Tessera Surface")
 ok(any(m.type == 'NODES' and m.node_group and m.node_group.name == "Tessera Surface" for m in ob.modifiers), "panel button adds a Tessera modifier to the active object")
 
+# 6. other modules can add their groups to the menu / ensure_group
+def _dummy():
+    g = fresh_group("Tessera Dummy Extra"); g['tessera_gn_version'] = TN.TESSERA_GN_VERSION
+    add_socket(g, "Geometry", 'NodeSocketGeometry', 'INPUT'); add_socket(g, "Geometry", 'NodeSocketGeometry', 'OUTPUT')
+    b = Builder(g); gi, go = b.group_io(); b.link(out(gi, 'Geometry'), inp(go, 'Geometry')); return g
+TN.register_group("Tessera Dummy Extra", _dummy, "test group")
+ok(any(i[0] == "Tessera Dummy Extra" for i in TN._enum_items(None, None)) and TN.ensure_group("Tessera Dummy Extra").name == "Tessera Dummy Extra", "register_group adds a group to the menu list and ensure_group")
 print("fail count", fails[0])
 sys.exit(1 if fails[0] else 0)

@@ -29,7 +29,31 @@ GROUPS = (("Tessera Fluid Source", "Shape to particles, volume and surface (all 
           ("Tessera Surface", "Density volume and welded surface mesh of a particle cloud"),
           ("Tessera Thermal", "Heat, reaction heat release, pressure, flame colour and emission"),
           ("Tessera Environment", "Gravity, ambient pressure, temperature, density and wind"))
-GROUP_NAMES = tuple(g[0] for g in GROUPS)
+CORE_GROUPS = tuple(g[0] for g in GROUPS)       # shipped in the library blend
+GROUP_NAMES = CORE_GROUPS
+_ITEMS = []
+
+
+def register_group(name, builder, description="", nested=()):
+    """Let another module of the extension add a group to the Add menu / panel / ensure_group (built in code, not part of the library blend).
+    builder() -> node group named `name`; nested = names of Tessera groups it uses (they are ensured first by the builder itself)."""
+    global GROUPS
+    if name not in BUILDERS:
+        GROUPS = GROUPS + ((name, description),)
+    BUILDERS[name] = builder
+    if nested:
+        NESTED[name] = tuple(nested)
+    _refresh_items()
+
+
+def _refresh_items():
+    _ITEMS[:] = [(n, n.replace("Tessera ", ""), d) for n, d in GROUPS]
+
+
+def _enum_items(self, context):
+    if not _ITEMS:
+        _refresh_items()
+    return _ITEMS
 
 
 # ----------------------------------------------------------------------------- helpers
@@ -575,14 +599,14 @@ NESTED = {"Tessera Fluid Source": ("Tessera Particle Cloud", "Tessera Thermal", 
 
 def build_library(path=LIB_PATH):
     """Write library/tessera_nodes.blend with the five groups (run from tools / the test)."""
-    for n in GROUP_NAMES:
+    for n in CORE_GROUPS:
         g = bpy.data.node_groups.get(n)
         if g is not None:
             bpy.data.node_groups.remove(g)
     for n in ("Tessera Environment", "Tessera Particle Cloud", "Tessera Thermal", "Tessera Surface", "Tessera Fluid Source"):
         build_group(n)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    bpy.data.libraries.write(path, {bpy.data.node_groups[n] for n in GROUP_NAMES}, fake_user=True, compress=True)
+    bpy.data.libraries.write(path, {bpy.data.node_groups[n] for n in CORE_GROUPS}, fake_user=True, compress=True)
 
 
 def add_group_node(context, name):
@@ -607,7 +631,7 @@ class AF_OT_add_tessera_group(Operator):
     bl_label = "Add Tessera node group"
     bl_description = "Add a Tessera node group (Fluid Source, Particle Cloud, Surface, Thermal, Environment) to the Geometry Nodes tree"
     bl_options = {'REGISTER', 'UNDO'}
-    group: EnumProperty(name="Group", items=[(n, n.replace("Tessera ", ""), d) for n, d in GROUPS], default="Tessera Fluid Source")
+    group: EnumProperty(name="Group", items=_enum_items)
 
     @classmethod
     def poll(cls, context):
@@ -638,7 +662,7 @@ class AF_OT_gn_modifier(Operator):
     bl_label = "Add to selected object"
     bl_description = "Add a Geometry Nodes modifier with the chosen Tessera group to the active object"
     bl_options = {'REGISTER', 'UNDO'}
-    group: EnumProperty(name="Group", items=[(n, n.replace("Tessera ", ""), d) for n, d in GROUPS], default="Tessera Particle Cloud")
+    group: EnumProperty(name="Group", items=_enum_items)
 
     @classmethod
     def poll(cls, context):
