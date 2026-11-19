@@ -319,9 +319,11 @@ def _mesh_for(fluid_name, n):
         me = bpy.data.meshes.new(name)
         me.vertices.add(n)
         me.update()
-    for a in ('af_radius', 'af_tn', 'af_speed'):
+    for a in ('af_radius', 'af_tn', 'af_speed', 'af_fmix', 'af_alpha'):
         if a not in me.attributes:
             me.attributes.new(a, 'FLOAT', 'POINT')
+    if 'af_fcol' not in me.attributes:
+        me.attributes.new('af_fcol', 'FLOAT_COLOR', 'POINT')
     return me
 
 
@@ -481,6 +483,26 @@ def apply_state(scene, world, snap=None):
     tn = np.clip((temp - af.t_lo) / max(af.t_hi - af.t_lo, 1.0), 0.0, 1.0).astype(np.float32)
     speed = np.linalg.norm(vel, axis=1).astype(np.float32)
     r = np.where(state > 0, rad, 0.0).astype(np.float32)
+    n_all = len(state)
+    fmix = np.zeros(n_all, np.float32)
+    alpha = np.ones(n_all, np.float32)
+    fcol = np.zeros((n_all, 4), np.float32)
+    if 'kind' in src:                    # combustion: flame colour from the web app's flame model, smoke grey, fade at the domain edge
+        from .core import flame as FLM
+        kind = src['kind']
+        fm_ = kind > 0
+        if fm_.any():
+            tnf = np.clip((temp - FLM.FLAME['TLO']) / (FLM.FLAME['THI'] - FLM.FLAME['TLO']), 0.0, 1.0)
+            em = FLM.flame_emission_np(tnf, src['soot'], src['chem'], 0.0)
+            sm_col = np.array(FLM.FLAME['SMOKE_STEAM'])[None] * (1 - src['soot'][:, None]) + np.array(FLM.FLAME['SMOKE_SOOT'])[None] * src['soot'][:, None]
+            is_s = kind == 2
+            col = np.where(is_s[:, None], sm_col * 1.4, np.minimum(em, 40.0))
+            fcol[:, :3] = col
+            fcol[:, 3] = 1.0
+            fmix = fm_.astype(np.float32)
+            glow = np.clip(tnf * 1.4, 0.0, 1.0)
+            alpha = np.where(is_s, 0.35 * src['smk'], 0.25 + 0.6 * glow) * src['fade']
+            alpha = np.where(fm_, alpha, 1.0).astype(np.float32)
     for fi, fl in enumerate(af.fluids):
         if fi >= len(RT.fl_slots) or len(RT.fl_slots[fi]) == 0:
             continue
@@ -495,6 +517,9 @@ def apply_state(scene, world, snap=None):
         me.attributes['af_radius'].data.foreach_set('value', r[idx])
         me.attributes['af_tn'].data.foreach_set('value', tn[idx])
         me.attributes['af_speed'].data.foreach_set('value', speed[idx])
+        me.attributes['af_fmix'].data.foreach_set('value', fmix[idx])
+        me.attributes['af_alpha'].data.foreach_set('value', alpha[idx])
+        me.attributes['af_fcol'].data.foreach_set('color', fcol[idx].ravel())
         me.update()
         ign = float(src.get('ignition', 0.0))
         for ob in (fl.points_obj, fl.volume_obj, fl.splat_obj):

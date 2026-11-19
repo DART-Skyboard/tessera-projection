@@ -237,3 +237,35 @@ def fade_factor(r, r_domain, fade_frac=0.25):
     r0 = r_domain * (1.0 - fade_frac)
     t = np.clip((np.asarray(r, float) - r0) / max(r_domain - r0, 1e-9), 0.0, 1.0)
     return 1.0 - t * t * (3.0 - 2.0 * t)
+
+
+# ------------------------------------------------------------------ vectorised (numpy) versions for per-particle colours
+_BB = np.array(FLAME['BB'], float)
+
+
+def flame_bb_np(T):
+    T = np.asarray(T, float)
+    return np.stack([np.interp(T, _BB[:, 0], _BB[:, c]) for c in (1, 2, 3)], axis=-1)
+
+
+def _ss_np(a, b, x):
+    t = np.clip((np.asarray(x, float) - a) / (b - a), 0.0, 1.0)
+    return t * t * (3 - 2 * t)
+
+
+def flame_emission_np(tn, soot, chem, ab=0.0):
+    """Array version of flame_emission (same formula): tn, soot, chem, ab broadcast; returns (..., 3)."""
+    F = FLAME
+    tn = np.clip(np.asarray(tn, float), 0, 1)
+    T = F['TLO'] + tn * (F['THI'] - F['TLO'])
+    soot, chem, ab = np.broadcast_arrays(np.asarray(soot, float), np.asarray(chem, float), np.asarray(ab, float))
+    rad = (T / F['TREF']) ** 4 * (1 + F['AB_LUM'] * ab)
+    soot_e = soot * (1 - F['SOOT_BURN'] * ab)
+    gas = flame_bb_np(T) * (rad * F['GAS_EPS'] * (1 - F['CHEM_DIM'] * chem))[..., None]
+    mx = gas.max(axis=-1, keepdims=True)
+    wf = _ss_np(F['WHITE_LO'], F['WHITE_HI'], T)[..., None]
+    gas = gas + (mx - gas) * wf
+    sb = flame_bb_np(np.minimum(T, F['SOOT_TMAX']))
+    sk = ((T / F['TREF']) ** 4 * (1 + F['AB_LUM'] * ab) * soot_e * F['SOOT_GAIN'])[..., None]
+    ck = (chem * _ss_np(F['CHEM_TLO'], F['CHEM_THI'], T) * F['CHEM_GAIN'] * (0.25 + 0.75 * np.sqrt(rad)))[..., None]
+    return gas + sb * sk + np.array(F['CHEM_RGB']) * ck

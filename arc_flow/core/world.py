@@ -820,12 +820,12 @@ class World:
                     part_T=self.part_T.astype(np.float32), part_stress=self.part_stress.astype(np.float32),
                     part_heat=self.part_heat.astype(np.float32), part_press=self.part_press.astype(np.float32),
                     ignition=np.float32(self.ignition),
-                    **(dict(kind=self.kind.copy(), soot=self.soot.astype(np.float32), fade=self.fade.astype(np.float32), smk=self.smk.astype(np.float32)) if self.p.chemistry else {}))
+                    **(dict(kind=self.kind.copy(), soot=self.soot.astype(np.float32), fade=self.fade.astype(np.float32), smk=self.smk.astype(np.float32), chem=self.chem.astype(np.float32)) if self.p.chemistry else {}))
 
     def restore(self, snap):
         self.pos[:] = snap['pos']; self.vel[:] = snap['vel']; self.state[:] = snap['state']
         self.temp[:] = snap['temp']; self.rad[:] = snap['rad']
         if self.p.chemistry and 'kind' in snap:
-            self.kind[:] = snap['kind']; self.soot[:] = snap['soot']; self.fade[:] = snap['fade']; self.smk[:] = snap['smk']
+            self.kind[:] = snap['kind']; self.soot[:] = snap['soot']; self.fade[:] = snap['fade']; self.smk[:] = snap['smk']; self.chem[:] = snap['chem']
         self.part_T[:] = snap['part_T']; self.part_stress[:] = snap['part_stress']
         self.part_heat[:] = snap['part_heat']; self.part_press[:] = snap['part_press']

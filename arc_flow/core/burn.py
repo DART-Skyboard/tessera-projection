@@ -335,7 +335,7 @@ def afterburn(w, idx):
     """Unreacted propellant that leaves the chamber while the engine is lit burns on contact with the hot jet: it becomes flame gas at a lower temperature
     (fuel particles sooty, oxidiser particles clean)."""
     idx = idx[w.kind[idx] == 0]
-    if len(idx) == 0 or w.ignition < 0.2:
+    if len(idx) == 0 or not (w.p.igniter or w.ignition >= 0.2):
         return
     f_spec = w.fluids[w.fuel_i]['spec']
     tk = FL.FUEL_SPECIES[w.fkey]['tK']

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.1
+- Combustion mode (Burn propellants, default on): fuel and oxidiser particles that meet in a chamber react into flame gas (igniter assumed, or autoignition temperature); the pair's O/F sets soot and chemiluminescence through the web app's flame model, ported to `core/flame.py` and checked against the JavaScript (reference values from node in `tests/flame_reference.json`).
+- Chamber gas ledger: p_c = m R T / V, drained at the choked throat mass flow (subsonic below the critical pressure ratio); the nozzle exit only passes that mass; gas speed follows the isentropic area-Mach relation (sonic at the throat, supersonic after), scaled to the world speed limit (physical numbers reported).
+- Ground impact (wall jet), flame to smoke conversion below 950 K with the flame model's smoke colours, Exhaust domain radius (300 m default, fade over the outer quarter, removal at the radius), Particle budget, Continuous flow ON refills tanks / OFF runs them dry and the plume ends.
+- Shared tank-fill selection (`fillsettle.level_select`) for Fluid mode and combustion tanks; Fill / Settle stays a Fluid-mode operator.
+- Render: flame / smoke colour and fade attributes (`af_fcol`, `af_fmix`, `af_alpha`) in the Gaussian splat material; time sequence `docs/render_combustion.py`.
+- Tests: `tests/test_flame.py`, `tests/test_combustion_chain.py`. Limits in docs/TECHNICAL.md.
+
 ## 0.4.0
 - Fluid mode: composition model (`core/species.py`): species mass fractions per particle, miscible Fick exchange (mass and enthalpy conserved), subtractive colour mixing, ideal-mixing density, mass-weighted cp and beta, ABSORB with priority and cluster ids, REACT rules with windows and heat release, JSON rule table.
 - New render mode Surface (surface nets on a smoothed particle density, welded coloured mesh); Colour Mixing demo with a rotating paddle; per-fluid mix rate, priority and rules in the panel.
