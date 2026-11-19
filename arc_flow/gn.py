@@ -343,6 +343,11 @@ def _set_input(mod, ident, value):
         return True
     except Exception:
         pass
+    try:                       # Blender 5.3: each input is a group IDProperty holding the value under 'value'
+        mod.properties.inputs[ident]['value'] = value
+        return True
+    except Exception:
+        pass
     try:
         setattr(mod.properties.inputs, ident, value)
         return True

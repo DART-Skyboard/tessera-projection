@@ -61,6 +61,11 @@ The fast path pairs triangles into quads, so it keeps the source triangulation's
   <img src="docs/renders/multi_twin_layout.png" width="70%" alt="Two engines joined by a crossfeed pipe">
 </p>
 
+<p align="center">
+  <img src="docs/renders/engine_beauty.png" width="48%" alt="Single rocket engine demo: brushed-metal tanks, pipes, chamber and nozzle with a heated exhaust spill">
+  <img src="docs/renders/engine_xray.png" width="48%" alt="Same engine in X-ray view: propellant inside the tanks, feed lines and chamber">
+</p>
+
 - Parts are grouped into independent **systems**; roles (container, transport, chamber) and requirements are detected automatically and re-detected when parts move or connect.
 - **Demos built from Blender's default primitives:** a single engine and twin engines with a crossfeed pipe, with a Good and a Bad variant that end in enhanced combustion or a wall rupture.
 - **Environment card:** Earth, Mars, Venus, Titan and Jupiter atmospheres with editable gas mixes, driving ambient pressure, drag and plume spread.
