@@ -164,6 +164,25 @@ def neighbor_pairs(pos, h):
     return np.concatenate(I), np.concatenate(J)
 
 
+_LN = {}
+
+
+def _lattice_norm(x):
+    """S(x) with x = h / d: d^3 times the sum of the (1-r/h)^3 kernel (normalised 15 / (pi h^3)) over a cubic lattice of spacing d, itself included (~1)."""
+    if not _LN:
+        xs = np.linspace(0.8, 12.0, 90)
+        out = []
+        for xv in xs:
+            r = int(math.ceil(xv)) + 1
+            g = np.arange(-r, r + 1)
+            X, Y, Z = np.meshgrid(g, g, g, indexing='ij')
+            q = np.sqrt(X * X + Y * Y + Z * Z).ravel() / xv
+            q = q[q < 1.0]
+            out.append(float(np.sum((1 - q) ** 3)) * 15.0 / (math.pi * xv ** 3))
+        _LN['x'], _LN['s'] = xs, np.array(out)
+    return np.interp(x, _LN['x'], _LN['s'])
+
+
 def scatter_pair(n, I, J, vec):
     """out[i] += vec for I, out[j] -= vec for J (bincount is much faster than np.add.at)."""
     out = np.empty((n, 3))
@@ -218,6 +237,8 @@ class Body:
         self.omega = np.zeros(3)
         self.travel = 0.0          # displacement along the slider axis / angle about the hinge since the start pose
         self.F = np.zeros(3)       # force of the fluid on the body, last step (N)
+        self.fx = np.zeros(3)      # extra force from coupled surfaces (viscosity surface drag, pressure), applied on the next integration (N)
+        self.tx = np.zeros(3)      # extra torque about the centre of mass (N m)
         self.T = np.zeros(3)       # torque about the centre of mass (N m)
         self._F = np.zeros(3)
         self._T = np.zeros(3)
@@ -289,8 +310,8 @@ class Body:
         ax = ax / max(np.linalg.norm(ax), 1e-12)
         self._Fs = (1 - self.smooth) * self._Fs + self.smooth * self._F
         self._Ts = (1 - self.smooth) * self._Ts + self.smooth * self._T
-        F = self._Fs + m * np.asarray(g, float) + self.ext
-        T = self._Ts.copy()
+        F = self._Fs + m * np.asarray(g, float) + self.ext + self.fx
+        T = self._Ts + self.tx
         if self.constraint == 'SLIDER':
             f = float(F @ ax)
             v = float(self.vel @ ax)
@@ -503,6 +524,12 @@ class FluidSolver:
         S.bodies = list(bodies)
         S.rng = np.random.default_rng(seed)
         S.relax, S.warm, S.flip_ratio, S.cg_iters = 1.0, 0.0, 0.95, 120
+        S.gas_pressure = bool(int(__import__("os").environ.get("AF_GASP", "1")))           # ideal-gas SPH pressure force between gas parcels (and onto neighbouring liquid)
+        S.pressure = None                # absolute pressure of every particle (Pa), a real solver output
+        S.gas_force_sum = np.zeros(3)
+        S.gas_force_abs = 0.0
+        S.gas_stiff = 0.01
+        S.gas_wall_fix = False
         S._solid_cache, S._p_prev, S._p_origin, S.cg_last = None, None, None, 0
         S.speedup, S.iters, S.max_sub, S.vmax, S.lotbcbp = float(thermal_speedup), int(iterations), int(max_substeps), float(vmax), lotbcbp
         for b in S.bodies:
@@ -882,11 +909,12 @@ class FluidSolver:
         return np.where(self.gas[f], np.minimum(rg, 4.0 * self.dx), 0.5 * self.dx)
 
     def snapshot(self):
-        return dict(x=self.x.copy(), v=self.v.copy(), T=self.T.copy(), t=self.t, gust=self.gust_vec.copy(), C=self.C.copy(), cluster=self.cluster.copy(),
+        return dict(x=self.x.copy(), v=self.v.copy(), T=self.T.copy(), t=self.t, pressure=None if self.pressure is None else self.pressure.copy(), gust=self.gust_vec.copy(), C=self.C.copy(), cluster=self.cluster.copy(),
                     bodies=[(b.M1.copy(), b.vel.copy(), b.omega.copy(), b.travel, b.F.copy(), b.T.copy()) for b in self.bodies])
 
     def restore(self, s):
         self.x, self.v, self.T, self.t = s['x'].copy(), s['v'].copy(), s['T'].copy(), s['t']
+        self.pressure = None if s.get('pressure') is None else s['pressure'].copy()
         self.gust_vec = s.get('gust', np.zeros(3)).copy()
         for b, st in zip(self.bodies, s.get('bodies', [])):
             if b.dynamic:
@@ -1173,6 +1201,8 @@ class FluidSolver:
             rz = rz_new
         self.cg_last = it
         self._p_prev, self._p_origin = p, origin.copy()
+        if self.pressure is not None and len(self.pressure) == self.n:
+            self.pressure[idx_l] = self.env.pressure_at(xl[:, 2]) + p.ravel()[cflat]      # projection pressure (the incompressible limit) on top of ambient
         # ---- force of the pressure on the bodies (fluid faces next to a solid cell of the body), for the two-way coupling
         if any(b.two_way for b in self.bodies):
             self._pressure_force(p, L, S, origin, hg)
@@ -1228,6 +1258,10 @@ class FluidSolver:
         over = sp > self.vmax
         if over.any():
             v[over] *= (self.vmax / sp[over])[:, None]
+        if self.gas_pressure:
+            self._gas_pressure(dt, rho)
+        elif self.pressure is None or len(self.pressure) != n:
+            self.pressure = self.env.pressure_at(x[:, 2]).astype(float)
         # ---- liquid pressure: grid projection with variable density (FLIP)
         if len(idx_l):
             self._flip(dt, idx_l, rho, s1)
@@ -1292,7 +1326,7 @@ class FluidSolver:
                 I, J = gp
                 rij = xs[I] - xs[J]
                 d = np.linalg.norm(rij, axis=1)
-                dmin = 1.6 * (prad[I] + prad[J]) * 0.5 * 1.25
+                dmin = 1.6 * (prad[I] + prad[J]) * 0.5 * 1.25 * (0.45 if self.gas_pressure else 1.0)    # with the pressure force the volume is carried by pressure, not by hard overlap repulsion
                 m = (d < dmin) & (d > 1e-9)
                 if m.any():
                     corr = (0.25 * (dmin[m] - d[m]) / d[m])[:, None] * rij[m]
@@ -1319,6 +1353,102 @@ class FluidSolver:
         if self.mixing and len(idx_l) and len(il):
             self._mix(dt, idx_l, il, jl)
 
+
+    # ------------------------------------------------------------------ gas pressure (ideal gas, SPH pair force)
+    def _gas_pressure(self, dt, rho):
+        """Every gas parcel carries the ideal-gas pressure p = rho_sph R T / M of its own state (rho_sph: kernel density of its neighbours, T:
+        its temperature, M: molar mass of its composition), and pushes its neighbours with the symmetric SPH pair force
+        f_ij = -m_i m_j (p_i / rho_i^2 + p_j / rho_j^2) grad W.  The ambient pressure is subtracted, so ambient air at rest has no net force; hot or
+        compressed gas (p above ambient) pushes harder on every neighbour: gas parcels of any asset, and the liquid particles next to it
+        (the reaction is applied to the gas, so the pair conserves momentum).  The dynamic pressure of a moving parcel is its rho v^2 / 2, reported
+        in self.pressure (the static part drives the force)."""
+        f, n = self.fid, self.n
+        gi = np.flatnonzero(self.gas[f])
+        self.pressure = self.env.pressure_at(self.x[:, 2]).astype(float)
+        if len(gi) < 2:
+            return
+        x = self.x
+        prad = self.parcel_radius()
+        # the ambient air the cloud pushes into: quadratic drag of a sphere of the parcel's size, a = 3/8 Cd rho_env |u| u / (rho r) with Cd ~ 0.5, acting on
+        # the velocity relative to the asset's own mean motion (so wind drift and buoyant rise are untouched; only the expansion is resisted); semi-implicit
+        mg = self.mass_ref[gi]
+        fg = f[gi]
+        vm = np.zeros((self.nf, 3))
+        for ax in range(3):
+            vm[:, ax] = np.bincount(fg, mg * self.v[gi, ax], self.nf) / np.maximum(np.bincount(fg, mg, self.nf), 1e-30)
+        u = self.v[gi] - vm[fg]
+        kdr = 0.19 * self.env.density_at(x[gi, 2]) * np.linalg.norm(u, axis=1) / (np.maximum(rho[gi], 1e-9) * np.maximum(prad[gi], 1e-6))
+        self.v[gi] = vm[fg] + u / (1.0 + kdr * dt)[:, None]
+        h = float(np.clip(3.5 * float(np.median(prad[gi])), 2.0 * self.dx, 8.0 * self.dx))
+        # liquid particles close to any gas parcel take part as pressure receivers
+        lq = np.flatnonzero(~self.gas[f])
+        if len(lq):
+            lo, hi = x[gi].min(0) - h, x[gi].max(0) + h
+            lq = lq[np.all((x[lq] > lo) & (x[lq] < hi), axis=1)]
+        sel = np.concatenate([gi, lq])
+        ng = len(gi)
+        I, J = neighbor_pairs(x[sel], h)
+        m = self.mass_ref[sel]
+        W0 = 15.0 / (math.pi * h ** 3)
+        rij = x[sel[I]] - x[sel[J]]
+        d = np.linalg.norm(rij, axis=1)
+        k = d < h
+        I, J, rij, d = I[k], J[k], rij[k], d[k]
+        q = d / h
+        W = W0 * (1 - q) ** 3
+        dW = -3.0 * W0 * (1 - q) ** 2 / h                      # dW/dr
+        gg = (I < ng) & (J < ng)
+        rho_s = m[:ng] * W0 + np.bincount(I[gg], (m[J] * W)[gg], ng) + np.bincount(J[gg], (m[I] * W)[gg], ng)
+        # discretisation bias: a perfect lattice at the parcel's own state spacing d_s = (m / rho_state)^(1/3) sums to S(h / d_s) / d_s^3 * m, not rho_state;
+        # divide by that so that a parcel in equilibrium with the ambient has ratio 1
+        d_s = np.cbrt(m[:ng] / np.maximum(rho[gi], 1e-9))
+        rho_c = rho_s / _lattice_norm(h / d_s)
+        # a solid wall cuts the kernel: add back the missing share (flat-wall cap fraction) so gas pressed on a wall keeps its pressure
+        wdist = self.wall_dist[gi] if len(self.wall_dist) == n else np.full(ng, 1e9)
+        dd = np.clip(wdist, 0.0, h)
+        fcap = np.where(wdist < h, (h - dd) ** 2 * (2 * h + dd) / (4 * h ** 3), 0.0)
+        rho_c = rho_c / np.maximum(1.0 - np.minimum(fcap, 0.5), 0.5) if self.gas_wall_fix else rho_c
+        Penv = self.env.pressure_at(x[gi, 2])
+        ratio = np.clip(rho_c / np.maximum(rho[gi], 1e-9), 0.0, 8.0)
+        # ideal gas: p = rho_sph R T / M = Penv * ratio exactly (rho_state = Penv M / (R T)); the excess over the ambient drives the force, softened by
+        # `gas_stiff` (a reduced speed of sound, as in weakly compressible SPH: the real one, 340 m/s, would need a ~1 ms step)
+        p_abs = Penv * ratio
+        dev = ratio - 1.0
+        # one-sided (compression only) with a 30 % dead band: the kernel-density deficiency at the edge of a cloud or at a wall, and the noise of an
+        # irregular parcel cloud, are not rarefaction (suction) forces; the ambient pressure holds a cloud that expands past equilibrium
+        pex = self.gas_stiff * Penv * np.maximum(dev - 0.30, 0.0)
+        self.pressure[gi] = p_abs
+        self._pex = np.zeros(n)
+        self._pex[gi] = pex
+        self._area = np.zeros(n)
+        self._area[gi] = d_s ** 2
+        pe_full = np.zeros(len(sel))
+        pe_full[:ng] = pex
+        rho_f = np.concatenate([rho_s, rho[lq]]) if len(lq) else rho_s
+        coef = (pe_full[I] / np.maximum(rho_f[I], 1e-9) ** 2 + pe_full[J] / np.maximum(rho_f[J], 1e-9) ** 2)
+        valid = (d > 1e-9) & ~((I >= ng) & (J >= ng))
+        fvec = (-(m[I] * m[J] * coef * dW / np.maximum(d, 1e-12)))[:, None] * rij         # force on I (from J), opposite on J
+        fvec[~valid] = 0.0
+        a = np.zeros((len(sel), 3))
+        mi, mj = m[I][:, None], m[J][:, None]
+        for ax in range(3):
+            a[:, ax] = np.bincount(I, fvec[:, ax] / mi[:, 0], len(sel)) - np.bincount(J, fvec[:, ax] / mj[:, 0], len(sel))
+        # viscous damping between gas parcels (momentum conserving pair relaxation), so a pressure burst does not ring
+        c = np.minimum(0.5, 0.5 * (1 - q) ** 2) * valid * (~((I >= ng) & (J >= ng)))
+        wsum = np.bincount(I, c, len(sel)) + np.bincount(J, c, len(sel))
+        cn = c / np.maximum(np.maximum(wsum[I], wsum[J]), 1.0)
+        dv = self.v[sel[J]] - self.v[sel[I]]
+        mu = m[I] + m[J]
+        dvi = (cn * m[J] / mu)[:, None] * dv
+        dvj = -(cn * m[I] / mu)[:, None] * dv
+        for ax in range(3):
+            a[:, ax] += (np.bincount(I, dvi[:, ax], len(sel)) + np.bincount(J, dvj[:, ax], len(sel))) / max(dt, 1e-9)
+        self.gas_force_sum = (m[:, None] * a).sum(0)           # net force of the pair forces: zero (momentum conservation check, before the clamp)
+        self.gas_force_abs = float((m * np.linalg.norm(a, axis=1)).sum())
+        cap = 0.05 * self.vmax / max(dt, 1e-9)
+        an = np.linalg.norm(a, axis=1)
+        a *= np.minimum(1.0, cap / np.maximum(an, 1e-12))[:, None]
+        self.v[sel] += a * dt
 
     # ------------------------------------------------------------------ collision projection
     def _bodies_for(self, bi):
@@ -1457,7 +1587,15 @@ class FluidSolver:
                 dv = vn[gi] - v_old
                 gasc = self.gas[self.fid[gi]]
                 dvn = np.einsum('ij,ij->i', dv, nrm)
-                dv_use = np.where(gasc[:, None], dv, dv - dvn[:, None] * nrm)
+                dv_use = np.where(gasc[:, None] & (not self.gas_pressure), dv, dv - dvn[:, None] * nrm)
+                if self.gas_pressure and gasc.any() and getattr(self, '_pex', None) is not None and len(self._pex) == self.n:
+                    # the static gas pressure on the wall: excess pressure x the parcel's share of the wall area, along the wall normal
+                    gg = gi[gasc & (d < 1.15 * prad[gi])]
+                    sg = np.flatnonzero(gasc & (d < 1.15 * prad[gi]))
+                    if len(sg):
+                        fw = -(np.maximum(self._pex[gg], 0.0) * self._area[gg])[:, None] * nrm[sg]
+                        b._F += fw.sum(0)
+                        b._T += np.cross(xs[gg] - b.com_world(b.M1), fw).sum(0)
                 imp = -self.mass_ref[gi][:, None] * dv_use / dt
                 b._F += imp.sum(0)
                 b._T += np.cross(xs[gi] - b.com_world(b.M1), imp).sum(0)

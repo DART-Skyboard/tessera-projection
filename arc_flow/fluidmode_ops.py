@@ -35,6 +35,8 @@ class FMRuntime:
         self.msg = ""
         self.t_build = 0.0
         self.step_times = []
+        self.surf = None
+        self.surf_key = None
 
 
 RT = FMRuntime()
@@ -212,7 +214,7 @@ def _points_mesh(name, n):
                     o.data = me
             bpy.data.meshes.remove(old)
             me.name = name
-    for a, t in (('af_radius', 'FLOAT'), ('af_tn', 'FLOAT'), ('af_speed', 'FLOAT'), ('fm_temperature', 'FLOAT'), ('fm_density', 'FLOAT'),
+    for a, t in (('af_radius', 'FLOAT'), ('af_tn', 'FLOAT'), ('af_speed', 'FLOAT'), ('fm_temperature', 'FLOAT'), ('fm_density', 'FLOAT'), ('fm_pressure_solver', 'FLOAT'),
                  ('fm_fluid_id', 'INT'), ('fm_velocity', 'FLOAT_VECTOR'), ('fm_color', 'FLOAT_COLOR')):
         if a not in me.attributes:
             me.attributes.new(a, t, 'POINT')
@@ -296,7 +298,7 @@ def ensure_objects(scene):
         FGN.set_fluid_inputs(mf, fl, fm)
         mr = o.modifiers.get("AF Render") or o.modifiers.new("AF Render", 'NODES')
         kind = {'POINTS': 'Points', 'RAYMARCH': 'RayMarch', 'SPLAT': 'Splat', 'SURFACE': 'Points'}[fl.render_mode]
-        if fl.render_mode == 'SURFACE':
+        if fl.render_mode == 'SURFACE' and fl.kind == 'LIQUID':
             o.hide_render = True     # the surface mesh (AFFMS_*) is rendered instead of the points
         mr.node_group = gn.render_group(kind, "FM_" + fl.name)
         gn.set_group_material(mr.node_group, vmat if kind == 'RayMarch' else mat)
@@ -321,11 +323,29 @@ def refresh_render(scene):
             RT.msg = "render refresh: %s" % ex
 
 
-def _update_surface(scene, fl, X, colors, dx):
-    """Rebuild the welded fluid-surface mesh of one fluid from its particles (surface nets on the smoothed density)."""
+def _update_merged_surface(scene, S, fls, snap):
+    """One smooth, frame-coherent surface for every liquid fluid in Surface mode: all their particles go through a single density field (smooth union:
+    touching blobs of different fluids join with a neck, colours blend across the seam), blended in time (core/fluidsurface.py SurfaceBuilder)."""
     from .core import fluidsurface as FSF
     col = _collection(scene)
-    name = "AFFMS_%s" % fl.name
+    C = (snap.get('C', S.C) if snap is not None else S.C)
+    X = (snap['x'] if snap is not None else S.x)
+    xs, cs = [], []
+    for fi, fl in fls:
+        sl = slice(S.lo[fi], S.hi[fi])
+        if S.hi[fi] == S.lo[fi]:
+            continue
+        xs.append(X[sl])
+        cs.append(S.SS.colour(C[sl]) if getattr(S, 'mixing', False) else np.tile(np.asarray(fl.color, float), (S.hi[fi] - S.lo[fi], 1)))
+    sb = RT.surf
+    if sb is None or abs(sb.dx - S.dx) > 1e-12 or RT.surf_key != id(S):
+        sb = RT.surf = FSF.SurfaceBuilder(S.dx)
+        RT.surf_key = id(S)
+    if xs:
+        V, T, vc = sb.update(np.vstack(xs), np.vstack(cs), frame=scene.frame_current)
+    else:
+        V, T, vc = np.zeros((0, 3)), np.zeros((0, 3), int), None
+    name = "AFFMS_Liquids"
     me = bpy.data.meshes.get(name) or bpy.data.meshes.new(name)
     o = bpy.data.objects.get(name)
     if o is None:
@@ -333,8 +353,6 @@ def _update_surface(scene, fl, X, colors, dx):
     o.data = me
     if o.name not in col.objects:
         col.objects.link(o)
-    cc = colors if colors is not None else np.tile(np.asarray(fl.color, float), (len(X), 1))
-    V, T, vc = FSF.fluid_surface(X, cc, dx, cell=0.9 * dx)
     me.clear_geometry()
     if len(V):
         me.from_pydata(V.tolist(), [], T.tolist())
@@ -342,8 +360,7 @@ def _update_surface(scene, fl, X, colors, dx):
             me.attributes.new('fm_color', 'FLOAT_COLOR', 'POINT')
         rgba = np.concatenate([vc, np.ones((len(vc), 1))], axis=1).astype(np.float32)
         me.attributes['fm_color'].data.foreach_set('color', rgba.ravel())
-        for p in me.polygons:
-            p.use_smooth = True
+        me.polygons.foreach_set('use_smooth', np.ones(len(me.polygons), bool))
     me.materials.clear()
     me.materials.append(_composition_material())
     me.update()
@@ -373,6 +390,7 @@ def apply_state(scene, snap=None):
         rad = S.parcel_radius()
         S.x, S.v, S.T = keep
     speed = np.linalg.norm(v, axis=1)
+    surf_fls = []
     for fi, fl in enumerate(fm.fluids):
         o = fl.points_obj
         if o is None or fi >= S.nf:
@@ -389,15 +407,20 @@ def apply_state(scene, snap=None):
         me.attributes['af_speed'].data.foreach_set('value', speed[sl].astype(np.float32))
         me.attributes['fm_temperature'].data.foreach_set('value', T[sl].astype(np.float32))
         me.attributes['fm_density'].data.foreach_set('value', rho[sl].astype(np.float32))
+        prs = (snap.get('pressure') if snap is not None else getattr(S, 'pressure', None))
+        if prs is not None and len(prs) == S.n:
+            me.attributes['fm_pressure_solver'].data.foreach_set('value', np.asarray(prs)[sl].astype(np.float32))
         me.attributes['fm_fluid_id'].data.foreach_set('value', np.full(hi - lo, fi, np.int32))
         me.attributes['fm_velocity'].data.foreach_set('vector', v[sl].astype(np.float32).ravel())
         if getattr(S, 'mixing', False):
             col = S.SS.colour(S.C[sl] if snap is None else (snap.get('C', S.C))[sl])
             rgba = np.concatenate([col, np.ones((len(col), 1))], axis=1).astype(np.float32)
             me.attributes['fm_color'].data.foreach_set('color', rgba.ravel())
-        if fl.render_mode == 'SURFACE':
-            _update_surface(scene, fl, x[sl], (S.SS.colour((snap.get('C', S.C) if snap is not None else S.C)[sl]) if getattr(S, 'mixing', False) else None), S.dx)
+        if fl.render_mode == 'SURFACE' and not S.gas[fi]:
+            surf_fls.append((fi, fl))
         me.update_tag()
+    if surf_fls:
+        _update_merged_surface(scene, S, surf_fls, snap)
     for b, o in zip(S.bodies, RT.body_objs):
         pass
 
@@ -570,6 +593,8 @@ def add_fluid(scene, preset='WATER', name=None):
         fl.name = "%s.%d" % (base, n)
     fl.preset = preset
     apply_preset(fl, preset)
+    if fl.kind == 'LIQUID':
+        fl.render_mode = 'SURFACE'              # liquids render as one smooth, merged surface by default (gases stay particles / volume)
     fm.index = len(fm.fluids) - 1
     mark_dirty()
     return fl
@@ -903,8 +928,7 @@ def load_colour_mixing(scene, max_particles=6000):
         fl.volume, fl.color, fl.temperature = frac * cav, color, T
         fl.miscible, fl.mix_rate, fl.cohesion = True, 5.0, 0.0
         fl.cool = 1e-6
-        fl.render_mode = 'POINTS'
-        fl.particle_scale = 1.4
+        fl.render_mode = 'SURFACE'
     # a paddle that turns (moving collider: its wall velocity stirs the liquid)
     pad = _mesh_obj("TS_Paddle", lambda bm: __import__('bmesh').ops.create_cube(bm, size=1.0) and __import__('bmesh').ops.scale(bm, verts=bm.verts, vec=(0.1, 0.012, 0.11)), (0, 0, 0.07), col)
     pad.arc_flow_fm.collider = True

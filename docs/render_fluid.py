@@ -96,7 +96,7 @@ sc.render.engine = 'CYCLES'
 if demo == 'mix':
     sc.view_settings.view_transform = 'Standard'
 sc.cycles.device = 'CPU'
-sc.cycles.use_denoising = False
+sc.cycles.use_denoising = os.environ.get('FLUID_DENOISE', '0') == '1'
 sc.render.resolution_x, sc.render.resolution_y = 960, 540
 sc.render.resolution_percentage = int(os.environ.get('FLUID_RES_PCT', '100'))
 sc.cycles.samples = int(os.environ.get('FLUID_SAMPLES', '32'))

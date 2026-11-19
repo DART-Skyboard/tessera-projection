@@ -310,6 +310,7 @@ def build_thermal(name="Tessera Thermal"):
     hyd = b.math('MULTIPLY', out(hyd, 'Value'), out(depth, 'Value'), y=160)
     p_liq = b.math('ADD', out(hyd, 'Value'), out(gi, 'Ambient Pressure'), y=160)
     pr = _switch(b, out(gi, 'Gas'), out(p_liq, 'Value'), out(p_gas, 'Value'), 'FLOAT', y=140)
+    pr = attr_or(b, 'fm_pressure_solver', 'FLOAT', pr, y=130)       # the solver's own pressure when the points carry it (Fluid mode), else this estimate
     geo = store(b, geo, 'fm_pressure', pr, 'FLOAT', y=0)
     # flame colour and emission
     t2, _e = _named(b, 'fm_temperature', 'FLOAT', y=100)

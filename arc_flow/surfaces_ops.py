@@ -155,6 +155,9 @@ def attach(scene, S):
         lp, ln, A, M = smp
         if src.kind == 'VISCOSITY':
             core = FS.ViscositySurface(src.name, lp, ln, A, M, coefficient=src.coef, noslip=src.noslip, reach=src.reach or None)
+            for bi, o_ in enumerate(RT.body_objs):                  # a surface on an object that is a two-way body drives that body (force and torque of the fluid)
+                if o_ is not None and src.obj is not None and o_.name == src.obj.name and bi < len(S.bodies) and S.bodies[bi].dynamic:
+                    core.body = bi
             vis.append(core)
         else:
             f = fluid_index(scene, src)

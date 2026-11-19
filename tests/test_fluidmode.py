@@ -144,7 +144,7 @@ def test_gravity_scaling():
     for name in ('EARTH', 'MARS'):
         st = ATM.preset_state(name)
         env = FM.FEnv.from_atmosphere(st)
-        d = FM.fluid_def('WATER', name='drop', shape=dict(kind='POINTS', pts=P), body=-1, drag=0.0)
+        d = FM.fluid_def('WATER', name='drop', shape=dict(kind='POINTS', pts=P), body=-1)
         S = FM.FluidSolver.build([d], [], env, dx=dx)
         z0 = S.x[:, 2].mean()
         run(S, 0.8, dt=1.0 / 48.0)
@@ -574,6 +574,149 @@ def test_surface_merge():
     ok(nn == 1, "touching blobs merge into 1 surface component (%d)" % nn)
 
 
+def test_surface_builder():
+    """Merged, frame-coherent liquid surface: colours blend across the seam, a merging pair joins without flicker."""
+    from core import fluidsurface as FS
+    dx = 0.008
+    r = 0.03
+
+    def ball(c):
+        P = FM.lat_pos(FM.lattice_in_box((c[0] - r, c[1] - r, c[2] - r), (c[0] + r, c[1] + r, c[2] + r), dx), dx)
+        return P[np.linalg.norm(P - np.array(c), axis=1) < r]
+    sb = FS.SurfaceBuilder(dx)
+    counts, nv = [], []
+    red, blue = np.array([1.0, 0, 0]), np.array([0, 0, 1.0])
+    mid_col = None
+    for k, d in enumerate(np.linspace(0.10, 0.03, 8)):
+        A, B = ball((-d / 2, 0, 0)), ball((d / 2, 0, 0))
+        x = np.vstack([A, B])
+        col = np.vstack([np.tile(red, (len(A), 1)), np.tile(blue, (len(B), 1))])
+        out = sb.update(x, col, frame=k)
+        v, f, c = out[0], out[1], out[2]
+        counts.append(FS.mesh_components(len(v), f))
+        nv.append(len(v))
+        if k == 7 and c is not None:
+            mid_col = np.asarray(c)[:, :3]
+    ok(counts[0] == 2 and counts[-1] == 1, "pair merges from 2 to 1 component (%s)" % counts)
+    ok(all(counts[i] >= counts[i + 1] for i in range(len(counts) - 1)), "component count is monotonic while merging (no flicker)")
+    ok(max(abs(nv[i + 1] - nv[i]) / nv[i] for i in range(len(nv) - 1)) < 0.6, "vertex count changes smoothly (%s)" % nv)
+    if mid_col is not None:
+        purple = np.sum((mid_col[:, 0] > 0.2) & (mid_col[:, 2] > 0.2))
+        ok(purple > 0, "colours blend across the seam (%d mixed vertices)" % purple)
+
+
+def test_gas_pressure():
+    """Ideal-gas pressure force: gas heated in place (fixed volume) expands and pushes neighbours (another asset's particles, a free block,
+    a piston); the pair forces conserve momentum.  `tref` is the temperature the gas was filled at, `temperature` the heated state."""
+    env0 = FM.FEnv(gravity=(0.0, 0.0, 0.0))
+    dx = 0.03
+    # --- 1. a heated blob next to a cold blob of another gas: it expands, the neighbour's particles are pushed away, momentum is conserved
+    Ph = sphere_pts((0, 0, 0), 0.12, dx)
+    Pc = sphere_pts((0.22, 0, 0), 0.10, dx)
+    hot = FM.fluid_def('AIR', name='hot', shape=dict(kind='POINTS', pts=Ph), count=len(Ph), temperature=900.0, tref=293.15)
+    cold = FM.fluid_def('CO2', name='cold', shape=dict(kind='POINTS', pts=Pc), count=len(Pc), temperature=293.15)
+    S = FM.FluidSolver.build([hot, cold], [], env0, dx=dx)
+    hi = slice(S.lo[0], S.hi[0]); ci = slice(S.lo[1], S.hi[1])
+    r0 = float(np.linalg.norm(S.x[hi], axis=1).mean())
+    cx0 = float(S.x[ci, 0].mean())
+    pk, cxm, fs, fa = 0.0, cx0, 0.0, 0.0
+    for k in range(12):
+        S.step(1 / 24.0)
+        pk = max(pk, float(S.pressure[hi].max()))
+        cxm = max(cxm, float(S.x[ci, 0].mean()))
+        fs, fa = max(fs, float(np.linalg.norm(S.gas_force_sum))), max(fa, S.gas_force_abs)
+    r1 = float(np.linalg.norm(S.x[hi], axis=1).mean())
+    ok(r1 > 1.2 * r0, "heated gas expands: mean radius %.3f -> %.3f m" % (r0, r1))
+    ok(cxm > cx0 + 0.005, "the neighbouring asset's particles are pushed outward: centre x %.3f -> %.3f m (peak)" % (cx0, cxm))
+    ok(pk > 2.0 * FM.P_ATM and np.all(np.isfinite(S.pressure)), "pressure is a solver output: the heated parcels peak at %.0f Pa (ambient %.0f)" % (pk, FM.P_ATM))
+    ok(fs < 0.02 * max(fa, 1e-12), "pair forces conserve momentum: net %.2e N against %.2e N of pair force" % (fs, fa))
+    # --- 2. heated gas in a closed chamber pushes a piston, much more than the same chamber unheated
+    def chamber(T):
+        b3 = container((-.2, -.1, 0), (.4, .1, .2))
+        Vp, Tp = box((0.05, -.105, -.005), (.15, .105, .205))
+        pis = FM.Body(SDF.PartField(Vp, Tp, 'AUTO', resolution=24, level=2), np.eye(4), 'COLLIDER', None, 0.0)
+        pis.mass = 1.0
+        pis.constraint, pis.axis, pis.limits = 'SLIDER', np.array([1.0, 0, 0]), (0.0, 0.3)
+        P = FM.lat_pos(FM.lattice_in_box(np.array([-.18, -.085, .015]), np.array([0.04, .085, .185]), 0.02), 0.02)
+        gas = FM.fluid_def('AIR', name='chamber', body=0, shape=dict(kind='POINTS', pts=P), count=len(P), temperature=T, tref=293.15)
+        S = FM.FluidSolver.build([gas], [b3, pis], env0, dx=0.02)
+        run(S, 0.17)
+        return pis, S
+    pis, S = chamber(1500.0)
+    pis2, S2 = chamber(293.15)
+    ok(pis.travel > 0.05, "compressed hot gas pushes the piston: moved %.3f m (speed %.2f m/s)" % (pis.travel, float(pis.vel[0])))
+    ok(pis.travel > 3.0 * max(pis2.travel, 1e-4), "heated gas moves the piston more than unheated: %.3f vs %.3f m" % (pis.travel, pis2.travel))
+    # --- 3. a free block next to expanding hot gas is pushed outward
+    Vb, Tb = box((0.12, -.03, -.03), (0.18, .03, .03))
+    blk = FM.Body(SDF.PartField(Vb, Tb, 'AUTO', resolution=24, level=2), np.eye(4), 'COLLIDER', None, 0.0)
+    blk.mass, blk.constraint = 0.5, 'FREE'
+    Pg = sphere_pts((0, 0, 0), 0.1, 0.03)
+    g3 = FM.fluid_def('AIR', name='hot', shape=dict(kind='POINTS', pts=Pg), count=len(Pg), temperature=1500.0, tref=293.15)
+    S3 = FM.FluidSolver.build([g3], [blk], env0, dx=0.03)
+    x0 = float(blk.com_world()[0])
+    xm = x0
+    for k in range(14):
+        S3.step(1 / 24.0)
+        xm = max(xm, float(blk.com_world()[0]))
+    ok(xm > x0 + 0.02, "expanding hot gas pushes a free block outward: x %.3f -> %.3f m" % (x0, xm))
+    # --- 4. the heated gas also pushes a neighbouring liquid asset's particles (water droplet, free)
+    Pw = sphere_pts((0.17, 0, 0), 0.05, 0.02)
+    gw = FM.fluid_def('AIR', name='hot', shape=dict(kind='POINTS', pts=sphere_pts((0, 0, 0), 0.1, 0.03)), count=len(sphere_pts((0, 0, 0), 0.1, 0.03)), temperature=1500.0, tref=293.15)
+    dw = FM.fluid_def('WATER', name='drop', shape=dict(kind='POINTS', pts=Pw), drag=0.0, cohesion=0.0)
+    S4 = FM.FluidSolver.build([gw, dw], [], env0, dx=0.03)
+    wi = slice(S4.lo[1], S4.hi[1])
+    vx = 0.0
+    for k in range(4):
+        S4.step(1 / 24.0)
+        vx = max(vx, float(S4.v[wi, 0].mean()))
+    ok(vx > 0.05, "neighbouring liquid asset is pushed by the gas pressure: drop speed %.2f m/s" % vx)
+
+
+
+def test_surface_coupling():
+    """A viscosity surface is two-way: it drags the fluid and the fluid's drag moves the body the surface belongs to (momentum exchanged)."""
+    from core import fsurf as FS
+    env0 = FM.FEnv(gravity=(0.0, 0.0, 0.0))
+    Pw, Nw, Aw, _ = FS.sample_faces(np.array([[-0.5, -0.5, 0.05], [1.0, -0.5, 0.05], [1.0, 1.0, 0.05], [-0.5, 1.0, 0.05]]), np.array([[0, 1, 2], [0, 2, 3]]), 0.04)
+    Vb, Tb = box((0.0, 0.0, 5.0), (0.05, 0.05, 5.05))                         # the body's own geometry sits far from the fluid
+    blk = FM.Body(SDF.PartField(Vb, Tb, 'AUTO', resolution=16, level=2), np.eye(4), 'COLLIDER', None, 0.0)
+    blk.mass, blk.constraint, blk.axis = 2.0, 'SLIDER', np.array([1.0, 0, 0])
+    P = sphere_pts((0.2, 0.2, 0.05), 0.1, 0.04)
+    d = FM.fluid_def('WATER', name='w', shape=dict(kind='POINTS', pts=P), velocity=(1.0, 0.0, 0.0), drag=0.0, cohesion=0.0)
+    S = FM.FluidSolver.build([d], [blk], env0, dx=0.04)
+    vs = FS.ViscositySurface("plate", Pw, np.array([[0, 0, 1.0]] * len(Pw)), Aw, coefficient=200.0)
+    vs.body = 0
+    FS.install(S, viscosity=[vs])
+    m = S.mass_ref
+    p0 = float((m * S.v[:, 0]).sum())
+    for _ in range(12):
+        S.step(1 / 24.0)
+    p1 = float((m * S.v[:, 0]).sum())
+    gain = blk.mass * float(blk.vel[0])
+    ok(blk.vel[0] > 0.0 and blk.travel > 0.0, "the fluid's drag moves the body: speed %.3f m/s, travel %.3f m" % (blk.vel[0], blk.travel))
+    ok(abs(blk.vel[1]) < 1e-9 and abs(blk.vel[2]) < 1e-9, "the slider keeps to its axis")
+    loss = p0 - p1
+    ok(loss > 0 and 0.4 * loss < gain < 1.5 * loss, "momentum exchanged: body gained %.3f, fluid lost %.3f kg m/s" % (gain, loss))
+    # the same surface without a body link only drags the fluid (previous behaviour)
+    S2 = FM.FluidSolver.build([dict(d)], [], env0, dx=0.04)
+    vs2 = FS.ViscositySurface("plate", Pw, np.array([[0, 0, 1.0]] * len(Pw)), Aw, coefficient=200.0)
+    FS.install(S2, viscosity=[vs2])
+    for _ in range(12):
+        S2.step(1 / 24.0)
+    ok(float(S2.v[:, 0].mean()) < 0.95 and float(np.linalg.norm(vs2.force)) > 0, "unlinked surface: still drags the fluid, reports its reaction force")
+    # excess gas pressure pushes the faces along their normal
+    Pg = sphere_pts((0.2, 0.2, 0.15), 0.08, 0.03)
+    gg = FM.fluid_def('AIR', name='g', shape=dict(kind='POINTS', pts=Pg), count=len(Pg), temperature=1500.0, tref=293.15)
+    S3 = FM.FluidSolver.build([gg], [], env0, dx=0.03)
+    vs3 = FS.ViscositySurface("plate", Pw, np.array([[0, 0, 1.0]] * len(Pw)), Aw, coefficient=1.0, noslip=0.0, reach=0.08)
+    FS.install(S3, viscosity=[vs3])
+    fz = 0.0
+    for _ in range(6):
+        S3.step(1 / 24.0)
+        fz = max(fz, float(vs3.pressure_force[2]))
+    ok(abs(fz) > 0.0 and np.isfinite(fz), "gas pressure acts on the surface faces: peak normal force %.3g N" % fz)
+
+
 def test_coupling():
     """Two-way fluid-solid coupling: the fluid pushes bodies."""
     # --- 1. hydrostatics: the force of the water on a fixed tank equals its weight
@@ -669,7 +812,7 @@ if __name__ == '__main__':
     t0 = time.time()
     only = sys.argv[1:]
     for fn in (test_units, test_environment, test_boussinesq, test_stratify_and_mass, test_gas_wind, test_gas_buoyancy, test_gravity_scaling,
-               test_heat, test_moving_wall, test_solid_displaces, test_spinning_gear, test_barometric_expansion, test_cavity_fill, test_confinement, test_fill_settle, test_wax_blobs, test_species, test_surface_merge, test_coupling, test_speed):
+               test_heat, test_moving_wall, test_solid_displaces, test_spinning_gear, test_barometric_expansion, test_cavity_fill, test_confinement, test_fill_settle, test_wax_blobs, test_species, test_surface_merge, test_surface_builder, test_gas_pressure, test_surface_coupling, test_coupling, test_speed):
         if only and fn.__name__ not in only:
             continue
         t = time.time()

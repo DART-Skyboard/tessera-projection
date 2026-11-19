@@ -168,11 +168,16 @@ class ViscositySurface(_Surface):
         self.noslip = float(np.clip(noslip, 0.0, 1.0))
         self.reach = reach
         self.fluids = fluids               # None = every fluid, else a list of solver fluid indices
+        self.body = None                   # index of the solver Body this surface is part of (two-way: its force / torque move that body)
+        self.torque = np.zeros(3)          # about the body's centre of mass (or the origin without a body)
+        self.pressure_force = np.zeros(3)  # normal force of the fluid's excess pressure on the faces
 
     def apply(self, S, dt):
         """Tangential viscous drag on the particles next to the faces; returns the force on the surface (N, the reaction)."""
         self.force = np.zeros(3)
-        if S.n == 0 or len(self.p) == 0 or self.coef <= 0 or self.noslip <= 0:
+        self.torque = np.zeros(3)
+        self.pressure_force = np.zeros(3)
+        if S.n == 0 or len(self.p) == 0 or self.coef <= 0:
             return self.force
         reach = self.reach or 1.5 * S.dx
         idx = np.arange(S.n) if self.fluids is None else np.flatnonzero(np.isin(S.fid, self.fluids))
@@ -200,7 +205,25 @@ class ViscositySurface(_Surface):
         dv = -frac[:, None] * ut
         S.v[idx] += dv
         m = S.mass_ref[idx]
-        self.force = -(m[:, None] * dv).sum(0) / max(dt, 1e-12)
+        fp = -(m[:, None] * dv) / max(dt, 1e-12)          # reaction of every particle's drag on the surface
+        self.force = fp.sum(0)
+        com = S.bodies[self.body].com_world(S.bodies[self.body].M1) if self.body is not None and self.body < len(S.bodies) else self.p.mean(0)
+        self.torque = np.cross(S.x[idx] - com, fp).sum(0)
+        # the fluid's excess (static) pressure pushes the faces along the normal, away from the fluid side
+        pr = getattr(S, 'pressure', None)
+        if pr is not None and len(pr) == S.n:
+            pex = np.zeros(nl)
+            pw = np.bincount(i, w * (pr[idx][i] - S.env.pressure_at(S.x[idx][i][:, 2])), nl)
+            pex[hit] = pw[hit] / ws[hit]
+            sd = np.einsum('ij,ij->i', S.x[idx][i] - self.p[j], self.n[j])
+            sgn = np.zeros(nl)
+            sgn[hit] = np.bincount(i, w * np.sign(sd), nl)[hit] / ws[hit]
+            # force on the surface from one particle's share of the patch: pressure * patch area / (particles on the patch), here per surface sample
+            cnt = np.bincount(j, minlength=len(self.p)).astype(float)
+            fj = -(pex[i] * sgn[i] * self.area[j] / np.maximum(cnt[j], 1.0))[:, None] * self.n[j] * w[:, None] / np.maximum(ws[i], 1e-9)[:, None]
+            self.pressure_force = fj.sum(0)
+            self.force = self.force + self.pressure_force
+            self.torque = self.torque + np.cross(self.p[j] - com, fj).sum(0)
         self.total += float(np.linalg.norm(self.force)) * dt
         return self.force
 
@@ -356,7 +379,13 @@ def install(S, viscosity=(), emission=(), prepare=True):
         step0(dt, sources=sources)
         if st.active:
             for v in st.viscosity:
+                if v.body is not None and v.body < len(S.bodies):
+                    b = S.bodies[v.body]
+                    v.set_matrix(b.M1, dt)                  # the surface rides on its body
                 v.apply(S, dt)
+                if v.body is not None and v.body < len(S.bodies) and S.bodies[v.body].dynamic:
+                    b = S.bodies[v.body]
+                    b.fx, b.tx = v.force.copy(), v.torque.copy()     # drives the body from the next step on (one-step lag, explicit)
 
     def snapshot():
         s = snap0()
