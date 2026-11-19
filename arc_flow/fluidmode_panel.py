@@ -88,7 +88,7 @@ class AF_PT_fm_main(_FMBase, Panel):
         b = l.box()
         b.label(text="Demos", icon='MOD_FLUIDSIM')
         r = b.row(align=True)
-        for which, lab in (('LAVA', "Lava Lamp"), ('PLUME', "Gas Plume"), ('TOWER', "Gas Tower")):
+        for which, lab in (('LAVA', "Lava Lamp"), ('MIX', "Colour Mixing"), ('PLUME', "Gas Plume"), ('TOWER', "Gas Tower")):
             op = r.operator("arcflow.fm_demo", text=lab)
             op.which = which
         l.label(text="Volumetric, particle-based (Lagrangian) fluids: render the particles as points,", icon='DOT')
@@ -145,6 +145,8 @@ class AF_PT_fm_fluids(_FMBase, Panel):
             c.prop(fl, "beta")
             c.prop(fl, "cohesion")
         c.prop(fl, "miscible")
+        c.prop(fl, "mix_rate")
+        c.prop(fl, "priority")
         c.prop(fl, "cool")
         c.prop(fl, "drag")
         b = l.box()
@@ -175,6 +177,7 @@ class AF_PT_fm_solver(_FMBase, Panel):
         c = l.column(align=True)
         for k in ("fill_mode", "fill_steps", "heat_start", "max_particles", "spacing", "iterations", "max_substeps", "speedup", "gust", "ground_friction", "lotbcbp", "seed"):
             c.prop(fm, k)
+        c.prop(fm, "rules_json")
         c.prop(fm, "ground_temp_on")
         if fm.ground_temp_on:
             c.prop(fm, "ground_temp")

@@ -82,6 +82,14 @@ def environment(scene, z_hint=0.0):
                    ground_temp=fm.ground_temp if fm.ground_temp_on else None)
 
 
+def _rules_kw(fm):
+    import json
+    if not fm.rules_json.strip():
+        return {}
+    d = json.loads(fm.rules_json)
+    return dict(species=d.get('species', []), rules=d.get('rules', []))
+
+
 def build_solver(scene):
     fm = scene.arc_flow_fm
     deps = bpy.context.evaluated_depsgraph_get()
@@ -95,7 +103,7 @@ def build_solver(scene):
         d = FM.fluid_def(preset, name=fl.name, kind=fl.kind, density=fl.density, mass=fl.mass, volume=fl.volume, weight=fl.weight,
                          temperature=fl.temperature, velocity=tuple(fl.velocity), visc=fl.visc, cp=fl.cp, k=fl.k, beta=fl.beta,
                          cohesion=fl.cohesion, miscible=fl.miscible, cool=fl.cool, drag=None if fl.drag < 0 else fl.drag,
-                         count=fl.count, fill=fl.fill / 100.0, color=tuple(fl.color))
+                         count=fl.count, fill=fl.fill / 100.0, color=tuple(fl.color), mix_rate=fl.mix_rate, priority=fl.priority)
         if fl.shape is not None:
             d['shape'] = _shape_of(fl.shape, deps)
             if d['shape'] is not None:
@@ -125,7 +133,7 @@ def build_solver(scene):
     spacing = fm.spacing if fm.spacing > 0 else None
     S = FM.FluidSolver.build(defs, bodies, env, dx=spacing, max_particles=fm.max_particles, seed=fm.seed, thermal_speedup=fm.speedup,
                              iterations=fm.iterations, max_substeps=fm.max_substeps, lotbcbp=fm.lotbcbp,
-                             fill_seed='POUR' if fm.fill_mode == 'POUR' else 'LEVEL')
+                             fill_seed='POUR' if fm.fill_mode == 'POUR' else 'LEVEL', **_rules_kw(fm))
     S.pre_settle = 0
     RT.body_objs = body_objs
     for fi, fl in enumerate(fm.fluids):
@@ -204,10 +212,45 @@ def _points_mesh(name, n):
             bpy.data.meshes.remove(old)
             me.name = name
     for a, t in (('af_radius', 'FLOAT'), ('af_tn', 'FLOAT'), ('af_speed', 'FLOAT'), ('fm_temperature', 'FLOAT'), ('fm_density', 'FLOAT'),
-                 ('fm_fluid_id', 'INT'), ('fm_velocity', 'FLOAT_VECTOR')):
+                 ('fm_fluid_id', 'INT'), ('fm_velocity', 'FLOAT_VECTOR'), ('fm_color', 'FLOAT_COLOR')):
         if a not in me.attributes:
             me.attributes.new(a, t, 'POINT')
     return me
+
+
+def _composition_material():
+    """Per-particle composition colour (instancer attribute fm_color on points, geometry attribute on the surface mesh) with alpha blending: overlapping
+    translucent particles accumulate and blend their colours like one substance."""
+    m = bpy.data.materials.get("TesseraComposition")
+    if m is not None and m.node_tree and m.node_tree.nodes:
+        return m
+    m = bpy.data.materials.get("TesseraComposition") or bpy.data.materials.new("TesseraComposition")
+    m.use_nodes = True
+    nt = m.node_tree
+    nt.nodes.clear()
+    out = nt.nodes.new('ShaderNodeOutputMaterial')
+    pb = nt.nodes.new('ShaderNodeBsdfPrincipled')
+    pb.inputs['Roughness'].default_value = 0.45
+    for k in ('Specular IOR Level', 'Specular'):
+        if k in pb.inputs:
+            pb.inputs[k].default_value = 0.15
+    tr = nt.nodes.new('ShaderNodeBsdfTransparent')
+    dk = nt.nodes.new('ShaderNodeMix'); dk.data_type = 'RGBA'; dk.blend_type = 'MULTIPLY'
+    dk.inputs[0].default_value = 1.0; dk.inputs[7].default_value = (0.55, 0.55, 0.55, 1.0)
+    mx = nt.nodes.new('ShaderNodeMixShader')
+    mx.inputs[0].default_value = 0.8
+    a1 = nt.nodes.new('ShaderNodeAttribute'); a1.attribute_type = 'INSTANCER'; a1.attribute_name = 'fm_color'
+    a2 = nt.nodes.new('ShaderNodeAttribute'); a2.attribute_type = 'GEOMETRY'; a2.attribute_name = 'fm_color'
+    ad = nt.nodes.new('ShaderNodeMix'); ad.data_type = 'RGBA'; ad.blend_type = 'ADD'
+    ad.inputs[0].default_value = 1.0
+    nt.links.new(a1.outputs['Color'], ad.inputs[6])
+    nt.links.new(a2.outputs['Color'], ad.inputs[7])
+    nt.links.new(ad.outputs[2], dk.inputs[6])
+    nt.links.new(dk.outputs[2], pb.inputs['Base Color'])
+    nt.links.new(tr.outputs[0], mx.inputs[1])
+    nt.links.new(pb.outputs[0], mx.inputs[2])
+    nt.links.new(mx.outputs[0], out.inputs['Surface'])
+    return m
 
 
 def _own_material(base, fl, attr):
@@ -241,6 +284,8 @@ def ensure_objects(scene):
         o.hide_select = False
         fl.points_obj = o
         mat = _own_material(base_pts, fl, 'material')
+        if S is not None and getattr(S, 'mixing', False):
+            mat = _composition_material()
         vmat = _own_material(base_vol, fl, 'volume_material')
         shading.set_params(mat, AF_Color=fl.color, AF_TintMix=1.0 if fl.temp_color else 0.0, AF_Emission=0.0)
         shading.set_params(vmat, AF_ColorA=fl.color, AF_ColorB=fl.color, AF_Density=fl.rm_density, AF_Absorb=0.5)
@@ -249,7 +294,9 @@ def ensure_objects(scene):
         mf.node_group = FGN.fluid_group(fl)
         FGN.set_fluid_inputs(mf, fl, fm)
         mr = o.modifiers.get("AF Render") or o.modifiers.new("AF Render", 'NODES')
-        kind = {'POINTS': 'Points', 'RAYMARCH': 'RayMarch', 'SPLAT': 'Splat'}[fl.render_mode]
+        kind = {'POINTS': 'Points', 'RAYMARCH': 'RayMarch', 'SPLAT': 'Splat', 'SURFACE': 'Points'}[fl.render_mode]
+        if fl.render_mode == 'SURFACE':
+            o.hide_render = True     # the surface mesh (AFFMS_*) is rendered instead of the points
         mr.node_group = gn.render_group(kind, "FM_" + fl.name)
         gn.set_group_material(mr.node_group, vmat if kind == 'RayMarch' else mat)
         vox = max(S.dx * 0.9, 1e-3) if S is not None else 0.01
@@ -271,6 +318,34 @@ def refresh_render(scene):
             ensure_objects(scene)
         except Exception as ex:
             RT.msg = "render refresh: %s" % ex
+
+
+def _update_surface(scene, fl, X, colors, dx):
+    """Rebuild the welded fluid-surface mesh of one fluid from its particles (surface nets on the smoothed density)."""
+    from .core import fluidsurface as FSF
+    col = _collection(scene)
+    name = "AFFMS_%s" % fl.name
+    me = bpy.data.meshes.get(name) or bpy.data.meshes.new(name)
+    o = bpy.data.objects.get(name)
+    if o is None:
+        o = bpy.data.objects.new(name, me)
+    o.data = me
+    if o.name not in col.objects:
+        col.objects.link(o)
+    cc = colors if colors is not None else np.tile(np.asarray(fl.color, float), (len(X), 1))
+    V, T, vc = FSF.fluid_surface(X, cc, dx, cell=0.9 * dx)
+    me.clear_geometry()
+    if len(V):
+        me.from_pydata(V.tolist(), [], T.tolist())
+        if 'fm_color' not in me.attributes:
+            me.attributes.new('fm_color', 'FLOAT_COLOR', 'POINT')
+        rgba = np.concatenate([vc, np.ones((len(vc), 1))], axis=1).astype(np.float32)
+        me.attributes['fm_color'].data.foreach_set('color', rgba.ravel())
+        for p in me.polygons:
+            p.use_smooth = True
+    me.materials.clear()
+    me.materials.append(_composition_material())
+    me.update()
 
 
 def apply_state(scene, snap=None):
@@ -315,6 +390,12 @@ def apply_state(scene, snap=None):
         me.attributes['fm_density'].data.foreach_set('value', rho[sl].astype(np.float32))
         me.attributes['fm_fluid_id'].data.foreach_set('value', np.full(hi - lo, fi, np.int32))
         me.attributes['fm_velocity'].data.foreach_set('vector', v[sl].astype(np.float32).ravel())
+        if getattr(S, 'mixing', False):
+            col = S.SS.colour(S.C[sl] if snap is None else (snap.get('C', S.C))[sl])
+            rgba = np.concatenate([col, np.ones((len(col), 1))], axis=1).astype(np.float32)
+            me.attributes['fm_color'].data.foreach_set('color', rgba.ravel())
+        if fl.render_mode == 'SURFACE':
+            _update_surface(scene, fl, x[sl], (S.SS.colour((snap.get('C', S.C) if snap is not None else S.C)[sl]) if getattr(S, 'mixing', False) else None), S.dx)
         me.update_tag()
     for b, o in zip(S.bodies, RT.body_objs):
         pass
@@ -691,7 +772,7 @@ def _clear_demo(scene):
             bpy.data.objects.remove(fl.points_obj, do_unlink=True)
     fm.fluids.clear()
     for o in list(bpy.data.objects):
-        if o.name.startswith("TS_"):
+        if o.name.startswith("TS_") or o.name.startswith("AFFMS_"):
             bpy.data.objects.remove(o, do_unlink=True)
     RT.solver = None
     mark_dirty()
@@ -777,6 +858,47 @@ def load_lava_lamp(scene, max_particles=15000):
     return tank
 
 
+def load_colour_mixing(scene, max_particles=6000):
+    """Yellow water (bottom), blue water (poured above), a little red water: miscible, mixing rate on; a rotating paddle swirls them."""
+    col = _demo_common(scene)
+    fm = scene.arc_flow_fm
+    glass = _mesh_obj("TS_Glass", lambda bm: _cone(bm, 0.07, 0.085, 0.16, 48), (0, 0, 0.0), col)
+    glass.display_type = 'WIRE'
+    glass.data.materials.append(_glass_material())
+    glass.arc_flow.cavity_mode = 'SHELL'
+    cav = math.pi * 0.16 / 3.0 * (0.07 ** 2 + 0.07 * 0.085 + 0.085 ** 2)
+    for name, color, frac, T in (("Yellow water", (1.0, 0.85, 0.08), 0.34, 300.0), ("Blue water", (0.08, 0.3, 1.0), 0.34, 285.0), ("Red water", (0.95, 0.1, 0.1), 0.08, 290.0)):
+        fl = add_fluid(scene, 'WATER', name)
+        fl.no_container, fl.container, fl.shape = False, glass, None
+        fl.volume, fl.color, fl.temperature = frac * cav, color, T
+        fl.miscible, fl.mix_rate, fl.cohesion = True, 5.0, 0.0
+        fl.cool = 1e-6
+        fl.render_mode = 'POINTS'
+        fl.particle_scale = 1.4
+    # a paddle that turns (moving collider: its wall velocity stirs the liquid)
+    pad = _mesh_obj("TS_Paddle", lambda bm: __import__('bmesh').ops.create_cube(bm, size=1.0) and __import__('bmesh').ops.scale(bm, verts=bm.verts, vec=(0.1, 0.012, 0.11)), (0, 0, 0.07), col)
+    pad.arc_flow_fm.collider = True
+    pad.rotation_mode = 'XYZ'
+    scene.frame_start, scene.frame_end = 1, 240
+    pad.rotation_euler = (0, 0, 0)
+    pad.keyframe_insert('rotation_euler', frame=1)
+    pad.rotation_euler = (0, 0, 14.0)
+    pad.keyframe_insert('rotation_euler', frame=240)
+    for fc in (pad.animation_data.action.fcurves if hasattr(pad.animation_data.action, 'fcurves') else []):
+        for kp in fc.keyframe_points:
+            kp.interpolation = 'LINEAR'
+    fm.max_particles = max_particles
+    fm.speedup = 1.0
+    fm.heat_start = 1
+    cam = bpy.data.objects.new("TS_Camera", bpy.data.cameras.new("TS_Camera"))
+    col.objects.link(cam)
+    cam.location = (0.0, -0.6, 0.09)
+    cam.rotation_euler = (math.radians(90.0), 0, 0)
+    cam.data.lens = 55
+    scene.camera = cam
+    mark_dirty()
+
+
 def load_gas_plume(scene, max_particles=3000):
     col = _demo_common(scene)
     fm = scene.arc_flow_fm
@@ -846,10 +968,11 @@ class AF_OT_fm_demo(Operator):
     def description(cls, ctx, props):
         return {'LAVA': "Lava lamp: a tapered container, a heat source at the bottom and wax blobs in a carrier liquid",
                 'PLUME': "Free gas plume: hot gas rising and drifting in the Environment's wind",
+                'MIX': "Colour mixing: yellow, blue and red water in a glass; a stirrer swirls them and the colours blend (subtractive mix) and the temperature equilibrates",
                 'TOWER': "Elevated gas tower: light gas in an elevated empty tower above a free gas cloud"}.get(props.which, "")
 
     def execute(self, ctx):
-        {'LAVA': load_lava_lamp, 'PLUME': load_gas_plume, 'TOWER': load_gas_tower}[self.which](ctx.scene)
+        {'LAVA': load_lava_lamp, 'PLUME': load_gas_plume, 'TOWER': load_gas_tower, 'MIX': load_colour_mixing}[self.which](ctx.scene)
         self.report({'INFO'}, "Demo loaded. Press Build.")
         return {'FINISHED'}
 

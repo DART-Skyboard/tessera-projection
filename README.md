@@ -86,6 +86,13 @@ The simulation is a simplified, documented model, not a full Navier-Stokes solve
   <img src="docs/renders/fluid_free_gas.png" width="48%" alt="Free hot gas plume in wind">
   <img src="docs/renders/fluid_gas_tower_instanced.png" width="48%" alt="Gas tower, instanced mesh per particle">
 </p>
+<p align="center">
+  <img src="docs/renders/fluid_mix_t0.png" width="32%" alt="Colour mixing, start: yellow, blue and red water">
+  <img src="docs/renders/fluid_mix_mid.png" width="32%" alt="Colour mixing, mid: a paddle swirls the colours into each other">
+  <img src="docs/renders/fluid_mix_late.png" width="32%" alt="Colour mixing, late: the water has blended to one green-yellow">
+</p>
+
+**Merging and mixing (0.4.0).** Particles carry a composition (species mass fractions). Miscible fluids exchange composition and heat by Fick diffusion (mass and enthalpy conserved), the colour is the subtractive (weighted geometric) mix, density, expansion and heat capacity follow the composition. Optional per-species priority lets a dominant fluid absorb a minority (one cluster, one colour), and a JSON reaction table (temperature, relative-velocity, density-ratio and concentration windows, heat in J/kg) transforms species. Render mode **Surface** welds blobs into one coloured mesh (two touching blobs give one surface, apart give two). Demo: *Colour Mixing*.
 
 Switch the panel from Combustion to **Fluid** and turn any mesh into a self-initialising fluid (mass, volume, density, temperature, velocity, viscosity and more, with missing values derived). Fluids with or without a container, mixing, thermal convection (lava lamp), free gas rising or sinking in the Environment (gravity, barometric pressure, ambient density, wind, ground), moving containers and colliders, and Geometry Nodes groups per fluid.
 

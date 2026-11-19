@@ -67,6 +67,8 @@ class AF_FMFluid(PropertyGroup):
     k: FloatProperty(name="Thermal conductivity", default=0.6, min=1e-4, description="W/(m K)", update=_dirty)
     beta: FloatProperty(name="Thermal expansion", default=2.1e-4, min=0.0, precision=6, description="1/K (Boussinesq, liquids).  Gases use 1/T from the ideal gas law", update=_dirty)
     cohesion: FloatProperty(name="Surface tension", default=0.07, min=0.0, description="N/m: cohesion between particles of the same (or a miscible) fluid", update=_dirty)
+    mix_rate: FloatProperty(name="Mixing rate", default=0.0, min=0.0, description="1/s: composition, colour and temperature diffuse between neighbouring particles of miscible fluids (0 = no mixing)", update=_dirty)
+    priority: IntProperty(name="Priority", default=0, description="Higher priority species absorb lower ones where a rule says ABSORB", update=_dirty)
     miscible: BoolProperty(name="Miscible", default=True, description="Off: no cohesion or velocity mixing with other fluids (oil vs water, lava lamp wax)", update=_dirty)
     cool: FloatProperty(name="Ambient exchange", default=0.05, min=0.0, description="1/s: relaxation toward the Environment temperature for exposed particles (free surface, walls, free gas)", update=_dirty)
     drag: FloatProperty(name="Drag", default=-1.0, description="1/s toward the wind for free fluids.  -1 = automatic", update=_dirty)
@@ -83,7 +85,8 @@ class AF_FMFluid(PropertyGroup):
     t_hi: FloatProperty(name="Hot", default=340.0, description="K at the hot end of the ramp", update=_render_changed)
     render_mode: EnumProperty(name="Render", items=[('POINTS', "Points / mesh per point", "Instance an icosphere or your own mesh on every particle"),
                                                     ('RAYMARCH', "Ray marching", "Volume rendered by the render engine"),
-                                                    ('SPLAT', "Gaussian splat", "Soft blobs")], default='POINTS', update=_render_changed)
+                                                    ('SPLAT', "Gaussian splat", "Soft blobs"),
+                                                    ('SURFACE', "Fluid surface", "A welded mesh of the smoothed particle density (surface nets): touching blobs become one surface, separate blobs stay separate; colour from the composition")], default='POINTS', update=_render_changed)
     mesh_obj: PointerProperty(name="Mesh per particle", type=bpy.types.Object, description="Object instanced on every particle (empty = icosphere)", update=_render_changed)
     mesh_collection: PointerProperty(name="Collection per particle", type=bpy.types.Collection, update=_render_changed)
     particle_scale: FloatProperty(name="Particle scale", default=1.0, min=0.01, update=_render_changed)
@@ -116,6 +119,7 @@ class AF_FMScene(PropertyGroup):
     ground_temp_on: BoolProperty(name="Ground heat sink", default=False, update=_dirty)
     ground_temp: FloatProperty(name="Ground temperature", default=288.15, min=1.0, update=_dirty)
     seed: IntProperty(name="Seed", default=1, update=_dirty)
+    rules_json: StringProperty(name="Species rules (JSON)", default="", description='{"species": [{"name":..., "color":[r,g,b], "density":..., "priority":...}], "rules": [{"a":..., "b":..., "outcome":"MISCIBLE|IMMISCIBLE|ABSORB|REACT", ...}]}', update=_dirty)
     fill_mode: EnumProperty(name="Fill", items=[('LEVEL', "Level-set fill + settle", "Analytic fill of the cavity to the requested volume along gravity (stratified by density) and a short settle (10 steps)"),
                                                  ('POUR', "Pour fill", "Seed from the bottom and run the full dynamic fill under the Environment gravity until the fluid is at rest"),
                                                  ('QUICK', "Quick fill", "Level-set fill and 3 relaxing steps"),

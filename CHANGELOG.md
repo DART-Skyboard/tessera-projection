@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0
+- Fluid mode: composition model (`core/species.py`): species mass fractions per particle, miscible Fick exchange (mass and enthalpy conserved), subtractive colour mixing, ideal-mixing density, mass-weighted cp and beta, ABSORB with priority and cluster ids, REACT rules with windows and heat release, JSON rule table.
+- New render mode Surface (surface nets on a smoothed particle density, welded coloured mesh); Colour Mixing demo with a rotating paddle; per-fluid mix rate, priority and rules in the panel.
+- Tests: mixing, mass and heat conservation, dab fade, ABSORB, REACT, JSON round trip, surface merge; Blender tests for the MIX demo and Surface mode (5.2.3 and 5.3.0). Colour-mixing renders in docs/renders.
+- Limits: an absorbed particle keeps its original fluid id (cohesion and per-fluid parameters stay with it); viscosity and heat conduction are not composition-aware; surface mode is ragged for blobs under about 4 spacings, so the lamp wax stays spheres.
+
 ## 0.3.2
 - Fill: analytic level-set fill (stratified by density, exact level) plus a 10-step settle is the default; Pour fill keeps the full dynamic fill; Quick fill 3 steps. Faster than the 0.3.1 dynamic fill (see docs/TECHNICAL.md).
 - Wax blobs: cohesive immiscible phases couple their own particles' velocities, lava lamp wax starts as three blobs inside the cone, cold wax denser / warm wax lighter than the carrier; tests for connectivity, interface mixing, rise and sink, two blobs.

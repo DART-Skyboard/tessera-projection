@@ -22,7 +22,7 @@ demo, frames, out = args[0], [int(v) for v in args[1].split(',')], args[2]
 maxp = int(args[3]) if len(args) > 3 else None
 sc = bpy.context.scene
 sc.render.fps = 24
-loader = {'lamp': FO.load_lava_lamp, 'plume': FO.load_gas_plume, 'tower': FO.load_gas_tower}[demo]
+loader = {'mix': FO.load_colour_mixing, 'lamp': FO.load_lava_lamp, 'plume': FO.load_gas_plume, 'tower': FO.load_gas_tower}[demo]
 loader(sc, **({'max_particles': maxp} if maxp else {}))
 for nm in ('Cube', 'Light', 'Camera'):   # the factory-startup scene objects
     if nm in bpy.data.objects:
@@ -34,7 +34,15 @@ print("built %d particles, fill %.1f s (%d steps)" % (FO.RT.solver.n, time.time(
 fm = sc.arc_flow_fm
 if demo == 'tower':
     bpy.data.objects['TS_Tower'].hide_render = True
-if demo != 'lamp':
+if demo == 'mix':
+    for fl in fm.fluids:
+        fl.particle_scale = float(os.environ.get('FLUID_PS', '1.6'))
+    for nm, loc, en in (("TS_Key", (0.4, -0.7, 0.4), float(os.environ.get("FLUID_KEY", "35")), ), ("TS_Rim", (-0.4, 0.4, 0.3), 12.0)):
+        ld = bpy.data.lights.new(nm, 'AREA'); ld.energy = en; ld.size = 0.4
+        lo = bpy.data.objects.new(nm, ld); sc.collection.objects.link(lo); lo.location = loc
+        lo.visible_camera = False; lo.visible_glossy = False
+        lo.rotation_euler = (lo.location * -1 + mathutils.Vector((0, 0, 0.08))).to_track_quat('-Z', 'Y').to_euler()
+if demo not in ('lamp', 'mix'):
     for fl in fm.fluids:
         fl.particle_scale = 3.5
     ld = bpy.data.lights.new("TS_Sun", 'SUN'); ld.energy = 4.0
@@ -68,6 +76,8 @@ if demo == 'lamp':   # frame the whole lamp; the carrier liquid is a faint tint,
     fm.fluids[0].points_obj.hide_render = True
     for fl in list(fm.fluids)[1:]:                  # the wax: overlapping spheres read as one glossy blob
         fl.particle_scale = 2.1
+        if os.environ.get('FLUID_WAXSURF', '0') == '1':
+            fl.render_mode = 'SURFACE'
     for nm, loc, en, sz in (("TS_Key", (0.5, -0.8, 0.45), 120.0, 0.4), ("TS_Rim", (-0.5, 0.5, 0.35), 60.0, 0.3)):
         ld = bpy.data.lights.new(nm, 'AREA'); ld.energy = en; ld.size = sz
         lo = bpy.data.objects.new(nm, ld); sc.collection.objects.link(lo); lo.location = loc
@@ -80,9 +90,11 @@ w = sc.world or bpy.data.worlds.new("TS_World")
 sc.world = w
 w.use_nodes = True
 bg = w.node_tree.nodes.get('Background')
-bg.inputs['Color'].default_value = (0.012, 0.014, 0.02, 1) if demo == 'lamp' else (0.03, 0.04, 0.06, 1)
+bg.inputs['Color'].default_value = (0.012, 0.014, 0.02, 1) if demo in ('lamp', 'mix') else (0.03, 0.04, 0.06, 1)
 bg.inputs['Strength'].default_value = 1.0
 sc.render.engine = 'CYCLES'
+if demo == 'mix':
+    sc.view_settings.view_transform = 'Standard'
 sc.cycles.device = 'CPU'
 sc.cycles.use_denoising = False
 sc.render.resolution_x, sc.render.resolution_y = 960, 540

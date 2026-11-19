@@ -99,6 +99,23 @@ for f in range(1, 4):
 ok(fl.points_obj is not None and any(m.type == 'NODES' for m in fl.points_obj.modifiers), "mesh-per-particle fluid set up")
 FO.stop(sc)
 
+# colour-mixing demo: composition colours reach the render attribute, the surface path builds a mesh
+FO.stop(sc)
+FO.load_colour_mixing(sc, max_particles=1500)
+FO.start(sc, play=False)
+for f in range(1, 6):
+    sc.frame_set(f)
+S = FO.RT.solver
+ok(S.mixing and S.n > 500, "colour-mixing demo builds with mixing on (%d particles)" % S.n)
+fm = sc.arc_flow_fm
+fl0 = fm.fluids[0]
+fl0.render_mode = 'SURFACE'
+FO.refresh_render(sc)
+sc.frame_set(6)
+sobj = [o for o in bpy.data.objects if o.name.startswith('AFFMS_')]
+ok(len(sobj) > 0 and len(sobj[0].data.vertices) > 0, "SURFACE render mode builds a surface mesh (%d verts)" % (len(sobj[0].data.vertices) if sobj else 0))
+FO.stop(sc)
+
 # Cycles CPU render (also valid for EEVEE: same materials, instanced points / volume)
 cam = sc.camera
 sc.render.engine = 'CYCLES'

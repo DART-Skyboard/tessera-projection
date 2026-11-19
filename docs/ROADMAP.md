@@ -15,6 +15,9 @@ Remaining:
 Smaller follow-ups: incremental update of the Fluid Cavity field for moving assemblies, an atmosphere altitude profile (scale height is
 already reported), EEVEE render check.
 
+## 0.4.0 (done)
+- Composition, miscible mixing, absorb/react rules and surface rendering for Fluid mode. Next (0.4.x): combustion mode on the arc-flow.html flow (species and FLAME constants, 300 m domain fade, particle budget, continuous flow), Fill / Settle for combustion tanks, composition-aware viscosity.
+
 ## Next (0.3.0)
 - Fluid mode: volumetric particle-based fluid dynamics for general fluids (mixing, lava-lamp convection, free gas, fluids without containers, moving colliders, Environment-driven buoyancy and gravity, Geometry Nodes groups). Done in 0.3.0 (see docs/TECHNICAL.md). Next: fluid pushing solids (two-way), per-fluid particle refinement for small wax blobs, custom-mesh instancing verified headless.
 - Projection Remesh: curvature-aligned quad layout, exact symmetry in the large-mesh fast path, shape-key transfer, Geometry Nodes exposure.

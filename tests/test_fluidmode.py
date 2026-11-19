@@ -478,6 +478,101 @@ def test_wax_blobs():
        "two blobs side by side stay two separate clusters (largest clusters %d / %d of %d / %d, union %d)" % (sa[0], sb[0], len(wa), len(wb), sall[0]))
 
 
+def test_species():
+    from core import species as SP
+    dx = 0.008
+    # --- yellow water + blue water: composition, colour and temperature mix; mass and heat are conserved
+    b = container((-.05, -.05, 0), (.05, .05, .1))
+    P = FM.lat_pos(FM.lattice_in_box((-.045, -.045, 0.004), (.045, .045, .08), dx), dx)
+    left = P[:, 0] < 0
+    yel = FM.fluid_def('WATER', name='yellow water', body=0, shape=dict(kind='POINTS', pts=P[left]), color=(1.0, 0.9, 0.1), temperature=330.0, miscible=True, mix_rate=16.0, cool=1e-12)
+    blu = FM.fluid_def('WATER', name='blue water', body=0, shape=dict(kind='POINTS', pts=P[~left]), color=(0.1, 0.3, 1.0), temperature=290.0, miscible=True, mix_rate=16.0, cool=1e-12)
+    S = FM.FluidSolver.build([yel, blu], [b], FM.FEnv(), dx=dx)
+    m = S.mass_ref
+    sp0 = (S.C * m[:, None]).sum(0)
+    E0 = (m * S.cp_p * S.T).sum()
+    col0 = S.colours()
+    spread0 = float(col0.std(0).max())
+    run(S, 12.0)
+    col = S.colours()
+    green = np.exp(0.5 * (np.log(np.clip(np.array([1.0, 0.9, 0.1]), 0.02, 1)) + np.log(np.clip(np.array([0.1, 0.3, 1.0]), 0.02, 1))))
+    ok(col.std(0).max() < 0.3 * spread0 and np.abs(col.mean(0) - green).max() < 0.08 and col.mean(0)[1] > col.mean(0)[0] and col.mean(0)[1] > col.mean(0)[2],
+       "yellow + blue water converge to green: mean colour %s (subtractive mix %s), colour spread %.3f -> %.3f" % (np.round(col.mean(0), 2), np.round(green, 2), spread0, col.std(0).max()))
+    sp1 = (S.C * m[:, None]).sum(0)
+    ok(np.allclose(sp0, sp1, rtol=1e-9) and np.allclose(S.C.sum(1), 1.0), "species mass conserved by the mixing (%.4f kg yellow, %.4f kg blue)" % (sp1[0], sp1[1]))
+    Tm = float((m * S.cp_p * S.T).sum() / (m * S.cp_p).sum())
+    ok(abs((m * S.cp_p * S.T).sum() - E0) < 1e-6 * E0 and S.T.std() < 8.0 and abs(Tm - 310.0) < 1.0,
+       "temperature equilibrates to the mass-weighted value: %.1f K (expected 310), spread %.1f K, enthalpy conserved" % (Tm, S.T.std()))
+    # a small amount of a colour merges into the larger body and fades into it
+    big = FM.fluid_def('WATER', name='body', body=0, fill=0.5, color=(0.1, 0.3, 1.0), miscible=True, mix_rate=16.0)
+    dab = FM.fluid_def('WATER', name='dab', body=0, shape=dict(kind='POINTS', pts=FM.lat_pos(FM.lattice_in_box((-.01, -.01, 0.03), (.01, .01, 0.05), dx), dx)),
+                       color=(1.0, 0.1, 0.1), miscible=True, mix_rate=16.0)
+    S2 = FM.FluidSolver.build([big, dab], [container((-.05, -.05, 0), (.05, .05, .1))], FM.FEnv(), dx=dx)
+    c_dab0 = S2.colours()[S2.lo[1]:S2.hi[1]].copy()
+    run(S2, 10.0)
+    cd = S2.colours()[S2.lo[1]:S2.hi[1]]
+    ok(np.abs(cd.mean(0) - S2.colours()[S2.lo[0]:S2.hi[0]].mean(0)).max() < 0.1 and np.abs(cd - c_dab0).max() > 0.3,
+       "a small red dab fades into the larger blue body (dab colour %s -> %s)" % (np.round(c_dab0.mean(0), 2), np.round(cd.mean(0), 2)))
+    # --- ABSORB: the higher priority species absorbs the other, cluster ids propagate from the root
+    g0 = FM.FEnv(gravity=(0.0, 0.0, 0.0))
+    big_sp = FM.fluid_def('WATER', name='dominant', body=0, shape=dict(kind='POINTS', pts=P[left]), color=(0.9, 0.2, 0.2), priority=5, miscible=False)
+    low_sp = FM.fluid_def('WATER', name='lesser', body=0, shape=dict(kind='POINTS', pts=P[~left]), color=(0.2, 0.2, 0.9), priority=1, miscible=False)
+    S3 = FM.FluidSolver.build([big_sp, low_sp], [b], g0, dx=dx, rules=[dict(a='dominant', b='lesser', outcome='ABSORB', rate=3.0)])
+    S3.mixing = True
+    run(S3, 8.0)
+    dom = S3.SS.dominant(S3.C)
+    ok(np.all(dom == 0) and np.allclose(S3.colours(), np.array([0.9, 0.2, 0.2]), atol=1e-6),
+       "ABSORB: all lower-priority particles adopt the dominant species and colour (%d merges)" % S3.mix_stats['merges'])
+    lo1 = S3.cluster[S3.lo[1]:S3.hi[1]]
+    ok(len(np.unique(S3.cluster)) == 1 and S3.mix_stats['merges'] >= S3.hi[1] - S3.lo[1], "ABSORB: cluster ids propagate from the root (%d cluster id)" % len(np.unique(S3.cluster)))
+    # --- REACT: A + B -> C only inside the temperature / relative speed / density window, with the stated heat
+    def react_run(Tc):
+        wa = FM.fluid_def('WATER', name='A', body=0, shape=dict(kind='POINTS', pts=P[left]), velocity=(0.4, 0, 0), temperature=Tc, miscible=False, color=(1, 0.2, 0.2))
+        wb = FM.fluid_def('WATER', name='B', body=0, shape=dict(kind='POINTS', pts=P[~left]), velocity=(-0.4, 0, 0), temperature=Tc, miscible=False, color=(0.2, 0.2, 1))
+        rule = dict(a='A', b='B', outcome='REACT', product='C', tmin=300.0, tmax=400.0, vmin=0.2, q=2.0e5, cmin=0.6)
+        S4 = FM.FluidSolver.build([wa, wb], [b], g0, dx=dx, rules=[rule], species=[dict(name='C', color=(0.2, 0.8, 0.2), density=1100.0, cp=4186.0, beta=2e-4)])
+        S4.mixing = True
+        T0 = S4.T.mean()
+        for k in range(6):
+            S4.step(1 / 24.0)
+        return S4, T0
+    Sa, Ta = react_run(350.0)
+    Sb, Tb = react_run(250.0)
+    nC = int(np.count_nonzero(Sa.SS.dominant(Sa.C) == 2))
+    ok(Sa.mix_stats['reactions'] > 0 and nC > 0 and Sa.T[Sa.SS.dominant(Sa.C) == 2].mean() > Ta + 40.0 and Sb.mix_stats['reactions'] == 0,
+       "REACT: inside the window %d reactions, %d product particles at +%.0f K (stated heat 2e5 J/kg = +%.0f K); outside it (250 K) %d reactions"
+       % (Sa.mix_stats['reactions'], nC, Sa.T[Sa.SS.dominant(Sa.C) == 2].mean() - Ta, 2e5 / 4186.0, Sb.mix_stats['reactions']))
+    # density window: the same pair with an impossible density ratio does not react
+    wa = FM.fluid_def('WATER', name='A', body=0, shape=dict(kind='POINTS', pts=P[left]), velocity=(0.4, 0, 0), temperature=350.0, miscible=False)
+    wb = FM.fluid_def('WATER', name='B', body=0, shape=dict(kind='POINTS', pts=P[~left]), velocity=(-0.4, 0, 0), temperature=350.0, miscible=False)
+    S5 = FM.FluidSolver.build([wa, wb], [b], g0, dx=dx, rules=[dict(a='A', b='B', outcome='REACT', product='A', rmin=5.0)])
+    S5.mixing = True
+    for k in range(6):
+        S5.step(1 / 24.0)
+    ok(S5.mix_stats['reactions'] == 0, "REACT: a density ratio outside its window does not react")
+    # JSON preset round trip
+    js = SP.SpeciesSystem([SP.species_def('A'), SP.species_def('B')], [SP.rule_def('A', 'B', 'ABSORB')]).to_json()
+    ok(SP.SpeciesSystem.from_json(js).rules[0]['outcome'] == 'ABSORB', "species / rule table round-trips through JSON")
+
+
+def test_surface_merge():
+    from core import fluidsurface as FS
+    dx = 0.008
+
+    def ball(c, r):
+        P = FM.lat_pos(FM.lattice_in_box((c[0] - r, c[1] - r, c[2] - r), (c[0] + r, c[1] + r, c[2] + r), dx), dx)
+        return P[np.linalg.norm(P - np.array(c), axis=1) < r]
+    r = 0.03
+    far = np.vstack([ball((-0.05, 0, 0), r), ball((0.05, 0, 0), r)])
+    near = np.vstack([ball((-0.025, 0, 0), r), ball((0.025, 0, 0), r)])
+    v, f, _ = FS.fluid_surface(far, None, dx)
+    nf = FS.mesh_components(len(v), f)
+    v, f, _ = FS.fluid_surface(near, None, dx)
+    nn = FS.mesh_components(len(v), f)
+    ok(nf == 2, "separated blobs give 2 surface components (%d)" % nf)
+    ok(nn == 1, "touching blobs merge into 1 surface component (%d)" % nn)
+
+
 def test_speed():
     b = container((-.15, -.15, 0), (.15, .15, .4))
     w = FM.fluid_def('WATER', name='w', body=0, fill=0.5)
@@ -494,7 +589,7 @@ def test_speed():
 if __name__ == '__main__':
     t0 = time.time()
     for fn in (test_units, test_environment, test_boussinesq, test_stratify_and_mass, test_gas_wind, test_gas_buoyancy, test_gravity_scaling,
-               test_heat, test_moving_wall, test_solid_displaces, test_spinning_gear, test_barometric_expansion, test_cavity_fill, test_confinement, test_fill_settle, test_wax_blobs, test_speed):
+               test_heat, test_moving_wall, test_solid_displaces, test_spinning_gear, test_barometric_expansion, test_cavity_fill, test_confinement, test_fill_settle, test_wax_blobs, test_species, test_surface_merge, test_speed):
         t = time.time()
         try:
             fn()

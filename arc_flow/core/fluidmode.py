@@ -337,7 +337,7 @@ class FluidSolver:
     # ------------------------------------------------------------------ construction
     @staticmethod
     def build(defs, bodies=(), env=None, dx=None, max_particles=20000, seed=1, thermal_speedup=1.0, iterations=4,
-              max_substeps=4, vmax=20.0, lotbcbp=True, drift_iterations=None, fill_seed='LEVEL'):
+              max_substeps=4, vmax=20.0, lotbcbp=True, drift_iterations=None, fill_seed='LEVEL', species=None, rules=None):
         """defs: list of fluid_def dicts.  Recognised keys: kind, density, mass, volume, weight, temperature, velocity,
         visc, cp, k, beta, cohesion, miscible, cool (1/s), drag (1/s), diffusion (m2/s), count (gas parcels), fill (fraction
         of a container's cavity when no shape is given), shape (None | dict(kind='MESH', verts, tris) | dict(kind='POINTS', pts)),
@@ -586,7 +586,7 @@ class FluidSolver:
         if auto_dx and n_liq > 1.15 * max_particles:      # the estimate was low: refine the spacing once and rebuild
             return FluidSolver.build(defs, bodies, env, dx=S.dx * (n_liq / max_particles) ** (1.0 / 3.0), max_particles=max_particles,
                                      seed=seed, thermal_speedup=thermal_speedup, iterations=iterations, max_substeps=max_substeps,
-                                     vmax=vmax, lotbcbp=lotbcbp, fill_seed=fill_seed)
+                                     vmax=vmax, lotbcbp=lotbcbp, fill_seed=fill_seed, species=species, rules=rules)
         S.n = n0
         S.x = np.concatenate(xs) if n0 else np.zeros((0, 3))
         S.v = np.concatenate(vs) if n0 else np.zeros((0, 3))
@@ -626,6 +626,7 @@ class FluidSolver:
         S.group = np.array([(d['group'] if d['group'] is not None else f) for f, d in enumerate(D)], int)
         S.T = np.concatenate([np.full(S.hi[f] - S.lo[f], D[f]['temperature']) for f in range(nf)]) if n0 else np.zeros(0)
         S.mass_ref = S.mass_p[S.fid] if n0 else np.zeros(0)
+        S._init_species(D, species, rules)
         S.wall_dist = np.full(S.n, 1e9)
         S.gust_vec = np.zeros(3)
         S.lam_prev = np.zeros(S.n)
@@ -637,6 +638,73 @@ class FluidSolver:
             S.ground_z = float(ground)
         return S
 
+    # ------------------------------------------------------------------ species / composition
+    def _init_species(self, D, species, rules):
+        """Per-particle composition (one-hot of the fluid's species), cluster ids and the derived per-particle properties.  Mixing / merge / reaction
+        rules only run when `rules` are given or a fluid has mix_rate > 0, so existing scenes behave exactly as before."""
+        from . import species as SP
+        sp = []
+        self.sp_of_fluid = []
+        for f, d in enumerate(D):
+            nm = d.get('species') or d['name']
+            if any(s['name'] == nm for s in sp):
+                nm = "%s#%d" % (nm, f)
+            sp.append(SP.species_def(nm, d['color'], self.rho0[f], d['cp'], d['beta'], d.get('priority', 0), d['visc']))
+            self.sp_of_fluid.append(len(sp) - 1)
+        for s_ in (species or []):
+            if not any(q['name'] == s_['name'] for q in sp):
+                sp.append(SP.species_def(**s_))
+        self.SS = SP.SpeciesSystem(sp, [SP.rule_def(**r) for r in (rules or [])])
+        self.sp_misc = np.array([bool(D[f]['miscible']) for f in range(len(D))] + [True] * (len(sp) - len(D)), bool)
+        self.mixing = bool(rules) or any(float(d.get('mix_rate', 0.0)) > 0 for d in D)
+        for r in range(len(self.SS.rules)):
+            pass
+        for f, d in enumerate(D):                     # per fluid mixing rate: default pair rate for its own species with others
+            mr = float(d.get('mix_rate', 0.0))
+            if mr > 0:
+                for g in range(len(D)):
+                    a, b = self.sp_of_fluid[f], self.sp_of_fluid[g]
+                    if a != b and not self.SS.out[a, b] and D[g]['miscible'] and d['miscible']:
+                        self.SS.out[a, b] = self.SS.out[b, a] = SP.MISCIBLE
+                        self.SS.rate[a, b] = self.SS.rate[b, a] = max(mr, self.SS.rate[a, b])
+                self.SS.rate[a, a] = mr
+        n = self.n
+        self.C = np.zeros((n, self.SS.ns))
+        if n:
+            self.C[np.arange(n), np.array(self.sp_of_fluid)[self.fid]] = 1.0
+        self.cluster = np.arange(n)
+        self.rho0_p = self.rho0[self.fid].copy() if n else np.zeros(0)
+        self.beta_p = self.beta[self.fid].copy() if n else np.zeros(0)
+        self.cp_p = self.cp[self.fid].copy() if n else np.zeros(0)
+        self.mix_stats = dict(merges=0, reactions=0)
+
+    def colours(self):
+        """Per-particle colour derived from the composition (subtractive pigment mix)."""
+        return self.SS.colour(self.C) if self.n else np.zeros((0, 3))
+
+    def _derive(self, idx):
+        C = self.C[idx]
+        self.rho0_p[idx] = self.SS.density(C)
+        self.beta_p[idx] = self.SS.beta_mix(C)
+        self.cp_p[idx] = self.SS.cp_mix(C)
+
+    def _mix(self, dt, idx_l, il, jl):
+        from . import species as SP
+        C, T = self.C[idx_l].copy(), self.T[idx_l].copy()
+        mass, cp = self.mass_ref[idx_l], self.cp_p[idx_l]
+        sm = self.sp_misc
+
+        def dflt(a, b):
+            return SP.MISCIBLE if (sm[a] and sm[b]) else SP.IMMISCIBLE
+        info = SP.mix_step(self.SS, C, T, mass, cp, self.v[idx_l], self.x[idx_l], il, jl, self.h, dt, dflt)
+        self.C[idx_l] = C
+        self.T[idx_l] = T
+        self._derive(idx_l)
+        cl = self.cluster[idx_l].copy()
+        self.cluster[idx_l] = SP.propagate_clusters(cl, self.SS.dominant(C), il, jl, info['absorb_pairs'])
+        self.mix_stats['merges'] += info['merges']
+        self.mix_stats['reactions'] += info['reactions']
+
     # ------------------------------------------------------------------ state helpers
     def pressure_at(self, z):
         return self.env.pressure_at(z)
@@ -645,9 +713,9 @@ class FluidSolver:
         """Current density of each particle (kg/m3): Boussinesq for liquids, ideal gas at ambient pressure for gases."""
         T = self.T if T is None else T
         f = self.fid
-        rho_l = self.rho0[f] * np.clip(1.0 - self.beta[f] * (T - self.tref[f]), 0.2, 5.0)
+        rho_l = self.rho0_p * np.clip(1.0 - self.beta_p * (T - self.tref[f]), 0.2, 5.0)
         Pz = self.env.pressure_at(self.x[:, 2])
-        rho_g = self.rho0[f] * (self.tref[f] / np.maximum(T, 1.0)) * (Pz / P_ATM)
+        rho_g = self.rho0_p * (self.tref[f] / np.maximum(T, 1.0)) * (Pz / P_ATM)
         return np.where(self.gas[f], rho_g, rho_l)
 
     def parcel_radius(self):
@@ -659,11 +727,14 @@ class FluidSolver:
         return np.where(self.gas[f], np.minimum(rg, 4.0 * self.dx), 0.5 * self.dx)
 
     def snapshot(self):
-        return dict(x=self.x.copy(), v=self.v.copy(), T=self.T.copy(), t=self.t, gust=self.gust_vec.copy())
+        return dict(x=self.x.copy(), v=self.v.copy(), T=self.T.copy(), t=self.t, gust=self.gust_vec.copy(), C=self.C.copy(), cluster=self.cluster.copy())
 
     def restore(self, s):
         self.x, self.v, self.T, self.t = s['x'].copy(), s['v'].copy(), s['T'].copy(), s['t']
         self.gust_vec = s.get('gust', np.zeros(3)).copy()
+        if 'C' in s and len(s['C']) == self.n:
+            self.C, self.cluster = s['C'].copy(), s['cluster'].copy()
+            self._derive(np.arange(self.n))
 
     def totals(self):
         """mass (kg, reference mass: conserved), volume (m3, actual), thermal energy proxy and fluid-wise numbers."""
@@ -1002,6 +1073,8 @@ class FluidSolver:
         self.x[:] = xs
         self.v[:] = vn
         self._heat(dt, rho, sig_last, (idx_l, il, jl))
+        if self.mixing and len(idx_l) and len(il):
+            self._mix(dt, idx_l, il, jl)
 
 
     # ------------------------------------------------------------------ collision projection
@@ -1107,7 +1180,7 @@ class FluidSolver:
     def _heat(self, dt, rho, sig, pairs):
         f, n, env = self.fid, self.n, self.env
         dts = dt * self.speedup
-        Cap = self.mass_ref * self.cp[f]
+        Cap = self.mass_ref * self.cp_p
         T = self.T
         dQ = np.zeros(n)
         # sources (lamps): power shared by the particles within the radius with a (1 - r/R)^2 weight
