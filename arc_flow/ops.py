@@ -206,7 +206,7 @@ class AF_OT_math_term(Operator):
 PART_PRESETS = {
     'TANK_LIQUID': ("Pressurised liquid tank", dict(role='CONTAINER', cavity_mode='SHELL', pressure=5.0e5, fill_percent=80.0, material='STAINLESS_STEEL', wall=0.004)),
     'TANK_OPEN': ("Open box / bucket (solid body)", dict(role='CONTAINER', cavity_mode='SOLID', pressure=0.0, fill_percent=60.0, material='INDUSTRIAL_STEEL')),
-    'PIPE': ("Pipe / hose / vein", dict(role='TRANSPORT', cavity_mode='AUTO', material='STAINLESS_STEEL', wall=0.003)),
+    'PIPE': ("Channel / hose / vein", dict(role='TRANSPORT', cavity_mode='AUTO', material='STAINLESS_STEEL', wall=0.003)),
     'CHAMBER': ("Combustion chamber", dict(role='CHAMBER', cavity_mode='AUTO', material='INCONEL', wall=0.008)),
     'NOZZLE': ("Nozzle / bell", dict(role='CHAMBER', cavity_mode='AUTO', material='COPPER', wall=0.004)),
     'ENV': ("Collider (floor, walls)", dict(role='COLLIDER', cavity_mode='SOLID')),
@@ -285,7 +285,7 @@ class AF_OT_build(Operator):
     def execute(self, ctx):
         af = _af(ctx)
         if not [o for o in ctx.scene.objects if o.type == 'MESH' and (o.arc_flow.role != 'NONE' or o.arc_flow.is_emitter)]:
-            self.report({'ERROR'}, "Assign a role (Container / Transport / Chamber) or an emitter to at least one mesh first")
+            self.report({'ERROR'}, "Assign a role (Container / Channel / Chamber) or an emitter to at least one mesh first")
             return {'CANCELLED'}
         try:
             runtime.start(ctx.scene, record=False)
@@ -504,7 +504,7 @@ class AF_OT_assign_feedback(Operator):
 class AF_OT_demo(Operator):
     bl_idname = "arcflow.demo"
     bl_label = "Load Example: Single Engine"
-    bl_description = "Single rocket engine from Blender primitives: RP-1 and LOX tanks, two pipes, chamber and nozzle, ready to Build"
+    bl_description = "Single rocket engine from Blender primitives: RP-1 and LOX tanks, two channels, chamber and nozzle, ready to Build"
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, ctx):

@@ -26,7 +26,7 @@ Tessera Projection is built around one idea: **a mesh can be projected against i
 |---|---|
 | **Projection Remesh** | A fast quad remesh. Dense, symmetric quads along creases, lips, wrinkles and ears; large quads on broad surfaces. Works on characters, cars, trees, CAD, and scans, at any position or rotation. |
 | **Boolean Projection** | Cavities that intersect become one continuous through-cavity, with optional Boolean joint cuts in the walls. |
-| **Arc Flow** | Self-initialising fluid and combustion simulation through those connected cavities: containers, pipes, chambers and nozzles that start empty and only conduct, finite fills, leaks, plugs, thermal and stress colouring. |
+| **Arc Flow** | Self-initialising fluid and combustion simulation through those connected cavities: containers, channels, chambers and nozzles that start empty and only conduct, finite fills, leaks, plugs, thermal and stress colouring. |
 
 <p align="center">
   <img src="docs/renders/retopo_input_tris.png" width="46%" alt="Triangulated input mesh">
@@ -59,16 +59,16 @@ The fast path pairs triangles into quads, so it keeps the source triangulation's
 ## Arc Flow: systems that initialise themselves
 
 <p align="center">
-  <img src="docs/renders/multi_twin_layout.png" width="70%" alt="Two engines joined by a crossfeed pipe">
+  <img src="docs/renders/multi_twin_layout.png" width="70%" alt="Two engines joined by a crossfeed channel">
 </p>
 
 <p align="center">
-  <img src="docs/renders/engine_beauty.png" width="48%" alt="Single rocket engine example: brushed-metal tanks, pipes, chamber and nozzle with a heated exhaust spill">
+  <img src="docs/renders/engine_beauty.png" width="48%" alt="Single rocket engine example: brushed-metal tanks, channels, chamber and nozzle with a heated exhaust spill">
   <img src="docs/renders/engine_xray.png" width="48%" alt="Same engine in X-ray view: propellant inside the tanks, feed lines and chamber">
 </p>
 
-- Parts are grouped into independent **systems**; roles (container, transport, chamber) and requirements are detected automatically and re-detected when parts move or connect.
-- **Examples built from Blender's default primitives (Tessera > Examples):** a single engine and twin engines with a crossfeed pipe, with a Good and a Bad variant that end in enhanced combustion or a wall rupture.
+- Parts are grouped into independent **systems**; roles (container, channel, chamber) and requirements are detected automatically and re-detected when parts move or connect.
+- **Examples built from Blender's default primitives (Tessera > Examples):** a single engine and twin engines with a crossfeed channel, with a Good and a Bad variant that end in enhanced combustion or a wall rupture.
 - **Environment card:** Earth, Mars, Venus, Titan and Jupiter atmospheres with editable gas mixes, driving ambient pressure, drag and plume spread.
 - Points, Ray-march and Gaussian render paths (Cycles verified), with Geometry Nodes groups for every card.
 

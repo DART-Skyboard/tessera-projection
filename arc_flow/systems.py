@@ -160,7 +160,7 @@ def detect(scene, rebuild_sim=True):
 
 
 def autoroles(scene, objs=None):
-    """Assign Container / Transport / Chamber to selected (or tagged) mesh objects without a role, from geometry alone."""
+    """Assign Container / Channel / Chamber to selected (or tagged) mesh objects without a role, from geometry alone."""
     deps = bpy.context.evaluated_depsgraph_get()
     targets = objs if objs is not None else [o for o in scene.objects if o.type == 'MESH' and o.arc_flow.role == 'NONE' and o.get('af_part')]
     infos, flds, mats, scales = {}, {}, {}, {}
@@ -311,7 +311,7 @@ def _glow_material():
 
 
 def ensure_breach(scene):
-    """Dormant breach jet emitters (one per tank / chamber / crossfeed pipe) parented to their part, plus one flash light.
+    """Dormant breach jet emitters (one per tank / chamber / crossfeed channel) parented to their part, plus one flash light.
     They sit idle (rate 0 from the outcome model) until the part ruptures."""
     if ST.det is None:
         return

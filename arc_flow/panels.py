@@ -70,7 +70,7 @@ def draw_part(l, ctx):
     p = o.arc_flow
     l.label(text=o.name, icon='OBJECT_DATA')
     row = l.row(align=True)
-    for r, lab in (('CONTAINER', "Container"), ('TRANSPORT', "Transport"), ('CHAMBER', "Chamber")):
+    for r, lab in (('CONTAINER', "Container"), ('TRANSPORT', "Channel"), ('CHAMBER', "Chamber")):
         op = row.operator("arcflow.set_role", text=lab, depress=(p.role == r))
         op.role = r
     row = l.row(align=True)
@@ -95,7 +95,7 @@ def draw_part(l, ctx):
         b.prop(p, "particles")
         b.label(text="Fill mass = volume x density(pressure)", icon='DOT')
     elif p.role in ('TRANSPORT', 'CHAMBER'):
-        l.label(text="Starts empty; conducts fluid", icon='DOT')
+        l.label(text="Channel: the connecting cavity; starts empty, conducts fluid", icon='DOT')
     if p.role != 'NONE':
         b = l.box()
         b.label(text="Material", icon='MATERIAL')

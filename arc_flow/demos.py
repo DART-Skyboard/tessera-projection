@@ -1,5 +1,5 @@
 """Example rigs built from Blender's own mesh primitives (bmesh cylinder / cone / UV sphere / cube, torus segments):
-a cheap-looking rocket engine (two tanks, two pipes, chamber, nozzle) and the twin-engine crossfeed example."""
+a cheap-looking rocket engine (two tanks, two channels, chamber, nozzle) and the twin-engine crossfeed example."""
 import math
 
 import bmesh
@@ -138,7 +138,7 @@ def build_engine(scene, prefix, dx, p_tank, fu, ox, dy=0.0, tag=""):
     for k, r in (('FuelLine', 0.12), ('OxLine', 0.12)):
         P[k]['af_r_eq'] = r
     P['Chamber']['af_r_eq'] = 1.0
-    # decoration only (no role): flanges on the pipes and the chamber waist, nozzle exit lip
+    # decoration only (no role): flanges on the channels and the chamber waist, nozzle exit lip
     fl = [torus(scene, n("FlangeA"), PIPE_R + 0.04, 0.05, (dx - 2.4, dy, 1.2), (0, math.pi / 2, 0)),
           torus(scene, n("FlangeB"), PIPE_R + 0.04, 0.05, (dx + 1.3, dy, 1.2), (0, math.pi / 2, 0)),
           torus(scene, n("FlangeC"), 0.95, 0.06, (dx + 2.2, dy, 1.2), (0, 0, 0)),
@@ -173,7 +173,7 @@ def build_single(scene):
     fu, ox = ensure_fluids(scene)
     _clear_rig(scene)
     build_engine(scene, "", 0.0, 6.0e5, fu, ox)
-    return _finish(scene, "Single-engine example loaded (two tanks, two pipes, chamber, nozzle). Press Build.")
+    return _finish(scene, "Single-engine example loaded (two tanks, two channels, chamber, nozzle). Press Build.")
 
 
 # ----------------------------------------------------------------------------- twin engines + crossfeed
@@ -217,7 +217,7 @@ def build_twin(scene):
     from . import systems
     systems.ST.reset()
     systems.mark_dirty()
-    return "Twin-engine example loaded: engine A (20 bar feed) and engine B (6 bar feed) with a crossfeed pipe (%s variant)." % af.sys_variant
+    return "Twin-engine example loaded: engine A (20 bar feed) and engine B (6 bar feed) with a crossfeed channel (%s variant)." % af.sys_variant
 
 
 def apply_option(scene, what):

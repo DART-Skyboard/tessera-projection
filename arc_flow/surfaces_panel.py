@@ -106,13 +106,16 @@ class AF_PT_srf(_Base, Panel):
     def draw(self, ctx):
         l = self.layout
         s = ctx.scene.arc_flow_srf
-        row = l.row(align=True)
-        row.operator("arcflow.srf_add_volume", icon='MESH_CUBE')
-        row = l.row(align=True)
-        op = row.operator("arcflow.srf_add", text="Viscosity surface", icon='FORCE_VISCOSITY')
-        op.kind = 'VISCOSITY'
-        op = row.operator("arcflow.srf_add", text="Emission surface", icon='PARTICLES')
-        op.kind = 'EMISSION'
+        b = l.box()
+        b.label(text="Components", icon='OUTLINER_OB_MESH')
+        row = b.row(align=True)
+        for r, lab in (('CONTAINER', "Container"), ('TRANSPORT', "Channel")):
+            op = row.operator("arcflow.set_role", text=lab)
+            op.role = r
+        row = b.row(align=True)
+        op = row.operator("arcflow.srf_add", text="Viscosity surface", icon='FORCE_VISCOSITY'); op.kind = 'VISCOSITY'
+        op = row.operator("arcflow.srf_add", text="Emission surface", icon='PARTICLES'); op.kind = 'EMISSION'
+        row.operator("arcflow.srf_add_volume", text="Fluid volume", icon='MESH_CUBE')
         r = l.row()
         r.template_list("AF_UL_srf", "", s, "items", s, "index", rows=3)
         r.operator("arcflow.srf_remove", text="", icon='REMOVE')

@@ -247,11 +247,11 @@ class AF_MathCard(PropertyGroup):
 class AF_ObjectProps(PropertyGroup):
     role: EnumProperty(name="Role", items=[('NONE', "None", "Not part of the simulation"),
                                            ('CONTAINER', "Container", "Holds a finite fill of fluid"),
-                                           ('TRANSPORT', "Transport", "Conducts fluid (pipe, hose, vein...). Starts empty"),
-                                           ('CHAMBER', "Chamber", "Same as Transport; the usual target for visual feedback (engines)"),
+                                           ('TRANSPORT', "Channel", "The connecting cavity between containers, surfaces and systems (pipe, hose, vein...). Conducts fluid, starts empty"),
+                                           ('CHAMBER', "Chamber", "Same as Channel; the usual target for visual feedback (engines)"),
                                            ('COLLIDER', "Collider", "Solid obstacle only")], default='NONE', update=_update_sync)
     cavity_mode: EnumProperty(name="Cavity", items=[('AUTO', "Auto", "Detect modelled inner cavities; otherwise treat the surface as enclosing the fluid"),
-                                                    ('SHELL', "Surface encloses fluid", "Sealed bag / tank / pipe surface: the fluid is inside the surface"),
+                                                    ('SHELL', "Surface encloses fluid", "Sealed bag / tank / channel surface: the fluid is inside the surface"),
                                                     ('SOLID', "Solid body", "Mesh is a solid with modelled cavities. With no cavity the fluid rests on top and spills")],
                               default='AUTO', update=_update_sync)
     resolution: IntProperty(name="Field resolution", default=40, min=8, max=96, description="Voxels along the longest side of the LOTBCBP base field", update=_update_sync)
@@ -286,11 +286,11 @@ class AF_ObjectProps(PropertyGroup):
     emit_inward: BoolProperty(name="Inward", default=False, update=_update_sync)
     emit_volume: FloatProperty(name="Particle volume", default=2e-5, min=1e-9, precision=7, description="m3 per emitted particle", update=_update_sync)
     emit_faces_assigned: BoolProperty(name="Faces assigned", default=False)
-    # Systems (Tessera Projection / LOTBCBP): propellant role override and crossfeed pipe metering orifice
+    # Systems (Tessera Projection / LOTBCBP): propellant role override and crossfeed channel metering orifice
     sys_fluid_role: EnumProperty(name="Propellant role", items=[('AUTO', "Auto", "Detected from the fluid, the name or the container order"),
                                                                 ('FUEL', "Fuel", "Treat this container as a fuel source"),
                                                                 ('OXIDIZER', "Oxidizer", "Treat this container as an oxidizer source")], default='AUTO', update=_update_sync)
-    sys_orifice: FloatProperty(name="Orifice area", default=1.0, min=0.001, max=1.0, description="Fraction of the pipe cross-section open (crossfeed metering orifice) used by the outcome model", update=_update_sync)
+    sys_orifice: FloatProperty(name="Orifice area", default=1.0, min=0.001, max=1.0, description="Fraction of the channel cross-section open (crossfeed metering orifice) used by the outcome model", update=_update_sync)
     # live results
     temp_now: FloatProperty(name="Temperature", default=293.15, precision=1)
     stress_now: FloatProperty(name="Stress / yield", default=0.0, precision=3)
@@ -393,7 +393,7 @@ class AF_Scene(PropertyGroup):
     sys_variant: EnumProperty(name="Crossfeed variant", items=[('GOOD', "Good: oxidizer into chamber", "Engine A's oxidizer tank feeds engine B's chamber manifold"),
                                                                ('BAD', "Bad: hot chamber into fuel tank", "Engine A's hot chamber is connected to engine B's fuel tank")],
                               default='GOOD', update=lambda s, c: _sys_changed(s, c, 'variant'))
-    sys_crossfeed: BoolProperty(name="Crossfeed", default=True, description="Crossfeed pipe on / off", update=lambda s, c: _sys_changed(s, c, 'toggle'))
+    sys_crossfeed: BoolProperty(name="Crossfeed", default=True, description="Crossfeed channel on / off", update=lambda s, c: _sys_changed(s, c, 'toggle'))
     # runtime flags (not meant to be edited)
     status: StringProperty(default="Idle")
     ui_physics: BoolProperty(default=True)

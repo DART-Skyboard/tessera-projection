@@ -10,7 +10,7 @@ ICON = {'idle': 'PAUSE', 'running': 'PLAY', 'enhanced': 'SOLO_ON', 'failed': 'CA
 class AF_OT_demo_twin(Operator):
     bl_idname = "arcflow.demo_twin"
     bl_label = "Load Example: Twin-engine crossfeed"
-    bl_description = ("Two engines side by side built from Blender primitives and a straight crossfeed pipe between them. "
+    bl_description = ("Two engines side by side built from Blender primitives and a straight crossfeed channel between them. "
                       "Variant Good: engine A's oxidizer tank into engine B's chamber manifold (enhanced). Bad: engine A's hot chamber into "
                       "engine B's fuel tank (failure). Press Build / Play")
     bl_options = {'REGISTER', 'UNDO'}
@@ -38,7 +38,7 @@ class AF_OT_systems_detect(Operator):
 class AF_OT_systems_autoroles(Operator):
     bl_idname = "arcflow.systems_autoroles"
     bl_label = "Auto roles"
-    bl_description = "Assign Container / Transport / Chamber to the selected meshes (or tagged parts) that have no role, from their geometry"
+    bl_description = "Assign Container / Channel / Chamber to the selected meshes (or tagged parts) that have no role, from their geometry"
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, ctx):
@@ -87,7 +87,7 @@ class AF_PT_systems(Panel):
                     r = summ.get(sid, dict(status='idle', reason='', thrust=0.0, Pc=0.0, MR=0.0))
                     row = box.row()
                     row.label(text="%s: %s" % (s['name'], r['status'].upper()), icon=ICON.get(r['status'], 'DOT'))
-                    row.label(text="%d tanks, %d lines, %s" % (len(s['containers']), len(s['transports']), "chamber" if s['chambers'] else "no chamber"))
+                    row.label(text="%d containers, %d channels, %s" % (len(s['containers']), len(s['transports']), "chamber" if s['chambers'] else "no chamber"))
                     if st.sim is not None:
                         rq = S_req(st, sid)
                         if rq:
