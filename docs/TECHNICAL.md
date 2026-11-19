@@ -234,6 +234,23 @@ Limits: the pressure is an estimate (ideal gas for gases, ambient + rho g depth 
 Tests: `blender -b --factory-startup --python tests/test_gn_blender.py` (groups, Source modes, Environment, Thermal, a stock-node chain with Set Position, Instance on Points, Set Material, Subdivision Surface, Volume to Mesh and Mesh to Volume, a second extension-style group in the chain, library, menu), `tests/test_gn_fluid_blender.py` (the lava lamp's solver particles through the fluid group); both pass on 5.2.3 and 5.3.0.
 
 
+## Collision field engine (core/sdf.py)
+
+- **Triangle BVH.** `signed_distance` and `closest_surface` use a Morton-sorted binary BVH (4 triangles per leaf, built once and cached on the soup, about 0.4 s per million triangles). A batch of points is descended breadth first, pruned by an exact upper bound (one greedy dive plus a representative triangle per surviving node). Sign is the angle-weighted pseudo-normal of the nearest face / edge / vertex, as before; values equal the old brute force to 1e-10 (`signed_distance_brute` is kept for soups under 192 triangles and as the test oracle).
+- **Sparse bricks.** Refined bricks of a `PartField` are kept in a sorted key array plus a recycled slot pool (no dense cell-sized index) and can be removed again: `remove_bricks`, `coarsen(points)` (drop bricks no particle is near), `trim_bricks(n)` (oldest first). `BrickGrid` is the standalone narrow-band form (8^3 bricks, +-3 voxel band, coarse sign value elsewhere; 25 % of the dense float64 memory at 128^3, shrinking with resolution).
+- **Adaptive resolution.** `PartField(..., adaptive=True)` builds, probes the distance error on 96 sampled surface points (within one voxel beside the surface, p90 in voxel units), refines x1.25 above 0.75 or coarsens /1.15 below 0.15 (scale 0.6-2.0, at most 4 builds, a coarsening that overshoots is reverted) and reports `resolution_chosen`, `probe_p90`, `probe_history`. Because the field is exact within 3 voxels of the surface the p90 is usually far below 0.75, so in practice this coarsens smooth parts (sphere 48 -> 32).
+- **Measured** (Blender 5.3.0 Python, 2 shared cores, CPU time; UV sphere):
+
+| | before | after |
+|---|---|---|
+| 2000 near-surface queries, 99k triangles | 54.2 s | 0.24 s |
+| `PartField` resolution 40, 99k triangles | 703 s | 10-18 s |
+| peak RSS of that build | 1.58 GB | 0.97 GB |
+| 2000 queries, 998k triangles | did not finish (killed, 8 GB limit) | 0.74 s |
+| `PartField` resolution 40, 998k triangles | did not finish | 29 s (2.9 GB RSS, mostly the soup) |
+
+- **Projection Remesh reference projection** keeps `mathutils` BVH `find_nearest` (9 us per point) because the NumPy BVH costs about 87 us per point per query; the NumPy index is used where batches of points go through the field (collision body build, brick refinement, Boolean projection cavity sampling, `fluidmode` lattice sampling).
+
 ## Support
 - Bugs and questions: https://github.com/DART-Skyboard/tessera-projection/issues
 - Source: https://github.com/DART-Skyboard/tessera-projection (GPL-3.0-or-later)
