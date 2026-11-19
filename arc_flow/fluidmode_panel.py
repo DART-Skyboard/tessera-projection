@@ -127,7 +127,7 @@ class AF_PT_fm_fluids(_FMBase, Panel):
         if fl.kind == 'GAS':
             b.prop(fl, "count")
         b = l.box()
-        b.label(text="Amount (0 = derive)", icon='MOD_MASS')
+        b.label(text="Amount (0 = derive)", icon='PHYSICS')
         c = b.column(align=True)
         for k in ("mass", "volume", "weight", "density"):
             c.prop(fl, k)
