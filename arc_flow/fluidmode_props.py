@@ -136,6 +136,17 @@ class AF_FMObject(PropertyGroup):
     heat_radius: FloatProperty(name="Radius", default=0.05, min=1e-3, unit='LENGTH', update=_dirty)
     collider: BoolProperty(name="Fluid collider", default=False, description="A solid the fluid cannot enter. Moving / rotating objects drive the fluid by their surface velocity", update=_dirty)
     friction: FloatProperty(name="Wall friction", default=0.2, min=0.0, max=1.0, description="0 = free slip, 1 = no slip (the wall surface velocity is passed on)", update=_dirty)
+    # two-way coupling: the fluid pushes this body (containers and colliders alike)
+    two_way: BoolProperty(name="Fluid pushes this body", default=True, description="Fluid pressure and drag act on the body (net force and torque are measured every step). The body moves only when it has a Mass above zero", update=_dirty)
+    mass: FloatProperty(name="Mass", default=0.0, min=0.0, unit='MASS', description="kg. 0 = the body is fixed or animated (the fluid still measures force on it); above 0 it moves under fluid force, gravity and its constraint", update=_dirty)
+    constraint: EnumProperty(name="Motion", items=[('FREE', "Free", "Six degrees of freedom"), ('SLIDER', "Slider / piston", "Translate along the axis only"),
+                                                     ('HINGE', "Hinge", "Rotate about the axis through the object origin")], default='FREE', update=_dirty)
+    axis: FloatVectorProperty(name="Axis", size=3, default=(0.0, 0.0, 1.0), description="World axis of the slider or hinge", update=_dirty)
+    limit_on: BoolProperty(name="Limits", default=False, update=_dirty)
+    limit_lo: FloatProperty(name="Min", default=0.0, description="m (slider) or radians (hinge) from the start pose", update=_dirty)
+    limit_hi: FloatProperty(name="Max", default=1.0, update=_dirty)
+    stick: FloatProperty(name="Static friction", default=0.0, min=0.0, description="N (N m for a hinge) the fluid must exceed before the body moves", update=_dirty)
+    drag: FloatProperty(name="Viscous friction", default=0.0, min=0.0, description="N s/m: resistance proportional to speed", update=_dirty)
 
 
 CLASSES = (AF_FMFluid, AF_FMScene, AF_FMObject)

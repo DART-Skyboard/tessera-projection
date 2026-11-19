@@ -116,6 +116,26 @@ sobj = [o for o in bpy.data.objects if o.name.startswith('AFFMS_')]
 ok(len(sobj) > 0 and len(sobj[0].data.vertices) > 0, "SURFACE render mode builds a surface mesh (%d verts)" % (len(sobj[0].data.vertices) if sobj else 0))
 FO.stop(sc)
 
+# two-way coupling through the Blender layer: a collider cube with a mass falls under gravity and its object follows the body
+FO.stop(sc)
+FO.load_colour_mixing(sc, max_particles=1200)
+cube = bpy.data.objects.new("TS_Block", bpy.data.meshes.new("TS_Block"))
+import bmesh
+bm = bmesh.new(); bmesh.ops.create_cube(bm, size=0.03); bm.to_mesh(cube.data); bm.free()
+sc.collection.objects.link(cube)
+cube.location = (0.0, 0.0, 0.3)
+cube.arc_flow_fm.collider = True
+ok(cube.arc_flow_fm.two_way and cube.arc_flow_fm.mass == 0.0, "two-way toggle defaults on, mass 0 (fixed unless given a mass)")
+cube.arc_flow_fm.mass = 0.2
+FO.mark_dirty()
+FO.start(sc, play=False)
+z0 = cube.matrix_world.translation.z
+for f in range(1, 8):
+    sc.frame_set(f)
+ok(any(b.dynamic for b in FO.RT.solver.bodies) and cube.matrix_world.translation.z < z0 - 0.01, "a dynamic body moves its Blender object (z %.3f -> %.3f)" % (z0, cube.matrix_world.translation.z))
+FO.stop(sc)
+bpy.data.objects.remove(cube, do_unlink=True)
+
 # Cycles CPU render (also valid for EEVEE: same materials, instanced points / volume)
 cam = sc.camera
 sc.render.engine = 'CYCLES'

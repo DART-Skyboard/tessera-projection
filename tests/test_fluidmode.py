@@ -1,4 +1,5 @@
 """Fluid mode solver tests (pure NumPy): python3 blender/tests/test_fluidmode.py"""
+import sys
 import time
 import numpy as np
 from fm_helpers import FM, SDF, box, container, lathe, body_of
@@ -573,6 +574,84 @@ def test_surface_merge():
     ok(nn == 1, "touching blobs merge into 1 surface component (%d)" % nn)
 
 
+def test_coupling():
+    """Two-way fluid-solid coupling: the fluid pushes bodies."""
+    # --- 1. hydrostatics: the force of the water on a fixed tank equals its weight
+    dx = 0.012
+    V, T = lathe([(0, 0), (0.09, 0), (0.09, 0.3), (0, 0.3)])
+    tank = body_of(V, T)
+    w = FM.fluid_def('WATER', name='w', body=0, fill=0.6)
+    S = FM.FluidSolver.build([w], [tank], FM.FEnv(), dx=dx)
+    run(S, 1.0)
+    Fs = []
+    for _ in range(12):
+        S.step(1 / 24.0)
+        Fs.append(S.bodies[0].F.copy())
+    F = np.mean(Fs, 0)
+    weight = float(S.mass_ref.sum()) * 9.80665
+    ok(abs(-F[2] - weight) < 0.2 * weight and abs(F[0]) < 0.1 * weight, "water on a fixed tank: force %.1f N down against weight %.1f N (side force %.1f N)" % (-F[2], weight, abs(F[0])))
+    # --- 2. buoyancy: a block lighter than water released at the waterline stays afloat, the fluid force carries its weight; a heavy one sinks
+    def block(rho_b, z0):
+        b2 = container((-.1, -.1, 0), (.1, .1, .35))
+        side = 0.1
+        Vb, Tb = box((-side / 2,) * 3, (side / 2,) * 3)
+        blk = FM.Body(SDF.PartField(Vb, Tb, 'AUTO', resolution=24, level=2), np.eye(4), 'COLLIDER', None, 0.0)
+        blk.mass, blk.kfric = rho_b * side ** 3, 5.0
+        M = np.eye(4); M[2, 3] = z0
+        blk.M0 = blk.M1 = M
+        S = FM.FluidSolver.build([FM.fluid_def('WATER', name='w', body=0, fill=0.5)], [b2, blk], FM.FEnv(), dx=0.01)
+        zs, Fz = [], []
+        for k in range(36):
+            S.step(1 / 24.0)
+            zs.append(blk.com_world()[2])
+            Fz.append(blk.F[2])
+        return blk, np.array(zs), np.array(Fz)
+    blk, zs, Fz = block(500.0, 0.17)
+    ok(np.all(np.abs(zs[12:] - 0.18) < 0.035) and np.all(np.isfinite(zs)), "a block of half the density of water stays afloat at the waterline (centre %.3f to %.3f m over the last 1.5 s)" % (zs[12:].min(), zs[12:].max()))
+    ok(abs(np.mean(Fz[12:]) - blk.mass * 9.80665) < 0.3 * blk.mass * 9.80665, "the fluid carries its weight: mean buoyancy force %.1f N, weight %.1f N" % (np.mean(Fz[12:]), blk.mass * 9.80665))
+    blk, zs, Fz = block(2000.0, 0.17)
+    ok(zs[-1] < 0.1, "a block twice as dense as water sinks to the bottom (centre %.3f m)" % zs[-1])
+    # --- 3. a slider (piston) pushed by a fluid slug: momentum goes into the piston
+    env0 = FM.FEnv(gravity=(0.0, 0.0, 0.0))
+    b3 = container((-.4, -.1, 0), (.4, .1, .2))
+    Vp, Tp = box((-.015, -.09, .01), (.015, .09, .19))
+    pis = FM.Body(SDF.PartField(Vp, Tp, 'AUTO', resolution=24, level=2), np.eye(4), 'COLLIDER', None, 0.0)
+    pis.mass = 1.0
+    pis.constraint, pis.axis, pis.limits = 'SLIDER', np.array([1.0, 0, 0]), (0.0, 0.3)
+    P = FM.lat_pos(FM.lattice_in_box(np.array([-.35, -.085, .015]), np.array([-.2, .085, .185]), 0.012), 0.012)
+    slug = FM.fluid_def('WATER', name='slug', body=0, shape=dict(kind='POINTS', pts=P), velocity=(2.0, 0.0, 0.0))
+    S = FM.FluidSolver.build([slug], [b3, pis], env0, dx=0.012)
+    m_slug = float(S.mass_ref.sum())
+    px0 = float((S.mass_ref * S.v[:, 0]).sum())
+    v_p, px1, vs_ = 0.0, px0, []
+    for k in range(36):
+        S.step(1 / 24.0)
+        vs_.append((float(pis.vel[0]), float((S.mass_ref * S.v[:, 0]).sum())))
+    kmax = int(np.argmax([a for a, _ in vs_]))
+    v_p, px1 = vs_[kmax]
+    ok(pis.travel > 0.02 and v_p > 0.3, "fluid slug pushes the piston along its rail: moved %.3f m, speed %.2f m/s" % (pis.travel, v_p))
+    ok(abs(pis.vel[1]) < 1e-9 and abs(pis.vel[2]) < 1e-9, "the piston only moves along its allowed axis")
+    gain = pis.mass * v_p
+    loss = px0 - px1
+    ok(0.15 * loss < gain < 1.1 * loss, "momentum: piston gained %.2f kg m/s, fluid lost %.2f kg m/s (slug %.2f kg at 2 m/s)" % (gain, loss, m_slug))
+    # --- 4. toggle off: the same piston stays put
+    pis2 = FM.Body(SDF.PartField(Vp, Tp, 'AUTO', resolution=24, level=2), np.eye(4), 'COLLIDER', None, 0.0)
+    pis2.mass, pis2.two_way = 1.0, False
+    pis2.constraint, pis2.axis = 'SLIDER', np.array([1.0, 0, 0])
+    S = FM.FluidSolver.build([FM.fluid_def('WATER', name='slug', body=0, shape=dict(kind='POINTS', pts=P), velocity=(2.0, 0.0, 0.0))], [container((-.4, -.1, 0), (.4, .1, .2)), pis2], env0, dx=0.012)
+    for k in range(24):
+        S.step(1 / 24.0)
+    ok(abs(pis2.travel) < 1e-12 and not pis2.dynamic, "per-body toggle off: the body does not move")
+    # --- 5. a stuck body: friction holds it until the force exceeds it
+    pis3 = FM.Body(SDF.PartField(Vp, Tp, 'AUTO', resolution=24, level=2), np.eye(4), 'COLLIDER', None, 0.0)
+    pis3.mass, pis3.stick = 1.0, 1e4
+    pis3.constraint, pis3.axis = 'SLIDER', np.array([1.0, 0, 0])
+    S = FM.FluidSolver.build([FM.fluid_def('WATER', name='slug', body=0, shape=dict(kind='POINTS', pts=P), velocity=(2.0, 0.0, 0.0))], [container((-.4, -.1, 0), (.4, .1, .2)), pis3], env0, dx=0.012)
+    for k in range(24):
+        S.step(1 / 24.0)
+    ok(abs(pis3.travel) < 1e-9, "static friction (10 kN) holds the piston: the fluid force stayed below it")
+
+
 def test_speed():
     b = container((-.15, -.15, 0), (.15, .15, .4))
     w = FM.fluid_def('WATER', name='w', body=0, fill=0.5)
@@ -588,8 +667,11 @@ def test_speed():
 
 if __name__ == '__main__':
     t0 = time.time()
+    only = sys.argv[1:]
     for fn in (test_units, test_environment, test_boussinesq, test_stratify_and_mass, test_gas_wind, test_gas_buoyancy, test_gravity_scaling,
-               test_heat, test_moving_wall, test_solid_displaces, test_spinning_gear, test_barometric_expansion, test_cavity_fill, test_confinement, test_fill_settle, test_wax_blobs, test_species, test_surface_merge, test_speed):
+               test_heat, test_moving_wall, test_solid_displaces, test_spinning_gear, test_barometric_expansion, test_cavity_fill, test_confinement, test_fill_settle, test_wax_blobs, test_species, test_surface_merge, test_coupling, test_speed):
+        if only and fn.__name__ not in only:
+            continue
         t = time.time()
         try:
             fn()

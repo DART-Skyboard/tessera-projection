@@ -66,7 +66,7 @@ def _geometry(w):
         throat = min(rad, key=lambda o: o['radius'])
         ex = max(exits, key=lambda o: o['radius'])
         phi_t = float(w._gs(w.net['dist'], throat['centre'][None])[0]) if w.net is not None else 0.0
-        w.nozzle = dict(r_t=throat['radius'], r_e=ex['radius'], phi_t=phi_t, centre=ex['centre'])
+        w.nozzle = dict(r_t=throat['radius'], r_e=ex['radius'], phi_t=phi_t, centre=ex['centre'], normal=np.asarray(ex['normal'], float))
     w.dom_c = np.asarray(w._world_bounds()[0] + w._world_bounds()[1], float) * 0.5 if w.active else np.zeros(3)
     ids = {fl['spec']['role']: n for n, fl in enumerate(w.fluids) if fl['spec']['role'] in ('FUEL', 'OXIDIZER')}
     w.fuel_i, w.ox_i = ids.get('FUEL', -1), ids.get('OXIDIZER', -1)
@@ -213,6 +213,16 @@ def chamber_update(w, dt):
         w.bstats['p_exit'] = st['exit']['p']
         v_phys = max(st['exit']['v'], st['vt'])
         w.bstats['vscale'] = min(1.0, w.p.vmax / max(v_phys, 1e-9))
+        # thrust of the nozzle on the engine (reaction to the exhaust): F = mdot v_e + (p_e - p_amb) A_e, pointing opposite to the exit normal
+        Ae = math.pi * nz_r_e(w) ** 2
+        F = (w.bstats['mdot_out'] * st['exit']['v'] + (st['exit']['p'] - pe) * Ae) if w.bstats['choked'] else 0.0
+        w.bstats['thrust'] = F
+        w.bstats['thrust_vec'] = -w.nozzle['normal'] * F
+        w.bstats['isp'] = F / max(w.bstats['mdot_out'] * 9.80665, 1e-9) if w.bstats['choked'] else 0.0
+
+
+def nz_r_e(w):
+    return w.nozzle['r_e']
 
 
 def gas_rho(w, T):

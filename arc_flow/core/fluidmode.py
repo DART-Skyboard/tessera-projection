@@ -204,6 +204,158 @@ class Body:
         self.M0 = self.M1 = M.copy()
         self.n_refined_calls = 0
         self.open = False          # an open vessel spills when overfilled, a sealed one is reported as over-pressured
+        # two-way coupling: fluid force / torque are measured on every body with two_way on; a body with mass > 0 also moves under them
+        self.two_way = True
+        self.mass = 0.0            # kg; 0 = immovable (animated or fixed), the fluid still measures force on it
+        self.constraint = 'FREE'   # FREE (6 DOF) | SLIDER (translate along `axis`) | HINGE (rotate about `axis` through `pivot`)
+        self.axis = np.array([0.0, 0.0, 1.0])
+        self.pivot = None
+        self.limits = None         # (lo, hi): metres along the slider axis / radians about the hinge, measured from the start pose
+        self.stick = 0.0           # static friction force / torque the fluid must exceed before the body moves (N or N m)
+        self.kfric = 0.0           # viscous friction (N s/m or N m s/rad)
+        self.ext = np.zeros(3)     # external force (N), e.g. an engine's thrust
+        self.vel = np.zeros(3)
+        self.omega = np.zeros(3)
+        self.travel = 0.0          # displacement along the slider axis / angle about the hinge since the start pose
+        self.F = np.zeros(3)       # force of the fluid on the body, last step (N)
+        self.T = np.zeros(3)       # torque about the centre of mass (N m)
+        self._F = np.zeros(3)
+        self._T = np.zeros(3)
+        self.smooth = 0.15         # low-pass weight of the newest fluid force sample (explicit coupling of a light body is otherwise unstable)
+        self._Fs = np.zeros(3)
+        self._Ts = np.zeros(3)
+        self.rel = (0.0, 1.0)      # substep window of a dynamic body (its pose is predicted per substep)
+        self.M_start = M.copy()
+        lo_, hi_ = field.bmin, field.bmax
+        self.com_local = 0.5 * (np.asarray(lo_, float) + np.asarray(hi_, float))
+
+    @property
+    def dynamic(self):
+        return bool(self.two_way and self.mass > 0.0)
+
+    def com_world(self, M=None):
+        M = self.M1 if M is None else M
+        return M[:3, :3] @ self.com_local + M[:3, 3]
+
+    def inertia(self):
+        lo, hi = self.bbox_world()
+        L = float(np.max(hi - lo))
+        return max(self.mass * L * L / 6.0, 1e-9)
+
+    def reset_motion(self):
+        self.vel[:] = 0.0
+        self.omega[:] = 0.0
+        self.travel = 0.0
+        self.F[:] = 0.0
+        self.T[:] = 0.0
+        self._F[:] = 0.0
+        self._T[:] = 0.0
+        self._Fs[:] = 0.0
+        self._Ts[:] = 0.0
+
+    def point_velocity(self, P, dt):
+        """Velocity of body-fixed world points P over the current M0 -> M1 window."""
+        Pl, _R, _sc = self.local(P, self.M1)
+        Rn1, t1, s1 = self._split(self.M1)
+        Rn0, t0, s0 = self._split(self.M0)
+        return (((Pl * s1) @ Rn1.T + t1) - ((Pl * s0) @ Rn0.T + t0)) / dt
+
+    def pose_after(self, dt, vel=None, omega=None):
+        """Matrix after moving with (vel, omega) for dt from M1 (translation of the centre of mass, rotation about it or about the hinge)."""
+        vel = self.vel if vel is None else vel
+        omega = self.omega if omega is None else omega
+        M = self.M1.copy()
+        ang = float(np.linalg.norm(omega)) * dt
+        c = self.com_world() if (self.constraint != 'HINGE' or self.pivot is None) else self.pivot_world()
+        if ang > 1e-12:
+            k = omega / np.linalg.norm(omega)
+            K = np.array([[0, -k[2], k[1]], [k[2], 0, -k[0]], [-k[1], k[0], 0]])
+            R = np.eye(3) + math.sin(ang) * K + (1 - math.cos(ang)) * (K @ K)
+            M[:3, :3] = R @ M[:3, :3]
+            M[:3, 3] = R @ (M[:3, 3] - c) + c
+        M[:3, 3] += vel * dt
+        return M
+
+    def pivot_world(self):
+        return self.M_start[:3, :3] @ np.asarray(self.pivot, float) + self.M_start[:3, 3] if self.pivot is not None else self.com_world()
+
+    def integrate(self, dt, g):
+        """Advance the body one substep under the measured fluid force / torque, gravity, external force, friction and its constraint."""
+        if not self.dynamic:
+            self.M0 = self.M1
+            return
+        m = self.mass
+        ax = np.asarray(self.axis, float)
+        ax = ax / max(np.linalg.norm(ax), 1e-12)
+        self._Fs = (1 - self.smooth) * self._Fs + self.smooth * self._F
+        self._Ts = (1 - self.smooth) * self._Ts + self.smooth * self._T
+        F = self._Fs + m * np.asarray(g, float) + self.ext
+        T = self._Ts.copy()
+        if self.constraint == 'SLIDER':
+            f = float(F @ ax)
+            v = float(self.vel @ ax)
+            f = self._frictionised(f, v, self.stick, self.kfric)
+            v += f / m * dt
+            tr = self.travel + v * dt
+            if self.limits is not None:
+                lo, hi = self.limits
+                if tr > hi:
+                    tr, v = hi, min(v, 0.0)
+                if tr < lo:
+                    tr, v = lo, max(v, 0.0)
+            self.vel = ax * v
+            self.omega[:] = 0.0
+            dv = ax * (tr - self.travel)
+            self.travel = tr
+            self.M0 = self.M1
+            M = self.M1.copy()
+            M[:3, 3] += dv
+            self.M1 = M
+            return
+        if self.constraint == 'HINGE':
+            piv = self.pivot_world()
+            r = self.com_world() - piv
+            Tp = T + np.cross(self.com_world() - piv, F)
+            t = float(Tp @ ax)
+            w = float(self.omega @ ax)
+            Ih = self.inertia() + m * float(r @ r)
+            t = self._frictionised(t, w, self.stick, self.kfric)
+            w += t / Ih * dt
+            ang = self.travel + w * dt
+            if self.limits is not None:
+                lo, hi = self.limits
+                if ang > hi:
+                    ang, w = hi, min(w, 0.0)
+                if ang < lo:
+                    ang, w = lo, max(w, 0.0)
+            da = ang - self.travel
+            self.travel = ang
+            self.omega = ax * w
+            self.vel[:] = 0.0
+            self.M0 = self.M1
+            self.M1 = self.pose_after(1.0, vel=np.zeros(3), omega=ax * da)
+            return
+        # free body
+        fm = float(np.linalg.norm(F))
+        if self.stick > 0 and fm <= self.stick and float(np.linalg.norm(self.vel)) < 1e-6:
+            F = np.zeros(3)
+        elif self.stick > 0:
+            F = F - self.stick * F / max(fm, 1e-12)
+        F = F - self.kfric * self.vel
+        self.vel = self.vel + F / m * dt
+        self.omega = (self.omega + T / self.inertia() * dt) * math.exp(-(self.kfric / max(m, 1e-9) + 0.5) * dt)
+        wn = float(np.linalg.norm(self.omega))
+        if wn > 30.0:
+            self.omega *= 30.0 / wn
+        self.M0 = self.M1
+        self.M1 = self.pose_after(dt)
+
+    @staticmethod
+    def _frictionised(f, v, stick, kfric):
+        if abs(v) < 1e-9 and abs(f) <= stick:
+            return 0.0
+        f = f - math.copysign(stick, v if abs(v) > 1e-9 else f)
+        return f - kfric * v
 
     def set_matrix(self, M):
         """New transform for the coming frame (the previous one becomes the start of the interpolation)."""
@@ -217,6 +369,9 @@ class Body:
         return not np.allclose(self.M0, self.M1, atol=1e-12)
 
     def matrix_at(self, s):
+        if self.dynamic:                       # a dynamic body advances inside each substep: s is the solver's substep fraction
+            a, b = self.rel
+            s = (s - a) / max(b - a, 1e-12)
         return self.M0 + (self.M1 - self.M0) * s
 
     @staticmethod
@@ -727,11 +882,17 @@ class FluidSolver:
         return np.where(self.gas[f], np.minimum(rg, 4.0 * self.dx), 0.5 * self.dx)
 
     def snapshot(self):
-        return dict(x=self.x.copy(), v=self.v.copy(), T=self.T.copy(), t=self.t, gust=self.gust_vec.copy(), C=self.C.copy(), cluster=self.cluster.copy())
+        return dict(x=self.x.copy(), v=self.v.copy(), T=self.T.copy(), t=self.t, gust=self.gust_vec.copy(), C=self.C.copy(), cluster=self.cluster.copy(),
+                    bodies=[(b.M1.copy(), b.vel.copy(), b.omega.copy(), b.travel, b.F.copy(), b.T.copy()) for b in self.bodies])
 
     def restore(self, s):
         self.x, self.v, self.T, self.t = s['x'].copy(), s['v'].copy(), s['T'].copy(), s['t']
         self.gust_vec = s.get('gust', np.zeros(3)).copy()
+        for b, st in zip(self.bodies, s.get('bodies', [])):
+            if b.dynamic:
+                b.M0 = b.M1 = st[0].copy()
+                b.vel, b.omega, b.travel = st[1].copy(), st[2].copy(), st[3]
+            b.F, b.T = st[4].copy(), st[5].copy()
         if 'C' in s and len(s['C']) == self.n:
             self.C, self.cluster = s['C'].copy(), s['cluster'].copy()
             self._derive(np.arange(self.n))
@@ -759,10 +920,32 @@ class FluidSolver:
             return
         vmax_now = float(np.sqrt(np.max(np.einsum('ij,ij->i', self.v, self.v)))) if self.n else 0.0
         nsub = int(np.clip(math.ceil(max(vmax_now, 0.5 * np.linalg.norm(self.env.g) * dt) * dt / (0.8 * self.hg)), 1, self.max_sub))
-        for k in range(nsub):
-            self._substep(dt / nsub, k / nsub, (k + 1) / nsub)
+        dyn = [b for b in self.bodies if b.dynamic]
         for b in self.bodies:
-            b.settle()
+            b.F[:] = 0.0
+            b.T[:] = 0.0
+        for k in range(nsub):
+            sub = dt / nsub
+            for b in self.bodies:
+                b._F[:] = 0.0
+                b._T[:] = 0.0
+            for b in dyn:                              # predict the pose over this substep from the present velocity
+                b.M0 = b.M1
+                b.rel = (k / nsub, (k + 1) / nsub)
+                b.M1 = b.pose_after(sub) if b.constraint != 'SLIDER' else _slide_pose(b, sub)
+            self._substep(sub, k / nsub, (k + 1) / nsub)
+            for b in self.bodies:
+                b.F += b._F / nsub
+                b.T += b._T / nsub
+            for b in dyn:
+                b.M1 = b.M0                           # integrate from the start-of-substep pose with the measured force
+                b.integrate(sub, self.env.g)
+                self._body_contacts(b, sub)
+        for b in self.bodies:
+            if not b.dynamic:
+                b.settle()
+            else:
+                b.M0 = b.M1
         self.t += dt
 
     def outside_count(self):
@@ -802,6 +985,7 @@ class FluidSolver:
             return self._solid_cache[1]
         hg = self.hg
         S = np.zeros(dims, bool)
+        Sown = -np.ones(dims, np.int16)
         ax = [origin[a] + (np.arange(dims[a]) + 0.5) * hg for a in range(3)]
         for bi, b in enumerate(self.bodies):
             if b.fluids is not None and not (set(b.fluids) & set(liquid_fluids)):
@@ -818,10 +1002,14 @@ class FluidSolver:
             d = b.distance(G, M)
             m = (d < 0.0).reshape(len(sl[0]), len(sl[1]), len(sl[2]))
             S[np.ix_(sl[0], sl[1], sl[2])] |= m
+            sub = Sown[np.ix_(sl[0], sl[1], sl[2])]
+            sub[m] = bi
+            Sown[np.ix_(sl[0], sl[1], sl[2])] = sub
         if self.ground_z is not None:
             zc = origin[2] + (np.arange(dims[2]) + 0.5) * hg
             S |= (zc < self.ground_z)[None, None, :]
         self._solid_cache = (key, S)
+        self._solid_owner = Sown
         return S
 
     @staticmethod
@@ -839,6 +1027,41 @@ class FluidSolver:
                     flat = (ii[:, 0] * shape[1] + ii[:, 1]) * shape[2] + ii[:, 2]
                     out.append((np.where(ok, flat, 0), np.where(ok, w, 0.0)))
         return out
+
+    def _pressure_force(self, p, L, S, origin, hg):
+        Sown = self._solid_owner
+        hg2 = hg * hg
+        for c in range(3):
+            a_lo = tuple(slice(0, -1) if a == c else slice(None) for a in range(3))
+            a_hi = tuple(slice(1, None) if a == c else slice(None) for a in range(3))
+            for fl_side, sign in ((0, 1.0), (1, -1.0)):
+                if fl_side == 0:
+                    m = L[a_lo] & S[a_hi]
+                    own = Sown[a_hi]
+                    pr = p[a_lo]
+                else:
+                    m = L[a_hi] & S[a_lo]
+                    own = Sown[a_lo]
+                    pr = p[a_hi]
+                ii = np.argwhere(m)
+                if len(ii) == 0:
+                    continue
+                ow = own[m]
+                f = sign * pr[m] * hg2
+                pos = origin + (ii + 0.5) * hg
+                pos[:, c] = origin[c] + (ii[:, c] + 1) * hg
+                for bi in np.unique(ow):
+                    if bi < 0 or not self.bodies[bi].two_way:
+                        continue
+                    sel = ow == bi
+                    b = self.bodies[bi]
+                    F = np.zeros(3)
+                    F[c] = float(f[sel].sum())
+                    r = pos[sel] - b.com_world(b.M1)
+                    Fv = np.zeros((int(sel.sum()), 3)); Fv[:, c] = f[sel]
+                    b._F += F
+                    b._T += np.cross(r, Fv).sum(0)
+                    self._acc_flip = True
 
     def _flip(self, dt, idx_l, rho, s1):
         """Grid pressure projection with variable density for the liquid particles (FLIP / PIC transfer).
@@ -884,6 +1107,23 @@ class FluidSolver:
             hi_s = S[tuple(slice(1, None) if a == c else slice(None) for a in range(3))]
             wall[tuple(slice(1, -1) if a == c else slice(None) for a in range(3))] = lo_s | hi_s
             U[c][wall] = 0.0
+            # a moving body drives the fluid next to it: the wall face takes the body's velocity (normal component)
+            mv = [bi for bi, b_ in enumerate(self.bodies) if b_.dynamic or b_.moving()]
+            if mv and wall.any():
+                Sown = self._solid_owner
+                own = -np.ones(U[c].shape, np.int16)
+                ow_lo = Sown[tuple(slice(0, -1) if a == c else slice(None) for a in range(3))]
+                ow_hi = Sown[tuple(slice(1, None) if a == c else slice(None) for a in range(3))]
+                inner_sl = tuple(slice(1, -1) if a == c else slice(None) for a in range(3))
+                own[inner_sl] = np.where(ow_lo >= 0, ow_lo, ow_hi)
+                for bi in mv:
+                    mm = wall & (own == bi)
+                    if not mm.any():
+                        continue
+                    ii = np.argwhere(mm)
+                    pos = origin + (ii + 0.5) * hg
+                    pos[:, c] = origin[c] + ii[:, c] * hg
+                    U[c][mm] = self.bodies[bi].point_velocity(pos, dt)[:, c]
             Uw[c] = Uw[c] | wall
         U0 = [u.copy() for u in U]
         # ---- viscosity (explicit, clamped) on the grid is applied through the particles (XSPH) afterwards
@@ -933,6 +1173,9 @@ class FluidSolver:
             rz = rz_new
         self.cg_last = it
         self._p_prev, self._p_origin = p, origin.copy()
+        # ---- force of the pressure on the bodies (fluid faces next to a solid cell of the body), for the two-way coupling
+        if any(b.two_way for b in self.bodies):
+            self._pressure_force(p, L, S, origin, hg)
         # ---- velocity update from the pressure gradient
         for c in range(3):
             t, Lc, Ln, a_lo, a_hi = tcoef[c]
@@ -1085,6 +1328,48 @@ class FluidSolver:
         mask = np.isin(self.fid, list(b.fluids))
         return np.flatnonzero(mask)
 
+    def _body_contacts(self, b, dt):
+        """A dynamic body does not sink through the container walls or the ground: sample points of its surface are kept on the legal side."""
+        sp = b.field.soup
+        if len(sp) == 0:
+            return
+        pts = np.vstack([sp.A, (sp.A + sp.B + sp.C) / 3.0])
+        if len(pts) > 600:
+            pts = pts[np.linspace(0, len(pts) - 1, 600).astype(int)]
+        for _ in range(3):
+            W = pts @ b.M1[:3, :3].T + b.M1[:3, 3]
+            push = np.zeros(3)
+            nsum = np.zeros(3)
+            for o in self.bodies:
+                if o is b or o.kind != 'CONTAINER':
+                    continue
+                d = o.distance(W, o.M1)
+                bad = np.flatnonzero(d < 0.0)
+                if len(bad) == 0:
+                    continue
+                j = bad[np.argmin(d[bad])]
+                _d, nrm, _R, _s = o.distance_normal(W[j:j + 1], o.M1)
+                push += nrm[0] * (-d[j])
+                nsum += nrm[0]
+            if self.ground_z is not None:
+                dz = float(W[:, 2].min()) - self.ground_z
+                if dz < 0:
+                    push[2] += -dz
+                    nsum[2] += 1.0
+            if float(np.linalg.norm(push)) < 1e-9:
+                break
+            if b.constraint == 'SLIDER':
+                ax = np.asarray(b.axis, float) / max(np.linalg.norm(b.axis), 1e-12)
+                push = ax * float(push @ ax)
+            M = b.M1.copy()
+            M[:3, 3] += push
+            b.M1 = M
+            b.travel += float(push @ (np.asarray(b.axis, float) / max(np.linalg.norm(b.axis), 1e-12))) if b.constraint == 'SLIDER' else 0.0
+            n = nsum / max(np.linalg.norm(nsum), 1e-12)
+            vn = float(b.vel @ n)
+            if vn < 0:
+                b.vel = b.vel - vn * n
+
     def _project(self, xs, prad, s1):
         """Push every particle to the legal side of every body (and the ground) by its radius."""
         for bi, b in enumerate(self.bodies):
@@ -1164,7 +1449,18 @@ class FluidSolver:
             vr_n = np.minimum(vn_c, 0.0)[:, None] * nrm                 # keep the part moving into the wall removed below
             vr_t = vr - vn_c[:, None] * nrm
             mu = min(max(b.friction, 0.0), 1.0)
+            v_old = vn[gi].copy()
             vn[gi] = vw + np.maximum(vn_c, 0.0)[:, None] * nrm + (1.0 - mu) * vr_t
+            if b.two_way:
+                # momentum the wall gave the particles, reversed: tangential drag for every particle; the normal part only for gas parcels
+                # (liquids get their wall pressure from the grid projection, counted in _pressure_force)
+                dv = vn[gi] - v_old
+                gasc = self.gas[self.fid[gi]]
+                dvn = np.einsum('ij,ij->i', dv, nrm)
+                dv_use = np.where(gasc[:, None], dv, dv - dvn[:, None] * nrm)
+                imp = -self.mass_ref[gi][:, None] * dv_use / dt
+                b._F += imp.sum(0)
+                b._T += np.cross(xs[gi] - b.com_world(b.M1), imp).sum(0)
         if self.ground_z is not None:
             gd = xs[:, 2] - self.ground_z
             wd = np.minimum(wd, gd)
@@ -1229,6 +1525,14 @@ class FluidSolver:
             near = (self.x[:, 2] - self.ground_z) < 2 * self.dx
             T_target[near] = env.ground_temp
         T += dQ / Cap + (T_target - T) * rate
+
+
+def _slide_pose(b, dt):
+    ax = np.asarray(b.axis, float)
+    ax = ax / max(np.linalg.norm(ax), 1e-12)
+    M = b.M1.copy()
+    M[:3, 3] += ax * float(b.vel @ ax) * dt
+    return M
 
 
 def step_many(S, n, dt=1.0 / 24.0, **kw):

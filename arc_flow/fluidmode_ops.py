@@ -1,7 +1,7 @@
 """Fluid mode (Tessera Projection / LOTBCBP): Blender bridge for core/fluidmode.py.
 
 Scene -> solver (fluids, containers, colliders, heat sources, Environment card), frame stepping with an in-memory cache,
-particle objects (Points / mesh per particle / ray march / splat through the existing render groups), operators and demos."""
+particle objects (Points / mesh per particle / ray march / splat through the existing render groups), operators and examples."""
 import math
 
 import bpy
@@ -126,7 +126,8 @@ def build_solver(scene):
             fld, _v, _t = runtime._field(o, deps)
             bodies.append(FM.Body(fld, np.array(o.matrix_world), 'COLLIDER', None, o.arc_flow_fm.friction, o.name))
             body_objs.append(o)
-    for b in bodies:
+    for b, o in zip(bodies, body_objs):
+        _body_props(b, o)
         if b.kind == 'CONTAINER' and not b.fluids:
             b.fluids = None
     env = environment(scene, min(z_low) if z_low else 0.0)
@@ -430,10 +431,13 @@ def sim_frame(scene, frame):
             S.restore(seed)
             RT.last = frame
     if frame == RT.last:
+        sync_bodies()
         return stepped
     dt = 1.0 / fps(scene)
     while RT.last < frame:
         for b, o in zip(S.bodies, RT.body_objs):
+            if b.dynamic:
+                continue                                   # the object follows the body
             M = np.array(o.matrix_world)
             if not np.allclose(M, b.M1, atol=1e-12):
                 b.set_matrix(M)
@@ -443,7 +447,33 @@ def sim_frame(scene, frame):
         RT.last += 1
         RT.cache[RT.last] = S.snapshot()
         stepped = True
+    sync_bodies()
     return stepped
+
+
+@persistent
+def _body_props(b, o):
+    p = o.arc_flow_fm
+    b.two_way = bool(p.two_way)
+    b.mass = float(p.mass)
+    b.constraint = p.constraint
+    b.axis = np.array(p.axis, float)
+    b.limits = (p.limit_lo, p.limit_hi) if p.limit_on else None
+    b.stick, b.kfric = float(p.stick), float(p.drag)
+    if p.constraint == 'HINGE':
+        b.pivot = np.zeros(3)                                # the hinge turns about the object origin
+    b.M_start = np.array(o.matrix_world)
+    b.reset_motion()
+
+
+def sync_bodies():
+    """Dynamic bodies move their Blender objects (also after scrubbing back through the cache)."""
+    S = RT.solver
+    if S is None:
+        return
+    for b, o in zip(S.bodies, RT.body_objs):
+        if b.dynamic:
+            o.matrix_world = b.M1.tolist()
 
 
 @persistent
@@ -703,7 +733,7 @@ class AF_OT_fm_bake(Operator):
         return {'FINISHED'}
 
 
-# ----------------------------------------------------------------------------- demos (Blender primitives only)
+# ----------------------------------------------------------------------------- examples (Blender primitives only)
 def _emissive_material(name, color, strength):
     m = bpy.data.materials.get(name) or bpy.data.materials.new(name)
     m.use_nodes = True
@@ -960,7 +990,7 @@ def load_gas_tower(scene, max_particles=3000):
 
 class AF_OT_fm_demo(Operator):
     bl_idname = "arcflow.fm_demo"
-    bl_label = "Load Fluid Demo"
+    bl_label = "Load Fluid Example"
     bl_options = {'REGISTER', 'UNDO'}
     which: StringProperty(default='LAVA')
 
@@ -973,7 +1003,7 @@ class AF_OT_fm_demo(Operator):
 
     def execute(self, ctx):
         {'LAVA': load_lava_lamp, 'PLUME': load_gas_plume, 'TOWER': load_gas_tower, 'MIX': load_colour_mixing}[self.which](ctx.scene)
-        self.report({'INFO'}, "Demo loaded. Press Build.")
+        self.report({'INFO'}, "Example loaded. Press Build.")
         return {'FINISHED'}
 
 

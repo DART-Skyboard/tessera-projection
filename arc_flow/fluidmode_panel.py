@@ -85,12 +85,6 @@ class AF_PT_fm_main(_FMBase, Panel):
         l.label(text=fm.status, icon='INFO')
         if FO.RT.msg:
             l.label(text=FO.RT.msg[:60], icon='ERROR')
-        b = l.box()
-        b.label(text="Demos", icon='MOD_FLUIDSIM')
-        r = b.row(align=True)
-        for which, lab in (('LAVA', "Lava Lamp"), ('MIX', "Colour Mixing"), ('PLUME', "Gas Plume"), ('TOWER', "Gas Tower")):
-            op = r.operator("arcflow.fm_demo", text=lab)
-            op.which = which
         l.label(text="Volumetric, particle-based (Lagrangian) fluids: render the particles as points,", icon='DOT')
         l.label(text="your own mesh per point, or a ray-marched volume.")
 
@@ -205,6 +199,21 @@ class AF_PT_fm_object(_FMBase, Panel):
             l.prop(p, "collider")
             if p.collider:
                 l.prop(p, "friction")
+            if p.collider or any(fl.container == o for fl in ctx.scene.arc_flow_fm.fluids):
+                b = l.box()
+                b.label(text="Two-way coupling", icon='PHYSICS')
+                b.prop(p, "two_way")
+                if p.two_way:
+                    b.prop(p, "mass")
+                    if p.mass > 0:
+                        b.prop(p, "constraint")
+                        if p.constraint != 'FREE':
+                            b.prop(p, "axis")
+                        if p.constraint != 'FREE':
+                            r = b.row(); r.prop(p, "limit_on")
+                            if p.limit_on:
+                                r.prop(p, "limit_lo"); r.prop(p, "limit_hi")
+                        b.prop(p, "stick"); b.prop(p, "drag")
         l.label(text="Rotating / moving colliders and containers drive the fluid", icon='DOT')
 
 

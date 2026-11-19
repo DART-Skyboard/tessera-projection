@@ -76,6 +76,9 @@ errs = [abs(BURN.mdot_out(w, P, T0) - A_t * P * math.sqrt(g / (R * T0)) * (2 / (
 ok(max(errs) < 1e-9, "choked mass flow = A* p_c sqrt(gamma/(R T)) (2/(gamma+1))^((gamma+1)/(2(gamma-1))), linear in chamber pressure (%.0f kg/s at 50 bar)" % BURN.mdot_out(w, 5e6, T0))
 ok(0 < BURN.mdot_out(w, 1.2e5, T0) < BURN.mdot_out(w, 1.6e5, T0) < A_t * FL.choked_mass_flux(1.6e5, T0, g, R), "below the critical pressure ratio the flow is subsonic and smaller than the choked flow would be")
 ex = FL.exit_state(b['P_c'], T0, g, R, (nz['r_e'] / nz['r_t']) ** 2)
+Ae = math.pi * nz['r_e'] ** 2
+Fth = b['mdot_out'] * ex['v'] + (ex['p'] - w.env.pressure) * Ae
+ok(abs(b['thrust'] - Fth) < 1e-6 * max(Fth, 1.0) and b['thrust'] > 0 and np.dot(b['thrust_vec'], nz['normal']) < 0, "nozzle thrust F = mdot v_e + (p_e - p_a) A_e = %.0f kN, pointing against the exhaust (Isp %.0f s)" % (b['thrust'] / 1e3, b['isp']))
 ok(abs(b['v_exit'] - ex['v']) < 1e-6 and ex['M'] > 2.5, "nozzle expansion: exit Mach %.2f, %.0f m/s, exit pressure %.2f bar (area ratio %.1f)" % (ex['M'], ex['v'], ex['p'] / 1e5, (nz['r_e'] / nz['r_t']) ** 2))
 phis = np.array([nz['phi_t'] * 2.0, nz['phi_t'] * 1.05, nz['phi_t'] * 0.5, 0.0])
 rads = np.array([1.0, nz['r_t'], 0.5 * (nz['r_t'] + nz['r_e']), nz['r_e']])
