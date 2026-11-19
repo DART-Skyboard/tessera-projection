@@ -182,8 +182,8 @@ class AF_PT_srf(_Base, Panel):
 
 def prepare():
     """Clear DEFAULT_CLOSED on every Tessera panel except Examples (call before the panel modules register)."""
-    from . import fluidmode_panel, retopo_panel, systems_ops
-    for mod in (panels, fluidmode_panel, systems_ops, retopo_panel, __import__(__name__, fromlist=['x'])):
+    from . import fluidmode_panel, retopo_panel, systems_ops, tessera_nodes
+    for mod in (panels, fluidmode_panel, systems_ops, retopo_panel, tessera_nodes, __import__(__name__, fromlist=['x'])):
         for name in dir(mod):
             cls = getattr(mod, name)
             if isinstance(cls, type) and issubclass(cls, Panel) and getattr(cls, 'bl_category', "") == "Tessera" and cls.__name__ != "AF_PT_examples":
