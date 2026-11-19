@@ -89,14 +89,16 @@ def hydrostatic_report(S, n_layers=3):
     return dict(measured=float(np.mean(meas)), expected=float(np.mean(exp)), ratio=float(np.mean(meas) / np.mean(exp)))
 
 
-def settle(S, dt=1.0 / 24.0, max_steps=120, tol=None, quick=False, progress=None):
+def settle(S, dt=1.0 / 24.0, max_steps=120, tol=None, quick=False, progress=None, mode=None):
     """Dynamic fill: step with heat sources off until the mean liquid speed is below tol (m/s, default 0.2 sqrt(g dx)) three steps in a row, or max_steps.
-    quick: level-set seeding is kept as it is, with 6 relaxing steps.  progress(step, max_steps, mean_speed) is called every step.
+    mode 'LEVEL' (default of Fluid mode): analytic level-set seeding plus 10 relaxing steps; 'QUICK': 3 steps; 'POUR': full dynamic fill.  progress(step, max_steps, mean_speed) is called every step.
     Returns the report dict.  Gas parcels do not take part (they are not container-filled liquids)."""
     liq = np.flatnonzero(~S.gas[S.fid])
     if tol is None:                 # FLIP keeps a particle-noise floor of ~0.2 sqrt(g dx); below that the fluid counts as at rest
         tol = 0.2 * float(np.sqrt(np.linalg.norm(S.env.g) * S.dx))
-    n_max = 6 if quick else int(max_steps)
+    mode = mode or ('QUICK' if quick else 'POUR')
+    quick = mode != 'POUR'
+    n_max = {'QUICK': 3, 'LEVEL': 10}.get(mode, int(max_steps))
     calm, steps, ms = 0, 0, 0.0
     lv = []
     up = -gravity_dir(S)
@@ -115,6 +117,6 @@ def settle(S, dt=1.0 / 24.0, max_steps=120, tol=None, quick=False, progress=None
             break
     S.iters = it0
     S.t = 0.0
-    out = dict(steps=steps, converged=bool(calm >= 3) or quick, mean_speed=ms, quick=bool(quick), layers=layer_heights(S),
+    out = dict(steps=steps, converged=bool(calm >= 3) or quick, mean_speed=ms, mode=mode, quick=bool(quick), layers=layer_heights(S),
                overflow=overflow_report(S), pressure=hydrostatic_report(S))
     return out

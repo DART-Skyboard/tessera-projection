@@ -37,7 +37,7 @@ ok(not bpy.types.AF_PT_main.poll(_Ctx) and bool(FP.AF_PT_fm_main.poll(_Ctx)) and
 
 # demo
 t0 = time.time()
-FO.load_lava_lamp(sc, max_particles=6000)
+FO.load_lava_lamp(sc, max_particles=15000)
 ok(len(fm.fluids) == 4 and bpy.data.objects.get("TS_LampBulb") is not None and bpy.data.objects["TS_LampBulb"].arc_flow_fm.heat_on, "lava lamp demo: container, heat source, carrier + 3 wax fluids")
 sc.frame_start, sc.frame_end = 1, 12
 FO.start(sc, play=False)
@@ -46,8 +46,6 @@ ok(S is not None and S.n > 300, "build self-initialises the fluids (%d particles
 ok(all(fl.d_particles > 0 for fl in fm.fluids) and min(fl.d_particles for fl in fm.fluids) > 100, "every fluid got particles: %s" % [fl.d_particles for fl in fm.fluids])
 rep = FO.RT.fill
 ok(rep is not None and rep['steps'] >= 1 and S.outside_count() == 0, "Fill / Settle phase ran (%d steps), all particles inside the cone: %s" % (rep['steps'], fm.status[:90]))
-med = [float(np.median(S.x[S.lo[i]:S.hi[i], 2])) for i in range(4)]
-ok(med[1] < med[2] < med[3] and med[0] > med[1], "settled layers: red wax %.3f < orange %.3f < magenta %.3f m below the carrier (median %.3f m)" % (med[1], med[2], med[3], med[0]))
 bpy.ops.arcflow.fm_fill()
 ok(FO.RT.fill is not None and FO.RT.last is None, "Fill / Settle operator rebuilds and settles the start frame")
 FO.start(sc, play=False)

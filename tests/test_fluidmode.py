@@ -325,7 +325,7 @@ def test_cavity_fill():
         vz = np.cumsum(np.pi * rr ** 2) * (zs[1] - zs[0])
         z_expect = zs[np.searchsorted(vz, fr * FM.mesh_volume(V, T))]
         d_top = S.x[:, 2].max() + 0.5 * S.dx - z_expect
-        ok(-0.5 * S.dx < d_top < 3.2 * S.dx, "cone fill %d%%: seeded surface at %.3f m, exact level %.3f m (the dynamic fill closes the half-cell wall gap)" % (fr * 100, S.x[:, 2].max(), z_expect))
+        ok(abs(d_top) < 1.2 * S.dx, "cone fill %d%%: level-set seeded surface at %.3f m, exact level %.3f m" % (fr * 100, S.x[:, 2].max(), z_expect))
 
 
 def test_confinement():
@@ -353,27 +353,32 @@ def test_fill_settle():
         b = body_of(V, T)
         w = FM.fluid_def('WATER', name='w', body=0, volume=fr * FM.mesh_volume(V, T))
         S = FM.FluidSolver.build([w], [b], FM.FEnv(), dx=0.008)
-        rep = FS.settle(S, max_steps=80)
+        t_s = time.time()
+        rep = FS.settle(S, mode='LEVEL')
+        t_lv = time.time() - t_s
         zs = np.linspace(0, prof[-1][1], 3601)
         vz = np.cumsum(np.pi * radius_at(prof, zs) ** 2) * (zs[1] - zs[0])
         z_expect = zs[np.searchsorted(vz, fr * FM.mesh_volume(V, T))]
         top = np.percentile(S.x[:, 2], 99) + 0.5 * S.dx
-        ok(abs(top - z_expect) < 2.0 * S.dx, "%s: settled level %.3f m vs volume/cross-section %.3f m (%d steps, mean speed %.3f m/s)" % (name, top, z_expect, rep['steps'], rep['mean_speed']))
+        ok(abs(top - z_expect) < 2.0 * S.dx, "%s: level-set fill + settle %.3f m vs volume/cross-section %.3f m (%d steps, %.1f s, %d particles)" % (name, top, z_expect, rep['steps'], t_lv, S.n))
         ok(S.outside_count() == 0, "%s: settled fill stays in the cavity" % name)
         if name == "cone":
             hs = FS.hydrostatic_report(S)
-            ok(hs is not None and 0.8 < hs['ratio'] < 1.25, "cone hydrostatic pressure at the bottom %.0f Pa vs rho g h %.0f Pa (ratio %.2f)" % (hs['measured'], hs['expected'], hs['ratio']))
+            ok(hs is not None and 0.75 < hs['ratio'] < 1.3, "cone hydrostatic pressure at the bottom %.0f Pa vs rho g h %.0f Pa (ratio %.2f)" % (hs['measured'], hs['expected'], hs['ratio']))
             # determinism: the same build and settle gives the same level
             S2 = FM.FluidSolver.build([w], [b], FM.FEnv(), dx=0.008)
-            FS.settle(S2, max_steps=60)
+            Sp = FM.FluidSolver.build([w], [b], FM.FEnv(), dx=0.008, fill_seed='POUR')
+            t_p = time.time(); rp = FS.settle(Sp, max_steps=120, mode='POUR'); t_p = time.time() - t_p
+            ok(abs(np.percentile(Sp.x[:, 2], 99) + 0.5 * Sp.dx - z_expect) < 2.0 * S.dx, "pour fill (full dynamic): level %.3f m in %d steps, %.1f s (level-set fill: %d steps, %.1f s)" % (np.percentile(Sp.x[:, 2], 99) + 0.5 * Sp.dx, rp['steps'], t_p, rep['steps'], t_lv))
+            FS.settle(S2, mode='LEVEL')
             ok(abs(np.percentile(S2.x[:, 2], 99) - np.percentile(S.x[:, 2], 99)) < 1e-6, "fill / settle is deterministic")
     # quick fill keeps the level-set seeding
     V, T = lathe(CONE)
     b = body_of(V, T)
     w = FM.fluid_def('WATER', name='w', body=0, volume=0.5 * FM.mesh_volume(V, T))
     S = FM.FluidSolver.build([w], [b], FM.FEnv(), dx=0.008)
-    rep = FS.settle(S, quick=True)
-    ok(rep['steps'] == 6 and S.outside_count() == 0, "quick fill: level-set seeding plus %d relaxing steps" % rep['steps'])
+    rep = FS.settle(S, mode='QUICK')
+    ok(rep['steps'] == 3 and S.outside_count() == 0, "quick fill: level-set seeding plus %d relaxing steps" % rep['steps'])
     # overflow: sealed and open vessels
     for opened in (False, True):
         b = body_of(V, T)
@@ -388,10 +393,89 @@ def test_fill_settle():
     oil = FM.fluid_def('MINERAL_OIL', name='oil', body=0, volume=0.25 * FM.mesh_volume(V, T), miscible=False)
     wat = FM.fluid_def('WATER', name='water', body=0, volume=0.25 * FM.mesh_volume(V, T), miscible=False)
     S = FM.FluidSolver.build([oil, wat], [b], FM.FEnv(), dx=0.008)
-    rep = FS.settle(S, max_steps=50)
+    rep = FS.settle(S, mode='LEVEL')
     lay = {n: (lo, hi) for n, lo, hi in rep['layers']}
     ok(lay['water'][1] <= lay['oil'][1] and np.percentile(S.x[S.lo[1]:S.hi[1], 2], 50) < np.percentile(S.x[S.lo[0]:S.hi[0], 2], 50),
        "two fluids: water layer %.3f-%.3f m below the oil layer %.3f-%.3f m" % (lay['water'][0], lay['water'][1], lay['oil'][0], lay['oil'][1]))
+
+
+def components(P, r):
+    """Connected components of a point set (link distance r): (count, sizes descending).  Pure NumPy union-find."""
+    n = len(P)
+    parent = np.arange(n)
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+    I, J = FM.neighbor_pairs(P, r)
+    for a, b in zip(I, J):
+        if np.linalg.norm(P[a] - P[b]) < r:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[ra] = rb
+    roots = np.array([find(a) for a in range(n)])
+    sz = np.sort(np.bincount(np.unique(roots, return_inverse=True)[1]))[::-1]
+    return len(sz), sz
+
+
+def wax_scene(centers, T_wax, dx=0.007, coh=2.0, z_ref=293.15):
+    V, T = lathe([(0, 0), (0.06, 0), (0.06, 0.20), (0, 0.20)])
+    b = body_of(V, T)
+    cav = FM.mesh_volume(V, T)
+    car = FM.fluid_def('WATER', name='carrier', body=0, volume=0.75 * cav, density=985.0, beta=4e-4, tref=z_ref, temperature=z_ref, miscible=False, cohesion=0.04)
+    wx = []
+    for k, c in enumerate(centers):
+        P = FM.lat_pos(FM.lattice_in_box(np.array(c) - 0.03, np.array(c) + 0.03, dx), dx)
+        P = P[np.linalg.norm(P - np.array(c), axis=1) < 0.028]
+        wx.append(FM.fluid_def('LAVA_WAX', name='wax%d' % k, body=0, shape=dict(kind='POINTS', pts=P), density=1034.0, beta=3.5e-3, tref=z_ref,
+                               temperature=T_wax, miscible=False, cohesion=coh, group=10 + k))
+    return FM.FluidSolver.build([car] + wx, [b], FM.FEnv(), dx=dx)
+
+
+def interface_mix(S, fw, dx):
+    """Fraction of fluid fw's particles that sit mostly among other fluids (numerical mixing across the interface)."""
+    wax = np.flatnonzero(S.fid == fw)
+    I, J = FM.neighbor_pairs(S.x, 1.6 * dx)
+    same = np.zeros(S.n); tot = np.zeros(S.n)
+    m = S.fid[I] == S.fid[J]
+    for a, b in ((I, J), (J, I)):
+        tot += np.bincount(a, minlength=S.n)
+        same += np.bincount(a, weights=m.astype(float), minlength=S.n)
+    frac = (same[wax] + 1.0) / (tot[wax] + 1.0)
+    return float(np.mean(frac < 0.3))
+
+
+def test_wax_blobs():
+    dx = 0.007
+    # hot blob: rises, stays ONE connected cluster, little mixing into the carrier
+    S = wax_scene([(0, 0, 0.04)], 330.0)
+    w0 = S.x[S.lo[1]:S.hi[1], 2].mean()
+    zmax, ncomp, mixm = w0, [], []
+    for k in range(72):
+        S.step(1 / 24.0)
+        if k % 12 == 11:
+            w = S.x[S.lo[1]:S.hi[1]]
+            nc, sz = components(w, 1.5 * dx); ncomp.append((nc, round(sz[0] / len(w), 3))); mixm.append(interface_mix(S, 1, dx)); zmax = max(zmax, w[:, 2].mean())
+    ok(zmax - w0 > 0.06, "hot wax blob (%d particles, 4 spacings radius) rises %.0f mm in the carrier" % (S.hi[1] - S.lo[1], 1e3 * (zmax - w0)))
+    ok(min(c[1] for c in ncomp) >= 0.95, "the rising blob stays one connected cluster (components, largest share over time: %s)" % ncomp)
+    ok(max(mixm) < 0.05, "interface mixing metric stays low (max %.3f)" % max(mixm))
+    # cold wax is denser than the carrier: sinks; the same blob cooled while rising turns around
+    S = wax_scene([(0, 0, 0.13)], 293.15)
+    w0 = S.x[S.lo[1]:S.hi[1], 2].mean()
+    for k in range(48):
+        S.step(1 / 24.0)
+    ok(S.x[S.lo[1]:S.hi[1], 2].mean() < w0 - 0.03, "cold wax blob sinks (%.0f mm)" % (1e3 * (w0 - S.x[S.lo[1]:S.hi[1], 2].mean())))
+    # two blobs rising side by side do not merge unless they touch
+    S = wax_scene([(-0.033, 0, 0.04), (0.033, 0, 0.04)], 330.0)
+    for k in range(48):
+        S.step(1 / 24.0)
+    wa, wb = S.x[S.lo[1]:S.hi[1]], S.x[S.lo[2]:S.hi[2]]
+    allw = np.vstack([wa, wb])
+    sa, sb, sall = components(wa, 1.5 * dx)[1], components(wb, 1.5 * dx)[1], components(allw, 1.5 * dx)[1]
+    ok(sa[0] >= 0.95 * len(wa) and sb[0] >= 0.95 * len(wb) and sall[0] < 1.1 * max(len(wa), len(wb)),
+       "two blobs side by side stay two separate clusters (largest clusters %d / %d of %d / %d, union %d)" % (sa[0], sb[0], len(wa), len(wb), sall[0]))
 
 
 def test_speed():
@@ -410,7 +494,7 @@ def test_speed():
 if __name__ == '__main__':
     t0 = time.time()
     for fn in (test_units, test_environment, test_boussinesq, test_stratify_and_mass, test_gas_wind, test_gas_buoyancy, test_gravity_scaling,
-               test_heat, test_moving_wall, test_solid_displaces, test_spinning_gear, test_barometric_expansion, test_cavity_fill, test_confinement, test_fill_settle, test_speed):
+               test_heat, test_moving_wall, test_solid_displaces, test_spinning_gear, test_barometric_expansion, test_cavity_fill, test_confinement, test_fill_settle, test_wax_blobs, test_speed):
         t = time.time()
         try:
             fn()

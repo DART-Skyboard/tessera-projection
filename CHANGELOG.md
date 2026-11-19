@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.2
+- Fill: analytic level-set fill (stratified by density, exact level) plus a 10-step settle is the default; Pour fill keeps the full dynamic fill; Quick fill 3 steps. Faster than the 0.3.1 dynamic fill (see docs/TECHNICAL.md).
+- Wax blobs: cohesive immiscible phases couple their own particles' velocities, lava lamp wax starts as three blobs inside the cone, cold wax denser / warm wax lighter than the carrier; tests for connectivity, interface mixing, rise and sink, two blobs.
+- Lamp render: faint blue liquid volume, glossy blobs, lights hidden from the camera and the glass reflections.
+- Combustion fill test for cone and sphere tanks (the combustion world already filled the real cavity).
+
 ## 0.3.1
 - Fluid mode: Fill / Settle phase. Container fluids are seeded from the cavity's real shape through the collision-body projection (lowest point first along gravity), poured and settled dynamically under the Environment gravity (or Quick fill); the settled state is the start frame and heat starts at "Start heat at frame". Capacity check with overflow report (open vessel spills, sealed vessel reports over-pressure), layer heights and hydrostatic pressure report.
 - Confinement safety: escaped particles are projected back inside and counted; tests for cone, sphere, tilted cylinder, vase-shaped cavity.

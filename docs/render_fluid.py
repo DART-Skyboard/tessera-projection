@@ -1,13 +1,16 @@
 """Progress renders of Fluid mode (Cycles CPU, 960x540, 32 samples).
 
-    blender --factory-startup -b --python docs/render_fluid.py -- lamp 1 docs/renders/fluid_lamp_t0.png
-    args: demo (lamp | plume | tower), frame to render, output png [max_particles]
-The demo is built, the solver is stepped headless to the frame, then the frame is rendered."""
+    blender --factory-startup -b --python docs/render_fluid.py -- lamp 1,80,160 docs/renders/fluid_lamp_{f}.png [max_particles]
+    args: demo (lamp | plume | tower), comma separated frames to render, output png ({f} = the frame), optional max particles
+The demo is built (Fill / Settle runs on build), the solver is stepped headless and each listed frame is rendered.
+Env: FLUID_RES_PCT, FLUID_SAMPLES (quick previews), FLUID_CS (carrier particle scale)."""
+import math
 import os
 import sys
 import time
 
 import bpy
+import mathutils
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 import arc_flow
@@ -15,67 +18,81 @@ from arc_flow import fluidmode_ops as FO
 
 arc_flow.register()
 args = sys.argv[sys.argv.index('--') + 1:]
-demo, frame, out = args[0], int(args[1]), args[2]
-maxp = int(args[3]) if len(args) > 3 else 8000
+demo, frames, out = args[0], [int(v) for v in args[1].split(',')], args[2]
+maxp = int(args[3]) if len(args) > 3 else None
 sc = bpy.context.scene
 sc.render.fps = 24
-{'lamp': FO.load_lava_lamp, 'plume': FO.load_gas_plume, 'tower': FO.load_gas_tower}[demo](sc, max_particles=maxp)
+loader = {'lamp': FO.load_lava_lamp, 'plume': FO.load_gas_plume, 'tower': FO.load_gas_tower}[demo]
+loader(sc, **({'max_particles': maxp} if maxp else {}))
 for nm in ('Cube', 'Light', 'Camera'):   # the factory-startup scene objects
     if nm in bpy.data.objects:
         bpy.data.objects.remove(bpy.data.objects[nm])
-sc.frame_start, sc.frame_end = 1, max(frame + 2, 10)
-FO.start(sc, play=False)
+sc.frame_start, sc.frame_end = 1, max(frames) + 2
 t0 = time.time()
-for f in range(1, frame + 1):
-    sc.frame_set(f)
-print("simulated %d frames of %d particles in %.1f s (%.2f s/frame)" % (frame, FO.RT.solver.n, time.time() - t0, (time.time() - t0) / max(frame, 1)), flush=True)
-if demo == 'lamp':   # frame the whole lamp; the carrier liquid as a translucent volume, the wax as solid blobs
+FO.start(sc, play=False)
+print("built %d particles, fill %.1f s (%d steps)" % (FO.RT.solver.n, time.time() - t0, FO.RT.fill['steps'] if FO.RT.fill else 0), flush=True)
+fm = sc.arc_flow_fm
+if demo == 'tower':
+    bpy.data.objects['TS_Tower'].hide_render = True
+if demo != 'lamp':
+    for fl in fm.fluids:
+        fl.particle_scale = 3.5
+    ld = bpy.data.lights.new("TS_Sun", 'SUN'); ld.energy = 4.0
+    so = bpy.data.objects.new("TS_Sun", ld); sc.collection.objects.link(so); so.rotation_euler = (0.9, 0.3, 0.6)
+if demo == 'lamp':   # frame the whole lamp; the carrier liquid is a faint tint, the wax blobs are larger and solid
     cam = sc.camera
     cam.data.lens = 36
     cam.location = (0.0, -0.95, 0.17)
-    cam.rotation_euler = (__import__('math').radians(90.0), 0, 0)
-    if os.environ.get('FLUID_CARRIER', 'points') == 'ray':
-        sc.arc_flow_fm.fluids[0].render_mode = 'RAYMARCH'
-    else:
-        sc.arc_flow_fm.fluids[0].particle_scale = float(os.environ.get("FLUID_CS", "0.28"))
-        for fl in list(sc.arc_flow_fm.fluids)[1:]:
-            fl.particle_scale = 1.25
-    if os.environ.get('FLUID_DEBUG') == 'noglass':
-        bpy.data.objects['TS_LampGlass'].hide_render = True
-    if os.environ.get('FLUID_DEBUG') == 'nolights':
-        sc.arc_flow_fm.fluids[0].render_mode = 'POINTS'
-    FO.refresh_render(sc)
-    FO.apply_state(sc, FO.RT.cache.get(frame))
-w = bpy.data.worlds.new("TS_World") if sc.world is None else sc.world
+    cam.rotation_euler = (math.radians(90.0), 0, 0)
+    # the carrier liquid: a faint blue tint.  Its particles are hidden in the render and a volume mesh of the liquid (the cone up to the
+    # particles' free surface) carries an absorbing blue volume shader, so no spray of particles shows outside the glass
+    import bmesh
+    zt = float(FO.RT.solver.x[FO.RT.solver.lo[0]:FO.RT.solver.hi[0], 2].max()) + 0.004
+    rb, rt, hh = 0.075, 0.04, 0.36
+    r_top = (rb + (rt - rb) * zt / hh) - 0.0012
+    me = bpy.data.meshes.new("TS_Liquid")
+    bm = bmesh.new()
+    bmesh.ops.create_cone(bm, cap_ends=True, cap_tris=False, segments=64, radius1=rb - 0.0012, radius2=r_top, depth=zt)
+    bmesh.ops.translate(bm, verts=bm.verts, vec=(0, 0, zt / 2))
+    bm.to_mesh(me); bm.free()
+    liq = bpy.data.objects.new("TS_Liquid", me)
+    sc.collection.objects.link(liq)
+    mt = bpy.data.materials.new("TS_LiquidMat"); mt.use_nodes = True
+    nt = mt.node_tree; nt.nodes.clear()
+    ob = nt.nodes.new('ShaderNodeOutputMaterial')
+    tr = nt.nodes.new('ShaderNodeBsdfTransparent')
+    pv = nt.nodes.new('ShaderNodeVolumeAbsorption')
+    pv.inputs['Color'].default_value = (0.55, 0.78, 1.0, 1.0); pv.inputs['Density'].default_value = float(os.environ.get("FLUID_RM", "9.0"))
+    nt.links.new(tr.outputs[0], ob.inputs['Surface']); nt.links.new(pv.outputs[0], ob.inputs['Volume'])
+    liq.data.materials.append(mt)
+    fm.fluids[0].points_obj.hide_render = True
+    for fl in list(fm.fluids)[1:]:                  # the wax: overlapping spheres read as one glossy blob
+        fl.particle_scale = 2.1
+    for nm, loc, en, sz in (("TS_Key", (0.5, -0.8, 0.45), 120.0, 0.4), ("TS_Rim", (-0.5, 0.5, 0.35), 60.0, 0.3)):
+        ld = bpy.data.lights.new(nm, 'AREA'); ld.energy = en; ld.size = sz
+        lo = bpy.data.objects.new(nm, ld); sc.collection.objects.link(lo); lo.location = loc
+        lo.visible_glossy = False   # no mirror images of the area lights in the glass
+        lo.visible_camera = False   # and the lights themselves are not seen through the glass (the white bar)
+        lo.rotation_euler = (lo.location * -1 + mathutils.Vector((0, 0, 0.17))).to_track_quat('-Z', 'Y').to_euler()
+FO.refresh_render(sc)
+FO.apply_state(sc, FO.RT.start_snap)
+w = sc.world or bpy.data.worlds.new("TS_World")
 sc.world = w
 w.use_nodes = True
 bg = w.node_tree.nodes.get('Background')
 bg.inputs['Color'].default_value = (0.012, 0.014, 0.02, 1) if demo == 'lamp' else (0.03, 0.04, 0.06, 1)
 bg.inputs['Strength'].default_value = 1.0
-if demo == 'tower':   # show the gas, not the opaque container shell
-    bpy.data.objects['TS_Tower'].hide_render = True
-if demo != 'lamp':
-    for fl in sc.arc_flow_fm.fluids:
-        fl.particle_scale = 3.5
-    FO.refresh_render(sc)
-    FO.apply_state(sc, FO.RT.cache.get(frame))
-    ld = bpy.data.lights.new("TS_Sun", 'SUN'); ld.energy = 4.0
-    so = bpy.data.objects.new("TS_Sun", ld); sc.collection.objects.link(so); so.rotation_euler = (0.9, 0.3, 0.6)
-if demo == 'lamp':   # a soft key light and a rim light so the carrier and the wax read against the dark room
-    for nm, loc, en, sz in (("TS_Key", (0.5, -0.8, 0.45), 120.0, 0.4), ("TS_Rim", (-0.5, 0.5, 0.35), 60.0, 0.3)):
-        ld = bpy.data.lights.new(nm, 'AREA'); ld.energy = en; ld.size = sz
-        lo = bpy.data.objects.new(nm, ld); sc.collection.objects.link(lo); lo.location = loc
-        lo.visible_glossy = False   # no mirror images of the area lights in the glass (they read as white streaks)
-        d = (lo.location * -1 + __import__('mathutils').Vector((0, 0, 0.17)))
-        lo.rotation_euler = d.to_track_quat('-Z', 'Y').to_euler()
 sc.render.engine = 'CYCLES'
 sc.cycles.device = 'CPU'
-sc.cycles.samples = 32
 sc.cycles.use_denoising = False
 sc.render.resolution_x, sc.render.resolution_y = 960, 540
 sc.render.resolution_percentage = int(os.environ.get('FLUID_RES_PCT', '100'))
 sc.cycles.samples = int(os.environ.get('FLUID_SAMPLES', '32'))
-sc.render.filepath = os.path.abspath(out)
 t0 = time.time()
-bpy.ops.render.render(write_still=True)
-print("rendered %s in %.1f s" % (out, time.time() - t0), flush=True)
+for f in range(1, max(frames) + 1):
+    sc.frame_set(f)
+    if f in frames:
+        sc.render.filepath = os.path.abspath(out.format(f=f))
+        t1 = time.time()
+        bpy.ops.render.render(write_still=True)
+        print("frame %d (%d particles): simulated %.0f s so far, rendered in %.1f s" % (f, FO.RT.solver.n, t1 - t0, time.time() - t1), flush=True)

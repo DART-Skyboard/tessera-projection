@@ -116,9 +116,10 @@ class AF_FMScene(PropertyGroup):
     ground_temp_on: BoolProperty(name="Ground heat sink", default=False, update=_dirty)
     ground_temp: FloatProperty(name="Ground temperature", default=288.15, min=1.0, update=_dirty)
     seed: IntProperty(name="Seed", default=1, update=_dirty)
-    fill_mode: EnumProperty(name="Fill", items=[('DYNAMIC', "Dynamic fill", "Pour the quantity into the cavity under the Environment gravity and settle it; the settled state is the initial state"),
-                                                 ('QUICK', "Quick fill", "Level-set seeding along gravity plus a few relaxing steps (level within ~2 particle spacings)"),
-                                                 ('OFF', "No fill phase", "Start from the seeded lattice")], default='DYNAMIC', update=_dirty)
+    fill_mode: EnumProperty(name="Fill", items=[('LEVEL', "Level-set fill + settle", "Analytic fill of the cavity to the requested volume along gravity (stratified by density) and a short settle (10 steps)"),
+                                                 ('POUR', "Pour fill", "Seed from the bottom and run the full dynamic fill under the Environment gravity until the fluid is at rest"),
+                                                 ('QUICK', "Quick fill", "Level-set fill and 3 relaxing steps"),
+                                                 ('OFF', "No fill phase", "Start from the seeded lattice")], default='LEVEL', update=_dirty)
     fill_steps: IntProperty(name="Max settle steps", default=100, min=1, max=1000, description="Upper bound of the dynamic fill (frames of simulated time)", update=_dirty)
     heat_start: IntProperty(name="Start heat at frame", default=1, min=0, description="Heat sources switch on at this frame; before it the settled fluid rests")
     use_scene_range: BoolProperty(name="Use scene frame range", default=True)

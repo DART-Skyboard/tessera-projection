@@ -166,6 +166,19 @@ Combustion mode keeps its own finite-fill path (finite fluid / continuous flow i
 existing tests, and sharing the particle-based Fill / Settle with it would change that behaviour, so only the idea is shared (fill from volume x density
 under the Environment gravity, settle, then start), not the code.
 
+**Level-set fill and blob physics (0.3.2).** The default fill is analytic: the cavity is sampled through the collision-body projection (dx/2 spacing), ordered along gravity,
+and each fluid, densest first, takes the next slab of the requested volume, so the free surface is at the exact level and several fluids are stratified by density; space taken by
+shaped fluids (wax blobs) is excluded. Lattice nodes inside a slab are seeded and the few extra particles that mass conservation needs (the lattice leaves a half-cell wall gap) go to random
+fine points of the same slab. A 10 step settle follows (`Quick fill`: 3; `Pour fill`: the full dynamic fill of 0.3.1). Measured on the 28 mm-class cone (3,749 particles): level-set fill + settle 10 steps, 2.6 s
+(level 0.129 m, exact 0.129 m); pour fill 20 steps, 5.4 s (level 0.137 m); the 13,641-particle lava lamp builds and fills in 13 s. A cohesive immiscible phase also couples its own particles' velocities (XSPH toward
+same-phase neighbours, rate min(0.45, 0.25 cohesion)), so interface particles are not sheared off by the carrier; wax uses cohesion 2.0, beta 3.5e-3 (cold wax 1.05 x carrier density, warm wax lighter; lamp thermal
+speed-up 400, 100 W bulb). Tests: a 276-particle wax blob (radius 4 spacings) rises 108 mm and stays one cluster (largest component at least 95 percent at every sample, one at the end), interface mixing below 5 percent,
+cold wax sinks, two blobs side by side stay two clusters. Limits: blobs of fewer than about 3 spacings radius still break up; a few single wax particles detach and show as small spheres; there is no true
+surface tension (a pair cohesion force plus velocity coupling is used), and the wax is drawn as overlapping spheres, not a meshed surface.
+**Combustion fill:** the combustion world already fills a container from volume x density at the tank pressure and temperature by sampling the real cavity through the same collision-body
+inside test and keeping the lowest points along the Environment gravity (`World._init_container`). `tests/test_combustion_fill.py` checks a cone and a sphere tank at 30 and 60 percent
+(level, mass, contour). Its tracer solver has no pressure-driven settle, so the Fluid-mode `Fill / Settle` operator is not exposed for combustion tanks and the two fill codes are not merged.
+
 **Measured speed** (NumPy on Python 3.13, 2 shared CPU cores): 5,162 particles 0.24 s per frame; 18,900 particles 0.75 s per frame
 (4 drift iterations, up to 4 substeps). Lava lamp render demo: 6,400 particles at 0.34 s per frame.
 

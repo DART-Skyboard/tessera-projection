@@ -337,12 +337,13 @@ class FluidSolver:
     # ------------------------------------------------------------------ construction
     @staticmethod
     def build(defs, bodies=(), env=None, dx=None, max_particles=20000, seed=1, thermal_speedup=1.0, iterations=4,
-              max_substeps=4, vmax=20.0, lotbcbp=True, drift_iterations=None):
+              max_substeps=4, vmax=20.0, lotbcbp=True, drift_iterations=None, fill_seed='LEVEL'):
         """defs: list of fluid_def dicts.  Recognised keys: kind, density, mass, volume, weight, temperature, velocity,
         visc, cp, k, beta, cohesion, miscible, cool (1/s), drag (1/s), diffusion (m2/s), count (gas parcels), fill (fraction
         of a container's cavity when no shape is given), shape (None | dict(kind='MESH', verts, tris) | dict(kind='POINTS', pts)),
         body (index into bodies, -1 = no container), tref (Boussinesq reference temperature)."""
         S = FluidSolver()
+        S.fill_seed = fill_seed
         S.env = env or FEnv()
         S.bodies = list(bodies)
         S.rng = np.random.default_rng(seed)
@@ -476,6 +477,56 @@ class FluidSolver:
             rep = dict(body=bi, capacity=v_cav, free_capacity=0.98 * v_cav, requested=0.0, overflow=0.0, fluids=[], open=bool(getattr(b, 'open', False)))
             n_cap = int(round(0.98 * v_cav / S.dx ** 3))
             n_used = 0
+            if S.fill_seed == 'LEVEL':
+                # analytic level-set fill: the cavity (fine samples inside the collision body) is ordered along gravity; each fluid, densest first,
+                # takes the next slab of the requested volume, so the free surface is at the exact level and several fluids are stratified by
+                # density.  Lattice nodes inside a slab are seeded; the few extra particles that mass conservation needs (the lattice leaves a
+                # half-cell wall gap) go to random fine points of the same slab.
+                inside = dfine >= 0.0
+                Pin = Pf[inside]
+                dsel = dfine[inside]
+                if occupied:      # space taken by shaped fluids is not available to this fill
+                    freef = np.array([int(k) not in occupied for k in lat_key(np.floor(Pin / S.dx).astype(int))])
+                    Pin, dsel = Pin[freef], dsel[freef]
+                Lin = _level(Pin, raw=True)
+                order = np.argsort(Lin, kind='stable')
+                Pin, dsel, Lin = Pin[order], dsel[order], Lin[order]
+                Vf = (S.dx / 2.0) ** 3
+                vfree = len(Pin) * Vf
+                Lnode = _level(I)
+                cum = 0.0
+                taken = np.zeros(len(I), bool)
+                for f in sorted(fl, key=lambda q: -D[q]['density']):
+                    d = D[f]
+                    vol = d['volume']
+                    if vol <= 0 and d['mass'] > 0 and d['density'] > 0:
+                        vol = d['mass'] / d['density']
+                    if vol <= 0:
+                        vol = d['fill'] * vfree
+                    rep['requested'] += vol
+                    vol_c = min(vol, max(0.98 * vfree - cum, 0.0))
+                    k0, k1 = int(round(cum / Vf)), int(round((cum + vol_c) / Vf))
+                    k1 = min(k1, len(Lin))
+                    if k1 <= k0:
+                        placed[f] = np.zeros((0, 3)); rep['fluids'].append((f, vol, 0)); continue
+                    La = Lin[k0]; Lb = Lin[k1 - 1]
+                    sel = (Lnode >= La) & (Lnode <= Lb) & ~taken
+                    taken |= sel
+                    P = lat_pos(I[sel], S.dx)
+                    n = int(round(vol_c / S.dx ** 3))
+                    if n > len(P):
+                        cand = np.flatnonzero(dsel[k0:k1] >= 0.5 * S.dx) + k0
+                        if len(cand):
+                            extra = Pin[S.rng.choice(cand, size=min(n - len(P), len(cand)), replace=len(cand) < n - len(P))]
+                            P = np.vstack([P, extra])
+                    elif n < len(P):
+                        P = P[np.argsort(_level(P, raw=True), kind='stable')[:n]]
+                    placed[f] = P
+                    rep['fluids'].append((f, vol, len(P)))
+                    cum += vol_c
+                rep['overflow'] = max(rep['requested'] - 0.98 * vfree, 0.0)
+                S.fill_report.append(rep)
+                continue
             for f in sorted(fl, key=lambda q: -D[q]['density']):
                 d = D[f]
                 vol = d['volume']
@@ -535,7 +586,7 @@ class FluidSolver:
         if auto_dx and n_liq > 1.15 * max_particles:      # the estimate was low: refine the spacing once and rebuild
             return FluidSolver.build(defs, bodies, env, dx=S.dx * (n_liq / max_particles) ** (1.0 / 3.0), max_particles=max_particles,
                                      seed=seed, thermal_speedup=thermal_speedup, iterations=iterations, max_substeps=max_substeps,
-                                     vmax=vmax, lotbcbp=lotbcbp)
+                                     vmax=vmax, lotbcbp=lotbcbp, fill_seed=fill_seed)
         S.n = n0
         S.x = np.concatenate(xs) if n0 else np.zeros((0, 3))
         S.v = np.concatenate(vs) if n0 else np.zeros((0, 3))
@@ -880,6 +931,9 @@ class FluidSolver:
                     dv = scatter_pair(n, Im, Jm, w[:, None] * (self.v[Jm] - self.v[Im]))
                     nu = self.visc[f] / np.maximum(rho, 1e-9)
                     fac = np.minimum(0.6, 8.0 * nu * dt / self.h ** 2)
+                    # blob coherence: a cohesive (surface-tension) phase also couples its own particles' velocities (XSPH toward same-phase
+                    # neighbours only), so interface particles are not sheared off the blob by the surrounding carrier
+                    fac = np.maximum(fac, np.minimum(0.45, 0.25 * self.coh[f]))
                     self.v += (fac / np.maximum(sw, 1e-9))[:, None] * dv
         v = self.v
         xs = x + v * dt

@@ -77,7 +77,10 @@ The simulation is a simplified, documented model, not a full Navier-Stokes solve
 
 <p align="center">
   <img src="docs/renders/fluid_lamp_t0.png" width="48%" alt="Lava lamp at the start">
-  <img src="docs/renders/fluid_lamp_mid.png" width="48%" alt="Lava lamp mid-run: heated wax rising">
+  <img src="docs/renders/fluid_lamp_mid.png" width="48%" alt="Lava lamp mid-run: heated wax blobs rising and cooling">
+</p>
+<p align="center">
+  <img src="docs/renders/fluid_lamp_late.png" width="48%" alt="Lava lamp later: blobs have risen, cooled and sunk again">
 </p>
 <p align="center">
   <img src="docs/renders/fluid_free_gas.png" width="48%" alt="Free hot gas plume in wind">

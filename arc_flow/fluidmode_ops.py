@@ -124,7 +124,8 @@ def build_solver(scene):
     env = environment(scene, min(z_low) if z_low else 0.0)
     spacing = fm.spacing if fm.spacing > 0 else None
     S = FM.FluidSolver.build(defs, bodies, env, dx=spacing, max_particles=fm.max_particles, seed=fm.seed, thermal_speedup=fm.speedup,
-                             iterations=fm.iterations, max_substeps=fm.max_substeps, lotbcbp=fm.lotbcbp)
+                             iterations=fm.iterations, max_substeps=fm.max_substeps, lotbcbp=fm.lotbcbp,
+                             fill_seed='POUR' if fm.fill_mode == 'POUR' else 'LEVEL')
     S.pre_settle = 0
     RT.body_objs = body_objs
     for fi, fl in enumerate(fm.fluids):
@@ -157,7 +158,7 @@ def fill_phase(scene):
 
     def prog(k, n, ms):
         fm.status = "Filling: step %d / %d, mean speed %.3f m/s" % (k, n, ms)
-    rep = FS.settle(S, max_steps=fm.fill_steps, quick=(fm.fill_mode == 'QUICK'), progress=prog)
+    rep = FS.settle(S, max_steps=fm.fill_steps, mode=fm.fill_mode, progress=prog)
     rep['seconds'] = __import__('time').time() - t0
     lay = "; ".join("%s %.0f-%.0f mm" % (n, lo * 1e3, hi * 1e3) for n, lo, hi in rep['layers'])
     ov = [o['handling'] for o in rep['overflow'] if o['overflow'] > 0]
@@ -710,7 +711,7 @@ def _demo_common(scene):
     return _collection(scene)
 
 
-def load_lava_lamp(scene, max_particles=12000):
+def load_lava_lamp(scene, max_particles=15000):
     col = _demo_common(scene)
     fm = scene.arc_flow_fm
     h, r_b, r_t = 0.36, 0.075, 0.04
@@ -724,7 +725,7 @@ def load_lava_lamp(scene, max_particles=12000):
     bulb = _mesh_obj("TS_LampBulb", lambda bm: _sphere(bm, 0.018), (0, 0, 0.03), col)
     bulb.data.materials.append(_emissive_material("TS_BulbGlow", (1.0, 0.75, 0.35), 25.0))
     bulb.arc_flow_fm.heat_on = True
-    bulb.arc_flow_fm.heat_power = 40.0
+    bulb.arc_flow_fm.heat_power = 100.0
     bulb.arc_flow_fm.heat_radius = 0.045
     ld = bpy.data.lights.new("TS_LampLight", 'POINT')
     ld.energy = 60.0
@@ -741,23 +742,28 @@ def load_lava_lamp(scene, max_particles=12000):
     carrier.color = (0.55, 0.75, 1.0)
     carrier.cohesion, carrier.miscible = 0.04, False
     carrier.no_container, carrier.container, carrier.shape = False, tank, None
-    carrier.volume = 0.62 * cav
+    carrier.fill = 90.0
+    carrier.volume = 0.0
     carrier.render_mode = 'POINTS'
     carrier.particle_scale = 0.9
     carrier.rm_density = 3.0
     carrier.cool = 0.15
-    for i, (name, color, rho, frac) in enumerate((("Wax red", (1.0, 0.18, 0.08), 1034.0, 0.075), ("Wax orange", (1.0, 0.55, 0.05), 1030.0, 0.06),
-                                                  ("Wax magenta", (0.9, 0.1, 0.6), 1026.0, 0.05))):
+    # three wax blobs (cohesive, immiscible; cold wax is slightly denser than the carrier, warm wax lighter) start inside the cone at the bottom
+    for i, (name, color, rr, z, x, y) in enumerate((("Wax red", (1.0, 0.18, 0.08), 0.026, 0.034, 0.0, 0.0),
+                                                    ("Wax orange", (1.0, 0.55, 0.05), 0.022, 0.092, 0.012, 0.008),
+                                                    ("Wax magenta", (0.9, 0.1, 0.6), 0.02, 0.145, -0.008, -0.006))):
+        bl = _mesh_obj("TS_Blob%d" % (i + 1), lambda bm, rr=rr: _sphere(bm, rr), (x, y, z), col)
+        bl.display_type = 'WIRE'
+        bl.hide_render = True
         fl = add_fluid(scene, 'LAVA_WAX', name)
-        fl.density, fl.beta, fl.color = rho, 2.2e-3, color
+        fl.density, fl.beta, fl.color = 1034.0 - 4.0 * i, 3.5e-3, color
         fl.temp_color = False
-        fl.no_container, fl.container, fl.shape = False, tank, None
-        fl.volume = frac * cav
-        fl.cohesion, fl.miscible = 0.14, False
+        fl.no_container, fl.container, fl.shape = False, tank, bl
+        fl.cohesion, fl.miscible = 2.0, False
         fl.cool = 0.4
         fl.t_lo, fl.t_hi = 290.0, 330.0
     fm.max_particles = max_particles
-    fm.speedup = 120.0
+    fm.speedup = 400.0
     fm.max_substeps = 3
     scene.frame_start, scene.frame_end = 1, 240
     # camera and a floor look
