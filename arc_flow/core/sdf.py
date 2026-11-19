@@ -2,7 +2,9 @@
 
 TriSoup        triangles with angle-weighted pseudo-normals (vertex, edge, face) for a robust sign test
 virtual_subdivide   on-demand "behind the scenes" tessellation of long triangles with optional Phong smoothing
-signed_distance     exact signed distance of many points to a soup (pruned, vectorised)
+signed_distance     exact signed distance of many points to a soup (vectorised BVH traversal; chunk-pruned brute force for tiny soups)
+TriBVH / closest_surface   Morton-sorted binary BVH over the triangles, shared by sign, projection and refinement queries
+BrickGrid      narrow-band sparse 8^3 brick SDF (bricks within the band only; bricks can be added and removed)
 PartField      per-part coarse grid + dynamically requested refined bricks (the LOTBCBP adaptive refinement)
 """
 import numpy as np
@@ -11,10 +13,11 @@ import numpy as np
 
 
 class TriSoup:
-    __slots__ = ('A', 'B', 'C', 'fn', 'vn', 'en')
+    __slots__ = ('A', 'B', 'C', 'fn', 'vn', 'en', 'bvh')
 
     def __init__(self, A, B, C, fn, vn, en):
         self.A, self.B, self.C, self.fn, self.vn, self.en = A, B, C, fn, vn, en
+        self.bvh = None                     # lazily built TriBVH (see TriBVH / get_bvh)
 
     def __len__(self):
         return len(self.A)
@@ -24,7 +27,7 @@ class TriSoup:
 
     @staticmethod
     def concat(a, b):
-        return TriSoup(*[np.concatenate([getattr(a, k), getattr(b, k)]) for k in TriSoup.__slots__])
+        return TriSoup(*[np.concatenate([getattr(a, k), getattr(b, k)]) for k in ('A', 'B', 'C', 'fn', 'vn', 'en')])
 
     def bounds(self):
         allv = np.concatenate([self.A, self.B, self.C])
@@ -232,8 +235,8 @@ def closest_points(P, A, B, C):
     return cp, reg
 
 
-def signed_distance(soup, points, chunk=96):
-    """Exact signed distance (negative on the side opposite the pseudo-normal, i.e. 'inside').
+def signed_distance_brute(soup, points, chunk=96):
+    """Reference implementation (chunk-pruned brute force, O(chunks x tris)); kept for tiny soups and as the test oracle.
 
     Points are processed in small spatial chunks (callers pass grid-ordered or brick-ordered points):
     a chunk bound (nearest centroid + chunk radius) discards every triangle that cannot be nearest,
@@ -282,6 +285,326 @@ def signed_distance(soup, points, chunk=96):
         res[sel_p] = np.sqrt(d2[first]) * sign
         out[s:s + chunk] = res
     return out
+
+
+
+# ----------------------------------------------------------------------------- triangle BVH
+
+
+def _spread21(x):
+    x = x.astype(np.uint64) & np.uint64(0x1FFFFF)
+    x = (x | (x << np.uint64(32))) & np.uint64(0x1F00000000FFFF)
+    x = (x | (x << np.uint64(16))) & np.uint64(0x1F0000FF0000FF)
+    x = (x | (x << np.uint64(8))) & np.uint64(0x100F00F00F00F00F)
+    x = (x | (x << np.uint64(4))) & np.uint64(0x10C30C30C30C30C3)
+    x = (x | (x << np.uint64(2))) & np.uint64(0x1249249249249249)
+    return x
+
+
+def morton_order(cen):
+    lo, hi = cen.min(0), cen.max(0)
+    q = np.clip((cen - lo) / np.maximum(hi - lo, 1e-30) * 2097151.0, 0, 2097151.0)
+    code = _spread21(q[:, 0]) | (_spread21(q[:, 1]) << np.uint64(1)) | (_spread21(q[:, 2]) << np.uint64(2))
+    return np.argsort(code, kind='stable')
+
+
+class TriBVH:
+    """Complete binary BVH over Morton-sorted triangle leaves (LEAF triangles each).  Level k has 2^k nodes, node j has the
+    children 2j, 2j+1 on level k+1; padding leaves are empty boxes (+inf/-inf).  Queries descend a whole batch of points
+    level by level (breadth first), pruned by an exact upper bound found with one greedy dive, so a query costs O(log n + local)
+    instead of O(n).  Memory: about 56 bytes per leaf box plus 4 bytes per triangle."""
+    LEAF = 4
+    TIGHTEN_FROM = 3      # levels (from the root) below which a representative triangle per node tightens the bound
+
+    def __init__(self, soup):
+        m = len(soup)
+        L = self.LEAF
+        tmin = np.minimum(np.minimum(soup.A, soup.B), soup.C)
+        tmax = np.maximum(np.maximum(soup.A, soup.B), soup.C)
+        order = morton_order((soup.A + soup.B + soup.C) / 3.0)
+        nleaf = max(1, -(-m // L))
+        K = int(np.ceil(np.log2(nleaf))) if nleaf > 1 else 0
+        P2 = 1 << K
+        tri = -np.ones(P2 * L, np.int64)
+        tri[:m] = order
+        self.leaf_tri = tri.reshape(P2, L)
+        valid = self.leaf_tri >= 0
+        ti = np.where(valid, self.leaf_tri, 0)
+        lo = np.where(valid[..., None], tmin[ti], np.inf).min(axis=1)
+        hi = np.where(valid[..., None], tmax[ti], -np.inf).max(axis=1)
+        los, his = [lo], [hi]
+        for _ in range(K):
+            lo = np.minimum(lo[0::2], lo[1::2])
+            hi = np.maximum(hi[0::2], hi[1::2])
+            los.append(lo); his.append(hi)
+        self.lo = los[::-1]                     # lo[0] = root ... lo[K] = leaves
+        self.hi = his[::-1]
+        self.K = K
+        self.m = m
+
+    def nbytes(self):
+        return sum(a.nbytes for a in self.lo) + sum(a.nbytes for a in self.hi) + self.leaf_tri.nbytes
+
+    @staticmethod
+    def _lb2(P, lo, hi):
+        d = np.maximum(np.maximum(lo - P, P - hi), 0.0)
+        return np.einsum('ij,ij->i', d, d)
+
+    def _dive_key(self, P, k, node):
+        """Greedy-dive preference: distance to the box, ties (point inside the box) broken by the distance to its centre."""
+        lo, hi = self.lo[k][node], self.hi[k][node]
+        with np.errstate(invalid='ignore'):
+            c = 0.5 * (lo + hi)
+        c = np.where(np.isfinite(c), c, 1e30)
+        dc = P - c
+        return self._lb2(P, lo, hi) * 1e3 + np.einsum('ij,ij->i', dc, dc)
+
+    def query(self, soup, P, chunk=2048):
+        """Nearest triangle of every point.  Returns (d2, tri, cp, reg, diff) (all per point)."""
+        n = len(P)
+        d2o = np.empty(n); tio = np.empty(n, np.int64); cpo = np.empty((n, 3)); rgo = np.empty(n, np.int8)
+        for s in range(0, n, chunk):
+            r = self._query_chunk(soup, P[s:s + chunk])
+            d2o[s:s + chunk], tio[s:s + chunk], cpo[s:s + chunk], rgo[s:s + chunk] = r
+        return d2o, tio, cpo, rgo
+
+    def _leaf_pairs(self, soup, P, pt, leaf):
+        """Exact closest point of every (point, leaf) pair's triangles.  Returns pi (point), ti (tri), cp, reg, d2 per triangle pair."""
+        tl = self.leaf_tri[leaf]                                    # (np, L)
+        ok = tl >= 0
+        a, b = np.nonzero(ok)
+        ti = tl[a, b]
+        pi = pt[a]
+        cp, reg = closest_points(P[pi], soup.A[ti], soup.B[ti], soup.C[ti])
+        diff = P[pi] - cp
+        return pi, ti, cp, reg, np.einsum('ij,ij->i', diff, diff)
+
+    def _query_chunk(self, soup, P):
+        n, K = len(P), self.K
+        # 1. greedy dive: a real leaf near each point gives a tight exact upper bound
+        node = np.zeros(n, np.int64)
+        for k in range(K):
+            c0 = node * 2
+            node = c0 + (self._dive_key(P, k + 1, c0 + 1) < self._dive_key(P, k + 1, c0))
+        pi, ti, cp, reg, d2 = self._leaf_pairs(soup, P, np.arange(n), node)
+        ub = np.full(n, np.inf)
+        if len(pi):
+            st = np.flatnonzero(np.r_[True, pi[1:] != pi[:-1]])
+            ub[pi[st]] = np.minimum.reduceat(d2, st)
+        tol = 1.0 + 1e-9
+        # 2. breadth-first traversal of everything that can still beat the bound
+        fp = np.arange(n); fn = np.zeros(n, np.int64)
+        for k in range(K):
+            fp = np.repeat(fp, 2)
+            fn = (np.repeat(fn, 2) * 2) + np.tile(np.array([0, 1], np.int64), len(fn))
+            keep = self._lb2(P[fp], self.lo[k + 1][fn], self.hi[k + 1][fn]) <= ub[fp] * tol + 1e-18
+            fp, fn = fp[keep], fn[keep]
+            if k + 1 > self.TIGHTEN_FROM and k + 1 < K and len(fp):
+                # tighten the bound with one real triangle (the first of the subtree) per surviving node
+                rep = self.leaf_tri[fn << (K - k - 1), 0]
+                okr = rep >= 0
+                if okr.any():
+                    pr, tr = fp[okr], rep[okr]
+                    cpr, _r = closest_points(P[pr], soup.A[tr], soup.B[tr], soup.C[tr])
+                    dd = P[pr] - cpr
+                    d2r = np.einsum('ij,ij->i', dd, dd)
+                    st = np.flatnonzero(np.r_[True, pr[1:] != pr[:-1]])
+                    ub[pr[st]] = np.minimum(ub[pr[st]], np.minimum.reduceat(d2r, st))
+                    keep = self._lb2(P[fp], self.lo[k + 1][fn], self.hi[k + 1][fn]) <= ub[fp] * tol + 1e-18
+                    fp, fn = fp[keep], fn[keep]
+        pi, ti, cp, reg, d2 = self._leaf_pairs(soup, P, fp, fn)
+        keep = d2 <= ub[pi] * tol + 1e-18
+        pi, ti, cp, reg, d2 = pi[keep], ti[keep], cp[keep], reg[keep], d2[keep]
+        return _reduce_pairs(P, pi, ti, cp, reg, d2, n)
+
+
+def _reduce_pairs(P, pi, ti, cp, reg, d2, n):
+    """Per point nearest (first within a 1e-9 tie band) of sorted candidate pairs.  Returns (d2, tri, cp, reg)."""
+    starts = np.flatnonzero(np.r_[True, pi[1:] != pi[:-1]])
+    dmin = np.minimum.reduceat(d2, starts)
+    rowmin = np.empty(n); rowmin[pi[starts]] = dmin
+    hit = d2 <= rowmin[pi] * (1.0 + 1e-9) + 1e-18
+    hi = np.flatnonzero(hit)
+    first = hi[np.r_[True, pi[hi][1:] != pi[hi][:-1]]]
+    out_p = pi[first]
+    d2o = np.empty(n); tio = np.empty(n, np.int64); cpo = np.empty((n, 3)); rgo = np.empty(n, np.int8)
+    d2o[out_p], tio[out_p], cpo[out_p], rgo[out_p] = d2[first], ti[first], cp[first], reg[first]
+    return d2o, tio, cpo, rgo
+
+
+BVH_MIN_TRIS = 192          # below this the chunk-pruned brute force is as fast and needs no build
+
+
+def get_bvh(soup):
+    if soup.bvh is None or soup.bvh.m != len(soup):
+        soup.bvh = TriBVH(soup)
+    return soup.bvh
+
+
+def _sign_of(soup, P, d2, ti, cp, reg):
+    pn = np.where((reg == 0)[:, None], soup.fn[ti], 0.0)
+    for rcode, which, kind in ((1, 0, 'v'), (2, 1, 'v'), (3, 2, 'v'), (4, 0, 'e'), (5, 1, 'e'), (6, 2, 'e')):
+        mm = reg == rcode
+        if mm.any():
+            pn[mm] = (soup.vn if kind == 'v' else soup.en)[ti[mm], which]
+    return np.where(np.einsum('ij,ij->i', P - cp, pn) >= 0.0, 1.0, -1.0)
+
+
+def closest_surface(soup, points):
+    """Nearest surface point of every query point: (cp (n,3), signed distance (n,), triangle index (n,)).  Sign from the
+    angle-weighted pseudo-normal of the nearest feature (robust on open shells).  O(log n) per point through the BVH."""
+    P = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    if len(soup) == 0 or len(P) == 0:
+        return P.copy(), np.full(len(P), 1e9), np.zeros(len(P), np.int64)
+    d2, ti, cp, reg = get_bvh(soup).query(soup, P)
+    return cp, np.sqrt(d2) * _sign_of(soup, P, d2, ti, cp, reg), ti
+
+
+def signed_distance(soup, points, chunk=96):
+    """Exact signed distance (negative on the side opposite the pseudo-normal, i.e. 'inside').
+
+    Soups of BVH_MIN_TRIS or more triangles are answered by a BVH traversal (O(log n + local) per point, the index is built once and
+    cached on the soup); smaller ones by the chunk-pruned brute force.  Both return the same values."""
+    points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    if len(soup) < BVH_MIN_TRIS:
+        return signed_distance_brute(soup, points, chunk)
+    if len(soup) == 0 or len(points) == 0:
+        return np.full(len(points), 1e9)
+    d2, ti, cp, reg = get_bvh(soup).query(soup, points)
+    return np.sqrt(d2) * _sign_of(soup, points, d2, ti, cp, reg)
+
+
+# ----------------------------------------------------------------------------- narrow-band brick grid
+
+
+class BrickGrid:
+    """Sparse narrow-band SDF: 8^3-cell bricks (9^3 nodes with a shared border, float32) stored only where the surface is within
+    `band` voxels; everything else is answered from one coarse value per brick (sign and a lower bound |d| >= band*h).
+    Bricks are kept in a sorted key array + slot pool, so they can be ADDED (add_bricks, exact values from the BVH) and REMOVED
+    (remove_bricks, slots are recycled) at any time.  Memory is proportional to the surface area, not the bounding box volume."""
+    B = 8
+
+    def __init__(self, soup, origin, h, dims, band=3.0):
+        self.soup, self.origin, self.h, self.band = soup, np.asarray(origin, float), float(h), float(band)
+        self.dims = np.asarray(dims, int)
+        self.nb = np.maximum(-(-(self.dims - 1) // self.B), 1)
+        ii = np.stack(np.meshgrid(*[np.arange(n) for n in self.nb], indexing='ij'), -1).reshape(-1, 3)
+        ctr = self.origin + (ii + 0.5) * (self.B * self.h)
+        self.coarse = signed_distance(soup, ctr).astype(np.float32).reshape(self.nb)
+        self.keys = np.zeros(0, np.int64)
+        self.slots = np.zeros(0, np.int64)
+        self.pool = np.zeros((0, self.B + 1, self.B + 1, self.B + 1), np.float32)
+        self._free = []
+        self.stamp = np.zeros(0, np.int64)
+        self._clock = 0
+        reach = self.band * self.h + 0.5 * np.sqrt(3.0) * self.B * self.h
+        self.add_bricks(np.flatnonzero(np.abs(self.coarse.reshape(-1)) <= reach))
+
+    # -- bookkeeping
+    def __len__(self):
+        return len(self.keys)
+
+    def nbytes(self):
+        return self.pool.nbytes + self.keys.nbytes + self.slots.nbytes + self.coarse.nbytes
+
+    def dense_nbytes(self):
+        """What a dense float64 node grid of the same extent would cost."""
+        return int(np.prod(self.dims)) * 8
+
+    def _find(self, ids):
+        pos = np.searchsorted(self.keys, ids)
+        pos_c = np.minimum(pos, max(len(self.keys) - 1, 0))
+        ok = (self.keys[pos_c] == ids) if len(self.keys) else np.zeros(len(ids), bool)
+        return np.where(ok, self.slots[pos_c] if len(self.keys) else -1, -1)
+
+    def _unravel(self, ids):
+        nz, ny = self.nb[2], self.nb[1]
+        return np.stack([ids // (ny * nz), (ids // nz) % ny, ids % nz], 1)
+
+    # -- add / remove
+    def add_bricks(self, ids):
+        """Compute and store the bricks `ids` (linear brick ids) that are not yet present; returns the number added."""
+        ids = np.unique(np.asarray(ids, np.int64))
+        ids = ids[self._find(ids) < 0] if len(self.keys) else ids
+        if len(ids) == 0:
+            return 0
+        B1 = self.B + 1
+        lin = np.arange(B1) * self.h
+        off = np.stack(np.meshgrid(lin, lin, lin, indexing='ij'), -1).reshape(-1, 3)
+        corner = self.origin + self._unravel(ids) * (self.B * self.h)
+        for s in range(0, len(ids), 64):
+            c = corner[s:s + 64]
+            d = signed_distance(self.soup, (c[:, None, :] + off[None]).reshape(-1, 3)).reshape(len(c), B1, B1, B1)
+            self._store(ids[s:s + 64], d.astype(np.float32))
+        return len(ids)
+
+    def _store(self, ids, d):
+        n = len(ids)
+        take = [self._free.pop() for _ in range(min(n, len(self._free)))]
+        need = n - len(take)
+        if need:
+            start = len(self.pool)
+            self.pool = np.concatenate([self.pool, np.zeros((max(need, start // 2),) + self.pool.shape[1:], np.float32)])
+            self.stamp = np.concatenate([self.stamp, np.zeros(len(self.pool) - len(self.stamp), np.int64)])
+            take += list(range(start, start + need))
+            self._free += list(range(start + need, len(self.pool)))[::-1]
+        slot = np.array(take, np.int64)
+        self.pool[slot] = d
+        self._clock += 1
+        self.stamp[slot] = self._clock
+        keys = np.concatenate([self.keys, ids]); slots = np.concatenate([self.slots, slot])
+        o = np.argsort(keys, kind='stable')
+        self.keys, self.slots = keys[o], slots[o]
+
+    def remove_bricks(self, ids):
+        """Drop the bricks `ids` (absent ones are ignored); their slots are recycled.  Returns the number removed."""
+        ids = np.unique(np.asarray(ids, np.int64))
+        if len(self.keys) == 0 or len(ids) == 0:
+            return 0
+        pos = np.searchsorted(self.keys, ids)
+        pos = pos[pos < len(self.keys)]
+        pos = pos[np.isin(self.keys[pos], ids)]
+        if len(pos) == 0:
+            return 0
+        self._free += self.slots[pos].tolist()
+        keep = np.ones(len(self.keys), bool); keep[pos] = False
+        self.keys, self.slots = self.keys[keep], self.slots[keep]
+        return len(pos)
+
+    def trim(self, max_bricks):
+        """Evict the oldest bricks until at most `max_bricks` remain."""
+        extra = len(self.keys) - int(max_bricks)
+        if extra <= 0:
+            return 0
+        old = np.argsort(self.stamp[self.slots], kind='stable')[:extra]
+        return self.remove_bricks(self.keys[old])
+
+    # -- sampling
+    def sample(self, P):
+        P = np.asarray(P, float).reshape(-1, 3)
+        g = (P - self.origin) / (self.B * self.h)
+        bi = np.clip(np.floor(g).astype(np.int64), 0, self.nb - 1)
+        ids = (bi[:, 0] * self.nb[1] + bi[:, 1]) * self.nb[2] + bi[:, 2]
+        c = self.coarse[bi[:, 0], bi[:, 1], bi[:, 2]].astype(np.float64)
+        out = np.where(c >= 0, 1.0, -1.0) * np.maximum(np.abs(c), self.band * self.h)
+        slot = self._find(ids) if len(self.keys) else -np.ones(len(P), np.int64)
+        sel = np.flatnonzero(slot >= 0)
+        if len(sel):
+            f = np.clip(g[sel] - bi[sel], 0.0, 1.0) * self.B
+            j0 = np.minimum(np.floor(f).astype(np.int64), self.B - 1)
+            fr = f - j0
+            b = self.pool[slot[sel]]
+            ar = np.arange(len(sel))
+
+            def q(dx, dy, dz):
+                return b[ar, j0[:, 0] + dx, j0[:, 1] + dy, j0[:, 2] + dz].astype(np.float64)
+            fx, fy, fz = fr[:, 0], fr[:, 1], fr[:, 2]
+            c00 = q(0, 0, 0) * (1 - fx) + q(1, 0, 0) * fx
+            c10 = q(0, 1, 0) * (1 - fx) + q(1, 1, 0) * fx
+            c01 = q(0, 0, 1) * (1 - fx) + q(1, 0, 1) * fx
+            c11 = q(0, 1, 1) * (1 - fx) + q(1, 1, 1) * fx
+            out[sel] = (c00 * (1 - fy) + c10 * fy) * (1 - fz) + (c01 * (1 - fy) + c11 * fy) * fz
+        return out
 
 
 # ----------------------------------------------------------------------------- per-part field
@@ -344,12 +667,71 @@ class PartField:
     mode: 'SHELL' (the surface encloses the fluid: inside = cavity), 'SOLID' (mesh is a body with
     modelled cavities: fluid only in enclosed cavities) or 'AUTO'."""
 
-    def __init__(self, verts, tris, mode='AUTO', resolution=40, level=2, smooth=True):
+    # LTCBP error probe (the website's live watch, run once per build): refine x1.25 above P90_HI voxels of error, coarsen /1.15
+    # below P90_LO, resolution scale kept within [SCALE_MIN, SCALE_MAX] of the requested one.
+    P90_HI, P90_LO, SCALE_MIN, SCALE_MAX, N_PROBES, MAX_BUILDS = 0.75, 0.15, 0.6, 2.0, 96, 4
+
+    def __init__(self, verts, tris, mode='AUTO', resolution=40, level=2, smooth=True, adaptive=False):
+        """adaptive=True runs the error-probe loop: build, probe the grid's distance error in voxel units on sampled surface
+        points, and rebuild at a finer / coarser resolution (bounded) until the error sits in the target band.
+        `resolution_chosen`, `probe_p90` and `probe_history` report what happened (adaptive=False: one build, probe not run)."""
         self.soup = soup_from_mesh(verts, tris)
         self.mode_req = mode
         self.level = int(level)
         self.smooth = smooth
         self.openings_loops = boundary_loops(verts, tris) if len(tris) else []
+        self.resolution_requested = int(resolution)
+        self.resolution_chosen = int(resolution)
+        self.probe_p90 = None
+        self.probe_history = []
+        self._build(resolution)
+        if adaptive and len(self.soup):
+            self._adapt(resolution)
+
+    def _adapt(self, base):
+        cache = {}
+        res = base
+        err = self.probe_error()
+        self.probe_history.append((res, err))
+        cache[res] = (err, None)
+        for _ in range(self.MAX_BUILDS - 1):
+            if err > self.P90_HI and res * 1.25 <= base * self.SCALE_MAX + 1e-9:
+                nres = int(round(res * 1.25))
+            elif err < self.P90_LO and res / 1.15 >= base * self.SCALE_MIN - 1e-9:
+                nres = int(round(res / 1.15))
+            else:
+                break
+            if nres == res or nres in cache or nres < 8:
+                break
+            keep_state = self.__dict__.copy()
+            self._build(nres)
+            nerr = self.probe_error()
+            self.probe_history.append((nres, nerr))
+            cache[nres] = (nerr, None)
+            if nres < res and nerr > self.P90_HI:        # coarsening overshot: back to the previous grid
+                self.__dict__.update(keep_state)
+                break
+            res, err = nres, nerr
+        self.resolution_chosen = int(res)
+        self.probe_p90 = float(err)
+
+    def probe_error(self, n=None, seed=7):
+        """p90 of |grid sd - exact sd| / h over `n` probes placed within one voxel beside the surface (bricks excluded)."""
+        n = n or self.N_PROBES
+        s = self.soup
+        rng = np.random.default_rng(seed)
+        area = 0.5 * np.linalg.norm(np.cross(s.B - s.A, s.C - s.A), axis=1)
+        t = rng.choice(len(s), n, p=area / area.sum())
+        u, v = rng.random(n), rng.random(n)
+        flip = u + v > 1.0
+        u, v = np.where(flip, 1 - u, u), np.where(flip, 1 - v, v)
+        P = s.A[t] + (s.B[t] - s.A[t]) * u[:, None] + (s.C[t] - s.A[t]) * v[:, None]
+        P = P + s.fn[t] * rng.uniform(-1.0, 1.0, (n, 1)) * self.h
+        err = np.abs(self.sample_sd(P, bricks=False) - signed_distance(s, P)) / self.h
+        return float(np.percentile(err, 90))
+
+    def _build(self, resolution):
+        mode = self.mode_req
         lo, hi = self.soup.bounds() if len(self.soup) else (np.zeros(3), np.ones(3) * 1e-3)
         self.bmin, self.bmax = lo, hi
         ext = np.maximum(hi - lo, 1e-6)
@@ -383,9 +765,15 @@ class PartField:
         self.wall_t = 1.0 * self.h
         # --- brick storage
         self.cells = self.dims - 1
-        self.brick_index = -np.ones(int(np.prod(self.cells)), np.int64)
+        # refined bricks: sorted cell-id keys -> slots of a recycled pool (sparse; no dense cell-sized index)
         self.F = 2 ** max(self.level, 1)
+        self._bkey = np.zeros(0, np.int64)
+        self._bslot = np.zeros(0, np.int64)
+        self._bstamp = np.zeros(0, np.int64)
         self.bricks = np.zeros((0, self.F + 1, self.F + 1, self.F + 1))
+        self._bfree = []
+        self._clock = 0
+        self._band_max = 0.0
         self.n_refined = 0
         self._compute_openings()
 
@@ -419,9 +807,14 @@ class PartField:
         i0, f, out = self._locate(P)
         val = _trilerp(self.sd, i0, f)
         if bricks and self.n_refined:
-            cid = (i0[:, 0] * self.cells[1] + i0[:, 1]) * self.cells[2] + i0[:, 2]
-            bid = self.brick_index[cid]
-            sel = np.flatnonzero(bid >= 0)
+            # bricks only exist within (band + one cell diagonal) of the surface: test only those points
+            cand = np.flatnonzero(np.abs(val) < self._band_max + 1.8 * self.h)
+            cid = (i0[cand, 0] * self.cells[1] + i0[cand, 1]) * self.cells[2] + i0[cand, 2]
+            bid_c = self._brick_slots(cid)
+            hit = bid_c >= 0
+            sel = cand[hit]
+            bid = np.full(len(P), -1, np.int64)
+            bid[sel] = bid_c[hit]
             if len(sel):
                 ff = f[sel] * self.F
                 j0 = np.minimum(np.floor(ff).astype(np.int64), self.F - 1)
@@ -466,7 +859,8 @@ class PartField:
             return 0
         cid = (i0[near, 0] * self.cells[1] + i0[near, 1]) * self.cells[2] + i0[near, 2]
         cid = np.unique(cid)
-        cid = cid[self.brick_index[cid] < 0][:max_new]
+        self._band_max = max(self._band_max, float(band))
+        cid = cid[self._brick_slots(cid) < 0][:max_new]
         if len(cid) == 0:
             return 0
         cz = cid % self.cells[2]
@@ -486,12 +880,81 @@ class PartField:
         sub = s.take(sel) if len(sel) else s
         sub = virtual_subdivide(sub, max_edge=self.h * 4.0, cap=6000, phong=0.6 if self.smooth else 0.0, passes=6)
         d = signed_distance(sub, nodes).reshape(len(cid), self.F + 1, self.F + 1, self.F + 1)
-        # tiles keep continuity at the border: clamp refined values to coarse +-0.5h agreement
-        base = len(self.bricks)
-        self.bricks = np.concatenate([self.bricks, d], 0) if base else d
-        self.brick_index[cid] = np.arange(base, base + len(cid))
-        self.n_refined = len(self.bricks)
+        self._add_bricks(cid, d)
         return len(cid)
+
+    # ------------------------------------------------------------------ sparse brick store (add / remove)
+    def _brick_slots(self, cid):
+        """Pool slot of each refined cell id (-1 = not refined)."""
+        if len(self._bkey) == 0:
+            return -np.ones(len(cid), np.int64)
+        pos = np.minimum(np.searchsorted(self._bkey, cid), len(self._bkey) - 1)
+        return np.where(self._bkey[pos] == cid, self._bslot[pos], -1)
+
+    def _add_bricks(self, cid, d):
+        n = len(cid)
+        slot = [self._bfree.pop() for _ in range(min(n, len(self._bfree)))]
+        need = n - len(slot)
+        if need:
+            start = len(self.bricks)
+            grow = max(need, start // 2)
+            self.bricks = np.concatenate([self.bricks, np.zeros((grow,) + self.bricks.shape[1:])]) if start else np.zeros((grow,) + d.shape[1:])
+            self._bstamp = np.concatenate([self._bstamp, np.zeros(grow, np.int64)])
+            slot += list(range(start, start + need))
+            self._bfree += list(range(start + need, start + grow))[::-1]
+        slot = np.array(slot, np.int64)
+        self.bricks[slot] = d
+        self._clock += 1
+        self._bstamp[slot] = self._clock
+        keys = np.concatenate([self._bkey, cid]); slots = np.concatenate([self._bslot, slot])
+        o = np.argsort(keys, kind='stable')
+        self._bkey, self._bslot = keys[o], slots[o]
+        self.n_refined = len(self._bkey)
+
+    def remove_bricks(self, cid):
+        """Coarsen: drop the refined bricks of the given cell ids (absent ones ignored).  Returns the number removed."""
+        cid = np.unique(np.asarray(cid, np.int64))
+        if len(self._bkey) == 0 or len(cid) == 0:
+            return 0
+        pos = np.flatnonzero(np.isin(self._bkey, cid))
+        if len(pos) == 0:
+            return 0
+        self._bfree += self._bslot[pos].tolist()
+        keep = np.ones(len(self._bkey), bool); keep[pos] = False
+        self._bkey, self._bslot = self._bkey[keep], self._bslot[keep]
+        self.n_refined = len(self._bkey)
+        return len(pos)
+
+    def coarsen(self, P_local, margin=1.0):
+        """Drop every refined brick that no point of `P_local` is within `margin` cells of (simulation moved on).  Returns removed count."""
+        if len(self._bkey) == 0:
+            return 0
+        if len(P_local) == 0:
+            return self.remove_bricks(self._bkey.copy())
+        i0, _f, _o = self._locate(P_local)
+        r = int(np.ceil(margin))
+        want = set()
+        base = np.unique(i0, axis=0)
+        for dx in range(-r, r + 1):
+            for dy in range(-r, r + 1):
+                for dz in range(-r, r + 1):
+                    c = np.clip(base + [dx, dy, dz], 0, self.cells - 1)
+                    want.update(((c[:, 0] * self.cells[1] + c[:, 1]) * self.cells[2] + c[:, 2]).tolist())
+        stale = self._bkey[~np.isin(self._bkey, np.fromiter(want, np.int64, len(want)))]
+        return self.remove_bricks(stale)
+
+    def trim_bricks(self, max_bricks):
+        """Evict the oldest refined bricks until at most `max_bricks` remain."""
+        extra = len(self._bkey) - int(max_bricks)
+        if extra <= 0:
+            return 0
+        old = np.argsort(self._bstamp[self._bslot], kind='stable')[:extra]
+        return self.remove_bricks(self._bkey[old])
+
+    def memory_bytes(self):
+        """Bytes held by the grids and the (live part of the) brick pool."""
+        return int(self.sd.nbytes + self.cavm.nbytes + self._bkey.nbytes + self._bslot.nbytes
+                   + len(self._bkey) * (self.F + 1) ** 3 * 8)
 
     # ------------------------------------------------------------------ openings (local space)
     def _compute_openings(self):
