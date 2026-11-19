@@ -149,6 +149,23 @@ Setting an Object socket on a Geometry Nodes modifier hangs the depsgraph of thi
 a one-node group and no add-on code), so the Container socket is informational and the custom-mesh instance path is not covered by the headless
 test; the icosphere path is. A scene change during playback rebuilds the solver from a timer, not inside the frame-change handler.
 
+**Fill / Settle (0.3.1).** Every fluid assigned to a container is a self-initialising fill. The container is the LOTBCBP collision body: its real cavity is
+sampled through the body's signed distance (the same inside test the combustion tanks use), never the bounding box or a cylinder. The quantity (volume, or
+mass / density) is seeded lowest point first along the Environment gravity (so a tilted container or another gravity fills correctly), densest fluid
+at the bottom. Because particles are cell sized and the first lattice node sits about half a cell off the wall, the seeded surface is up to about 2.5
+particle spacings high; the **dynamic fill** (default; operator `Fill / Settle`, also run automatically on Build) steps the solver under gravity with all heat
+sources off until the mean speed is below 0.2 sqrt(g dx) and the free surface has stopped moving (or `Max settle steps`), which closes the wall gaps and
+brings the level to the volume / cross-section level (measured within 1 spacing). `Quick fill` keeps the seeding and runs 6 relaxing steps (level within about 2.5 spacings). The settled
+state is the start frame (cached with the solver), and the heat sources only switch on at `Start heat at frame`; the lava lamp therefore pours wax and carrier into
+the cone, they settle into layers, and then the lamp heats and the blobs rise. Reports (status line and `fillsettle` functions): capacity, layer
+heights along gravity, hydrostatic pressure at the bottom against the integral of rho g dz (within 20 percent on the cone in the tests).
+Overflow: an open vessel spills the excess (not seeded, spilled volume reported), a sealed vessel is filled to 98 percent of the cavity and the excess volume
+and the compression over-pressure dp = K dV/V are reported (reported, not simulated). Confinement: a per-step projection pushes any particle out of the wall
+back inside (second pass for stragglers) and counts escapes (`solver.escapes`); `outside_count()` is 0 in the tests for a cone, a sphere and a tilted cylinder.
+Combustion mode keeps its own finite-fill path (finite fluid / continuous flow in `core/solver.py`) unchanged: its demos start from filled tanks and are covered by the
+existing tests, and sharing the particle-based Fill / Settle with it would change that behaviour, so only the idea is shared (fill from volume x density
+under the Environment gravity, settle, then start), not the code.
+
 **Measured speed** (NumPy on Python 3.13, 2 shared CPU cores): 5,162 particles 0.24 s per frame; 18,900 particles 0.75 s per frame
 (4 drift iterations, up to 4 substeps). Lava lamp render demo: 6,400 particles at 0.34 s per frame.
 

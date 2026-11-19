@@ -1,7 +1,7 @@
 """Fluid mode solver tests (pure NumPy): python3 blender/tests/test_fluidmode.py"""
 import time
 import numpy as np
-from fm_helpers import FM, SDF, box, container
+from fm_helpers import FM, SDF, box, container, lathe, body_of
 from core import primitives as MS
 from core import atmosphere as ATM
 
@@ -280,6 +280,120 @@ def test_barometric_expansion():
     ok(abs(rs[5000.0] / rs[0.0] - expect) < 0.03 * expect, "free gas parcels expand with altitude (radius ratio %.3f, barometric %.3f)" % (rs[5000.0] / rs[0.0], expect))
 
 
+CONE = [(0, 0), (0.075, 0), (0.04, 0.36), (0, 0.36)]
+VASE = [(0, 0), (0.05, 0), (0.07, 0.06), (0.045, 0.13), (0.025, 0.2), (0.025, 0.26), (0.045, 0.3), (0, 0.3)]   # bottle: bulge, neck, flare
+SPHERE = [(0, -0.1)] + [(0.1 * np.sin(a), -0.1 * np.cos(a)) for a in np.linspace(0.15, np.pi - 0.15, 15)] + [(0, 0.1)]
+
+
+def radius_at(profile, z):
+    p = np.asarray(profile, float)
+    return np.interp(z, p[:, 1], p[:, 0])
+
+
+def test_cavity_fill():
+    # cone and non-convex vase: the fill is the cavity's real contoured shape (sampled through the collision-body projection)
+    for name, prof, level, dx in (("cone", CONE, 0.5, 0.008), ("vase", VASE, 0.5, 0.008)):
+        V, T = lathe(prof)
+        b = body_of(V, T)
+        cav = FM.mesh_volume(V, T)
+        w = FM.fluid_def('WATER', name='w', body=0, volume=level * cav)
+        S = FM.FluidSolver.build([w], [b], FM.FEnv(), dx=dx)
+        vol = S.n * S.dx ** 3
+        ok(abs(vol / (level * cav) - 1.0) < 0.06, "%s: fill volume %.3f L vs requested %.3f L (%.1f%%)" % (name, vol * 1e3, level * cav * 1e3, 100 * (vol / (level * cav) - 1)))
+        ok(b.distance(S.x, np.eye(4)).min() > 0.0 and S.outside_count() == 0, "%s: no seeded particle outside the cavity" % name)
+        r = np.hypot(S.x[:, 0], S.x[:, 1])
+        bad = 0
+        for z0 in np.linspace(0.02, S.x[:, 2].max() - 0.02, 6):
+            m = np.abs(S.x[:, 2] - z0) < 0.5 * S.dx
+            if m.any():
+                bad += abs(r[m].max() - radius_at(prof, z0)) > 1.6 * S.dx
+        ok(bad == 0, "%s: seeded cross-section follows the cavity contour at 6 levels" % name)
+        if name == "cone":
+            lo = np.abs(S.x[:, 2] - 0.03) < S.dx
+            hi = np.abs(S.x[:, 2] - (S.x[:, 2].max() - 0.03)) < S.dx
+            zl, zh = S.x[:, 2][lo].mean(), S.x[:, 2][hi].mean()
+            want = radius_at(prof, zl) - radius_at(prof, zh)
+            ok(r[lo].max() - r[hi].max() > 0.6 * want, "cone: column is narrower at the top (radius %.3f m at z=%.2f, %.3f m at z=%.2f; the cavity narrows by %.3f)" % (r[lo].max(), zl, r[hi].max(), zh, want))
+    # the level of a finite fill follows the contour: the free surface height matches the frustum volume at 3 fill levels
+    V, T = lathe(CONE)
+    b = body_of(V, T)
+    for fr in (0.25, 0.4, 0.5):
+        w = FM.fluid_def('WATER', name='w', body=0, volume=fr * FM.mesh_volume(V, T))
+        S = FM.FluidSolver.build([w], [b], FM.FEnv(), dx=0.008)
+        zs = np.linspace(0, 0.36, 3601)
+        rr = radius_at(CONE, zs)
+        vz = np.cumsum(np.pi * rr ** 2) * (zs[1] - zs[0])
+        z_expect = zs[np.searchsorted(vz, fr * FM.mesh_volume(V, T))]
+        d_top = S.x[:, 2].max() + 0.5 * S.dx - z_expect
+        ok(-0.5 * S.dx < d_top < 3.2 * S.dx, "cone fill %d%%: seeded surface at %.3f m, exact level %.3f m (the dynamic fill closes the half-cell wall gap)" % (fr * 100, S.x[:, 2].max(), z_expect))
+
+
+def test_confinement():
+    import math
+    rot = np.eye(4)
+    a = math.radians(35.0)
+    rot[:3, :3] = [[1, 0, 0], [0, math.cos(a), -math.sin(a)], [0, math.sin(a), math.cos(a)]]
+    rot[:3, 3] = (0.0, 0.0, 0.15)
+    cyl = [(0, 0), (0.06, 0), (0.06, 0.25), (0, 0.25)]
+    for name, prof, M in (("cone", CONE, None), ("sphere", SPHERE, np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0.12], [0, 0, 0, 1.0]])), ("tilted cylinder", cyl, rot)):
+        V, T = lathe(prof)
+        b = body_of(V, T, matrix=M)
+        w = FM.fluid_def('WATER', name='w', body=0, volume=0.45 * FM.mesh_volume(V, T) * (1.0 if M is None else abs(np.linalg.det(M[:3, :3]))))
+        S = FM.FluidSolver.build([w], [b], FM.FEnv(), dx=0.01)
+        run(S, 2.5)
+        ok(S.outside_count() == 0 and np.isfinite(S.x).all(), "%s: zero particles outside the cavity after 60 steps (%d particles, %d escapes projected back)" % (name, S.n, S.escapes))
+
+
+def test_fill_settle():
+    from core import fillsettle as FS
+    # settled level matches volume / cross-section (cone and cylinder), dynamic fill under gravity
+    cyl = [(0, 0), (0.06, 0), (0.06, 0.25), (0, 0.25)]
+    for name, prof, fr in (("cone", CONE, 0.5), ("cylinder", cyl, 0.5)):
+        V, T = lathe(prof)
+        b = body_of(V, T)
+        w = FM.fluid_def('WATER', name='w', body=0, volume=fr * FM.mesh_volume(V, T))
+        S = FM.FluidSolver.build([w], [b], FM.FEnv(), dx=0.008)
+        rep = FS.settle(S, max_steps=80)
+        zs = np.linspace(0, prof[-1][1], 3601)
+        vz = np.cumsum(np.pi * radius_at(prof, zs) ** 2) * (zs[1] - zs[0])
+        z_expect = zs[np.searchsorted(vz, fr * FM.mesh_volume(V, T))]
+        top = np.percentile(S.x[:, 2], 99) + 0.5 * S.dx
+        ok(abs(top - z_expect) < 2.0 * S.dx, "%s: settled level %.3f m vs volume/cross-section %.3f m (%d steps, mean speed %.3f m/s)" % (name, top, z_expect, rep['steps'], rep['mean_speed']))
+        ok(S.outside_count() == 0, "%s: settled fill stays in the cavity" % name)
+        if name == "cone":
+            hs = FS.hydrostatic_report(S)
+            ok(hs is not None and 0.8 < hs['ratio'] < 1.25, "cone hydrostatic pressure at the bottom %.0f Pa vs rho g h %.0f Pa (ratio %.2f)" % (hs['measured'], hs['expected'], hs['ratio']))
+            # determinism: the same build and settle gives the same level
+            S2 = FM.FluidSolver.build([w], [b], FM.FEnv(), dx=0.008)
+            FS.settle(S2, max_steps=60)
+            ok(abs(np.percentile(S2.x[:, 2], 99) - np.percentile(S.x[:, 2], 99)) < 1e-6, "fill / settle is deterministic")
+    # quick fill keeps the level-set seeding
+    V, T = lathe(CONE)
+    b = body_of(V, T)
+    w = FM.fluid_def('WATER', name='w', body=0, volume=0.5 * FM.mesh_volume(V, T))
+    S = FM.FluidSolver.build([w], [b], FM.FEnv(), dx=0.008)
+    rep = FS.settle(S, quick=True)
+    ok(rep['steps'] == 6 and S.outside_count() == 0, "quick fill: level-set seeding plus %d relaxing steps" % rep['steps'])
+    # overflow: sealed and open vessels
+    for opened in (False, True):
+        b = body_of(V, T)
+        b.open = opened
+        w = FM.fluid_def('WATER', name='w', body=0, volume=1.3 * FM.mesh_volume(V, T))
+        S = FM.FluidSolver.build([w], [b], FM.FEnv(), dx=0.01)
+        ov = FS.overflow_report(S)[0]
+        ok(abs(ov["overflow"] / FM.mesh_volume(V, T) - 0.32) < 0.08 and (('spilled' in ov['handling']) if opened else ('over-pressure' in ov['handling'])),
+           "%s cone filled to 130%%: %s" % ("open" if opened else "sealed", ov['handling']))
+    # two fluids in one container: the denser one settles below (poured in the wrong order: lighter fluid seeded first by index is irrelevant, the fill sorts by density)
+    b = body_of(*lathe(CONE))
+    oil = FM.fluid_def('MINERAL_OIL', name='oil', body=0, volume=0.25 * FM.mesh_volume(V, T), miscible=False)
+    wat = FM.fluid_def('WATER', name='water', body=0, volume=0.25 * FM.mesh_volume(V, T), miscible=False)
+    S = FM.FluidSolver.build([oil, wat], [b], FM.FEnv(), dx=0.008)
+    rep = FS.settle(S, max_steps=50)
+    lay = {n: (lo, hi) for n, lo, hi in rep['layers']}
+    ok(lay['water'][1] <= lay['oil'][1] and np.percentile(S.x[S.lo[1]:S.hi[1], 2], 50) < np.percentile(S.x[S.lo[0]:S.hi[0], 2], 50),
+       "two fluids: water layer %.3f-%.3f m below the oil layer %.3f-%.3f m" % (lay['water'][0], lay['water'][1], lay['oil'][0], lay['oil'][1]))
+
+
 def test_speed():
     b = container((-.15, -.15, 0), (.15, .15, .4))
     w = FM.fluid_def('WATER', name='w', body=0, fill=0.5)
@@ -296,7 +410,7 @@ def test_speed():
 if __name__ == '__main__':
     t0 = time.time()
     for fn in (test_units, test_environment, test_boussinesq, test_stratify_and_mass, test_gas_wind, test_gas_buoyancy, test_gravity_scaling,
-               test_heat, test_moving_wall, test_solid_displaces, test_spinning_gear, test_barometric_expansion, test_speed):
+               test_heat, test_moving_wall, test_solid_displaces, test_spinning_gear, test_barometric_expansion, test_cavity_fill, test_confinement, test_fill_settle, test_speed):
         t = time.time()
         try:
             fn()

@@ -43,7 +43,15 @@ sc.frame_start, sc.frame_end = 1, 12
 FO.start(sc, play=False)
 S = FO.RT.solver
 ok(S is not None and S.n > 300, "build self-initialises the fluids (%d particles, spacing %.1f mm, %.1fs)" % (S.n, S.dx * 1000, time.time() - t0))
-ok(all(fl.d_particles > 0 for fl in fm.fluids), "every fluid got particles: %s" % [fl.d_particles for fl in fm.fluids])
+ok(all(fl.d_particles > 0 for fl in fm.fluids) and min(fl.d_particles for fl in fm.fluids) > 100, "every fluid got particles: %s" % [fl.d_particles for fl in fm.fluids])
+rep = FO.RT.fill
+ok(rep is not None and rep['steps'] >= 1 and S.outside_count() == 0, "Fill / Settle phase ran (%d steps), all particles inside the cone: %s" % (rep['steps'], fm.status[:90]))
+med = [float(np.median(S.x[S.lo[i]:S.hi[i], 2])) for i in range(4)]
+ok(med[1] < med[2] < med[3] and med[0] > med[1], "settled layers: red wax %.3f < orange %.3f < magenta %.3f m below the carrier (median %.3f m)" % (med[1], med[2], med[3], med[0]))
+bpy.ops.arcflow.fm_fill()
+ok(FO.RT.fill is not None and FO.RT.last is None, "Fill / Settle operator rebuilds and settles the start frame")
+FO.start(sc, play=False)
+S = FO.RT.solver
 for f in range(1, 9):
     sc.frame_set(f)
 tm = [fl.points_obj for fl in fm.fluids]
@@ -52,7 +60,8 @@ wax = fm.fluids[1].points_obj.data
 ok(all(a in wax.attributes for a in ("af_radius", "fm_velocity", "fm_temperature", "fm_density", "fm_fluid_id")), "particle attributes: velocity, temperature, density, fluid id, radius")
 T = np.empty(len(wax.vertices), np.float32)
 wax.attributes['fm_temperature'].data.foreach_get('value', T)
-ok(T.mean() > 293.2, "heat source warmed the wax (%.2f K mean)" % T.mean())
+T0 = float(FO.RT.start_snap['T'][S.lo[1]:S.hi[1]].mean())
+ok(T.mean() > T0 + 0.3, "heat source warmed the wax (%.2f K mean, %.2f K after the fill)" % (T.mean(), T0))
 ok(FO.RT.last == 8 and len(FO.RT.cache) >= 8, "frames stepped and cached")
 # Geometry Nodes exposure
 mod = fm.fluids[1].points_obj.modifiers.get("Tessera Fluid")

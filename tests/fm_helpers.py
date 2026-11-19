@@ -32,3 +32,43 @@ def container(lo, hi, res=40, matrix=None, fluids=None, friction=0.2):
 
 def collider(V, T, res=32, matrix=None, friction=0.2):
     return FM.Body(SDF.PartField(V, T, 'SOLID' if False else 'AUTO', resolution=res, level=2), matrix, 'COLLIDER', None, friction)
+
+
+def lathe(profile, seg=40):
+    """Closed surface of revolution about Z from a (r, z) profile that starts and ends on the axis; outward normals."""
+    prof = np.asarray(profile, float)
+    n = len(prof)
+    V, idx = [], {}
+    for i, (r, z) in enumerate(prof):
+        if r <= 1e-12:
+            idx[i] = len(V); V.append((0.0, 0.0, z))
+        else:
+            idx[i] = len(V)
+            for k in range(seg):
+                a = 2 * np.pi * k / seg
+                V.append((r * np.cos(a), r * np.sin(a), z))
+    V = np.array(V)
+
+    def ring(i):
+        s = idx[i]
+        return [s] if prof[i][0] <= 1e-12 else [s + k for k in range(seg)]
+    T = []
+    for i in range(n - 1):
+        A, B = ring(i), ring(i + 1)
+        for k in range(seg):
+            k2 = (k + 1) % seg
+            a0, a1 = A[k % len(A)], A[k2 % len(A)]
+            b0, b1 = B[k % len(B)], B[k2 % len(B)]
+            if a0 != a1:
+                T.append((a0, a1, b1))
+            if b0 != b1:
+                T.append((a0, b1, b0))
+    T = np.array(T)
+    vol = FM.mesh_volume(V, T)
+    if vol < 0:
+        T = T[:, ::-1]
+    return V, T
+
+
+def body_of(V, T, res=48, matrix=None):
+    return FM.Body(SDF.PartField(V, T, 'SHELL', resolution=res, level=2), matrix, 'CONTAINER', None, 0.2)

@@ -34,7 +34,16 @@ if demo == 'lamp':   # frame the whole lamp; the carrier liquid as a translucent
     cam.data.lens = 36
     cam.location = (0.0, -0.95, 0.17)
     cam.rotation_euler = (__import__('math').radians(90.0), 0, 0)
-    sc.arc_flow_fm.fluids[0].render_mode = 'RAYMARCH'
+    if os.environ.get('FLUID_CARRIER', 'points') == 'ray':
+        sc.arc_flow_fm.fluids[0].render_mode = 'RAYMARCH'
+    else:
+        sc.arc_flow_fm.fluids[0].particle_scale = float(os.environ.get("FLUID_CS", "0.28"))
+        for fl in list(sc.arc_flow_fm.fluids)[1:]:
+            fl.particle_scale = 1.25
+    if os.environ.get('FLUID_DEBUG') == 'noglass':
+        bpy.data.objects['TS_LampGlass'].hide_render = True
+    if os.environ.get('FLUID_DEBUG') == 'nolights':
+        sc.arc_flow_fm.fluids[0].render_mode = 'POINTS'
     FO.refresh_render(sc)
     FO.apply_state(sc, FO.RT.cache.get(frame))
 w = bpy.data.worlds.new("TS_World") if sc.world is None else sc.world
@@ -56,6 +65,7 @@ if demo == 'lamp':   # a soft key light and a rim light so the carrier and the w
     for nm, loc, en, sz in (("TS_Key", (0.5, -0.8, 0.45), 120.0, 0.4), ("TS_Rim", (-0.5, 0.5, 0.35), 60.0, 0.3)):
         ld = bpy.data.lights.new(nm, 'AREA'); ld.energy = en; ld.size = sz
         lo = bpy.data.objects.new(nm, ld); sc.collection.objects.link(lo); lo.location = loc
+        lo.visible_glossy = False   # no mirror images of the area lights in the glass (they read as white streaks)
         d = (lo.location * -1 + __import__('mathutils').Vector((0, 0, 0.17)))
         lo.rotation_euler = d.to_track_quat('-Z', 'Y').to_euler()
 sc.render.engine = 'CYCLES'

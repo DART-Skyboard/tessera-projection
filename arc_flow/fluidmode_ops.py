@@ -24,6 +24,7 @@ class FMRuntime:
         self.solver = None
         self.dirty = True
         self.in_handler = False
+        self.fill = None
         self.rebuild_pending = False
         self.running = False
         self.scene_name = None
@@ -105,6 +106,7 @@ def build_solver(scene):
             if o.name not in cont_idx:
                 fld, _v, _t = runtime._field(o, deps)
                 bodies.append(FM.Body(fld, np.array(o.matrix_world), 'CONTAINER', [], 0.2, o.name))
+                bodies[-1].open = bool(len(_t)) and not FM.is_closed(np.asarray(_t))
                 body_objs.append(o)
                 cont_idx[o.name] = len(bodies) - 1
                 z_low.append(float(bodies[-1].bbox_world()[0][2]))
@@ -131,13 +133,36 @@ def build_solver(scene):
     return S
 
 
-def sources(scene):
+def sources(scene, frame=None):
     out = []
+    if frame is not None and frame < scene.arc_flow_fm.heat_start:
+        return out
     for o in scene.objects:
         p = o.arc_flow_fm
         if p.heat_on:
             out.append((tuple(o.matrix_world.translation), p.heat_power, p.heat_radius))
     return out
+
+
+def fill_phase(scene):
+    """Fill / Settle: container-filled liquids are poured into the real cavity under the Environment gravity and settled; the settled state
+    is the initial state of the main simulation (heat starts later, at fm.heat_start).  Returns the report dict or None."""
+    from .core import fillsettle as FS
+    fm = scene.arc_flow_fm
+    S = RT.solver
+    has = any((not fl.no_container) and fl.container is not None and fl.kind != 'GAS' for fl in fm.fluids)
+    if S is None or not has or fm.fill_mode == 'OFF':
+        return None
+    t0 = __import__('time').time()
+
+    def prog(k, n, ms):
+        fm.status = "Filling: step %d / %d, mean speed %.3f m/s" % (k, n, ms)
+    rep = FS.settle(S, max_steps=fm.fill_steps, quick=(fm.fill_mode == 'QUICK'), progress=prog)
+    rep['seconds'] = __import__('time').time() - t0
+    lay = "; ".join("%s %.0f-%.0f mm" % (n, lo * 1e3, hi * 1e3) for n, lo, hi in rep['layers'])
+    ov = [o['handling'] for o in rep['overflow'] if o['overflow'] > 0]
+    fm.status = "Filled in %d steps (%.1f s): layers %s%s" % (rep['steps'], rep['seconds'], lay, ("; " + "; ".join(ov)) if ov else "")
+    return rep
 
 
 def ensure_world(scene, force=False):
@@ -149,6 +174,7 @@ def ensure_world(scene, force=False):
         RT.dirty = False
         RT.cache = {}
         RT.last = None
+        RT.fill = fill_phase(scene)
         RT.start_snap = RT.solver.snapshot()
         ensure_objects(scene)
     return RT.solver
@@ -229,11 +255,12 @@ def ensure_objects(scene):
         if kind == 'Points':
             gn.set_modifier_inputs(mr, {"Instance Object": fl.mesh_obj, "Use Object": fl.mesh_obj is not None,
                                         "Instance Collection": fl.mesh_collection, "Use Collection": fl.mesh_collection is not None,
-                                        "Scale": fl.particle_scale})
+                                        "Scale": 1.0})      # the particle scale is applied to af_radius by apply_state
         elif kind == 'RayMarch':
-            gn.set_modifier_inputs(mr, {"Density": fl.rm_density * 0.02, "Voxel Size": vox, "Radius Scale": 2.0 * fl.particle_scale})
+            gn.set_modifier_inputs(mr, {"Density": fl.rm_density * 0.02, "Voxel Size": vox, "Radius Scale": 2.0})
         else:
-            gn.set_modifier_inputs(mr, {"Scale": 2.5 * fl.particle_scale})
+            gn.set_modifier_inputs(mr, {"Scale": 2.5})
+        o.update_tag()          # modifier inputs set from Python do not tag the object for re-evaluation by themselves
     apply_state(scene)
 
 
@@ -280,7 +307,7 @@ def apply_state(scene, snap=None):
         sl = slice(lo, hi)
         me.vertices.foreach_set('co', x[sl].astype(np.float32).ravel())
         tn = np.clip((T[sl] - fl.t_lo) / max(fl.t_hi - fl.t_lo, 1e-3), 0.0, 1.0).astype(np.float32)
-        me.attributes['af_radius'].data.foreach_set('value', (rad[sl] * 1.15).astype(np.float32))
+        me.attributes['af_radius'].data.foreach_set('value', (rad[sl] * 1.15 * fl.particle_scale).astype(np.float32))
         me.attributes['af_tn'].data.foreach_set('value', tn)
         me.attributes['af_speed'].data.foreach_set('value', speed[sl].astype(np.float32))
         me.attributes['fm_temperature'].data.foreach_set('value', T[sl].astype(np.float32))
@@ -329,7 +356,7 @@ def sim_frame(scene, frame):
             if not np.allclose(M, b.M1, atol=1e-12):
                 b.set_matrix(M)
         t0 = time.time()
-        S.step(dt, sources=sources(scene))
+        S.step(dt, sources=sources(scene, RT.last + 1))
         RT.step_times.append(time.time() - t0)
         RT.last += 1
         RT.cache[RT.last] = S.snapshot()
@@ -544,6 +571,21 @@ class AF_OT_fm_stop(Operator):
         return {'FINISHED'}
 
 
+class AF_OT_fm_fill(Operator):
+    bl_idname = "arcflow.fm_fill"
+    bl_label = "Fill / Settle"
+    bl_description = "Pour every container fluid into its cavity under the Environment gravity and settle it; the settled state is the start frame (heat starts at 'Start heat at frame')"
+
+    def execute(self, ctx):
+        sc = ctx.scene
+        stop(sc)
+        RT.scene_name = sc.name
+        ensure_world(sc, force=True)
+        apply_state(sc, RT.start_snap)
+        self.report({'INFO'}, sc.arc_flow_fm.status)
+        return {'FINISHED'}
+
+
 class AF_OT_fm_reset(Operator):
     bl_idname = "arcflow.fm_reset"
     bl_label = "Reset"
@@ -598,9 +640,20 @@ def _glass_material(name="TesseraGlass"):
     m.use_nodes = True
     nt = m.node_tree
     nt.nodes.clear()
-    b = nt.nodes.new('ShaderNodeBsdfGlass') if hasattr(bpy.types, 'ShaderNodeBsdfGlass') else nt.nodes.new('ShaderNodeBsdfPrincipled')
+    gl = nt.nodes.new('ShaderNodeBsdfGlass') if hasattr(bpy.types, 'ShaderNodeBsdfGlass') else nt.nodes.new('ShaderNodeBsdfPrincipled')
     o = nt.nodes.new('ShaderNodeOutputMaterial')
-    nt.links.new(b.outputs[0], o.inputs['Surface'])
+    # clear glass with a faint blue rim (Fresnel) so the cone's silhouette reads without mirror streaks of the lights
+    fr = nt.nodes.new('ShaderNodeFresnel')
+    fr.inputs['IOR'].default_value = 1.8
+    mul = nt.nodes.new('ShaderNodeMath'); mul.operation = 'MULTIPLY'; mul.inputs[1].default_value = 0.55
+    em = nt.nodes.new('ShaderNodeEmission')
+    em.inputs['Color'].default_value = (0.45, 0.65, 0.9, 1.0); em.inputs['Strength'].default_value = 1.2
+    mix = nt.nodes.new('ShaderNodeMixShader')
+    nt.links.new(fr.outputs[0], mul.inputs[0])
+    nt.links.new(mul.outputs[0], mix.inputs[0])
+    nt.links.new(gl.outputs[0], mix.inputs[1])
+    nt.links.new(em.outputs[0], mix.inputs[2])
+    nt.links.new(mix.outputs[0], o.inputs['Surface'])
     m.diffuse_color = (0.8, 0.9, 1.0, 0.15)
     return m
 
@@ -657,7 +710,7 @@ def _demo_common(scene):
     return _collection(scene)
 
 
-def load_lava_lamp(scene, max_particles=6000):
+def load_lava_lamp(scene, max_particles=12000):
     col = _demo_common(scene)
     fm = scene.arc_flow_fm
     h, r_b, r_t = 0.36, 0.075, 0.04
@@ -680,31 +733,29 @@ def load_lava_lamp(scene, max_particles=6000):
     col.objects.link(lamp)
     lamp.location = (0, 0, 0.05)
     lamp.arc_flow_fm.heat_on = False
-    # fluids: a carrier liquid and two kinds of wax blobs (immiscible)
+    # fluids: a carrier liquid and three waxes poured into the cone (Fill / Settle: the quantities fill the real cavity under gravity and
+    # settle into layers, densest at the bottom; the lamp then heats the wax and the blobs rise)
+    cav = math.pi * h / 3.0 * (r_b * r_b + r_b * r_t + r_t * r_t)
     carrier = add_fluid(scene, 'WATER', "Carrier")
     carrier.density, carrier.beta, carrier.visc, carrier.k = 985.0, 4.0e-4, 0.01, 0.4
     carrier.color = (0.55, 0.75, 1.0)
     carrier.cohesion, carrier.miscible = 0.04, False
-    carrier.no_container, carrier.container, carrier.fill = False, tank, 88.0
+    carrier.no_container, carrier.container, carrier.shape = False, tank, None
+    carrier.volume = 0.62 * cav
     carrier.render_mode = 'POINTS'
     carrier.particle_scale = 0.9
     carrier.rm_density = 3.0
     carrier.cool = 0.15
-    blobs = []
-    for i, (z, rr, name, color, x, y) in enumerate(((0.045, 0.026, "Wax red", (1.0, 0.18, 0.08), 0.0, 0.0),
-                                                    (0.10, 0.02, "Wax orange", (1.0, 0.55, 0.05), 0.018, 0.012),
-                                                    (0.17, 0.018, "Wax magenta", (0.9, 0.1, 0.6), -0.012, -0.01))):
-        bl = _mesh_obj("TS_Blob%d" % (i + 1), lambda bm, rr=rr: _sphere(bm, rr), (x, y, z), col)
-        bl.display_type = 'WIRE'
-        bl.hide_render = True
+    for i, (name, color, rho, frac) in enumerate((("Wax red", (1.0, 0.18, 0.08), 1034.0, 0.075), ("Wax orange", (1.0, 0.55, 0.05), 1030.0, 0.06),
+                                                  ("Wax magenta", (0.9, 0.1, 0.6), 1026.0, 0.05))):
         fl = add_fluid(scene, 'LAVA_WAX', name)
-        fl.density, fl.beta, fl.color = 1030.0, 2.2e-3, color
+        fl.density, fl.beta, fl.color = rho, 2.2e-3, color
         fl.temp_color = False
-        fl.no_container, fl.container, fl.shape = False, tank, bl
-        fl.cohesion = 0.06
+        fl.no_container, fl.container, fl.shape = False, tank, None
+        fl.volume = frac * cav
+        fl.cohesion, fl.miscible = 0.14, False
         fl.cool = 0.4
         fl.t_lo, fl.t_hi = 290.0, 330.0
-        blobs.append(fl)
     fm.max_particles = max_particles
     fm.speedup = 120.0
     fm.max_substeps = 3
@@ -798,7 +849,7 @@ class AF_OT_fm_demo(Operator):
 
 
 CLASSES = (AF_OT_fm_add_fluid, AF_OT_fm_remove_fluid, AF_OT_fm_assign, AF_OT_fm_heat, AF_OT_fm_collider, AF_OT_fm_build, AF_OT_fm_stop,
-           AF_OT_fm_reset, AF_OT_fm_bake, AF_OT_fm_demo)
+           AF_OT_fm_reset, AF_OT_fm_fill, AF_OT_fm_bake, AF_OT_fm_demo)
 
 
 def register():

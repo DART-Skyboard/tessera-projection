@@ -203,6 +203,7 @@ class Body:
         M = np.eye(4) if matrix is None else np.asarray(matrix, float)
         self.M0 = self.M1 = M.copy()
         self.n_refined_calls = 0
+        self.open = False          # an open vessel spills when overfilled, a sealed one is reported as over-pressured
 
     def set_matrix(self, M):
         """New transform for the coming frame (the previous one becomes the start of the interpolation)."""
@@ -330,6 +331,8 @@ class FluidSolver:
 
     def __init__(self):
         self.t = 0.0
+        self.escapes = 0
+        self.fill_report = []
 
     # ------------------------------------------------------------------ construction
     @staticmethod
@@ -391,6 +394,13 @@ class FluidSolver:
         occupied = set()
         cont_cache = {}
 
+        gv = np.asarray(S.env.g, float)
+        ghat = gv / (np.linalg.norm(gv) or 1.0)
+
+        def _level(I, raw=False):
+            """Fill order: the level is measured along gravity (lowest point first), not along world Z."""
+            return (I if raw else lat_pos(I, S.dx)) @ ghat * -1.0
+
         def interior_of(bi):
             if bi not in cont_cache:
                 b = S.bodies[bi]
@@ -426,7 +436,7 @@ class FluidSolver:
                     vol = d['mass'] / d['density']
                 if vol > 0 and len(I) * S.dx ** 3 > vol * 1.02 and not d['gas']:       # less than the shape: fill from the bottom
                     nkeep = max(int(round(vol / S.dx ** 3)), 1)
-                    I = I[np.argsort(I[:, 2], kind='stable')[:nkeep]]
+                    I = I[np.argsort(_level(I), kind='stable')[:nkeep]]
                 if not d['gas']:
                     keys = lat_key(I)
                     I = I[[int(k) not in occupied for k in keys]]
@@ -443,22 +453,52 @@ class FluidSolver:
         for f, d in enumerate(D):
             if d['shape'] is None and d['body'] >= 0 and not d['gas']:
                 by_body.setdefault(d['body'], []).append(f)
+        S.fill_report = []
         for bi, fl in by_body.items():
-            I = interior_of(bi)
-            free = np.array([int(k) not in occupied for k in lat_key(I)]) if len(I) else np.zeros(0, bool)
-            I = I[free]
-            I = I[np.argsort(I[:, 2], kind='stable')]
+            I_all = interior_of(bi)
+            n_all = len(I_all)
+            free = np.array([int(k) not in occupied for k in lat_key(I_all)]) if n_all else np.zeros(0, bool)
+            I = I_all[free]
+            I = I[np.argsort(_level(I), kind='stable')]
             total = len(I)
+            # capacity of the real cavity (collision-body projection sampled at dx/2).  Particles are cell-sized (mass = rho dx^3) and the first
+            # lattice node sits ~0.45 dx off the wall, so the lattice itself holds ~12% less than the cavity: the seeding is lowest-point-first
+            # along gravity with n = volume / dx^3 (mass exact), and the extra particles of a near-brim fill go to the highest free spots;
+            # the dynamic fill (settle) then closes the wall gaps and brings the free surface to the exact level
+            b = S.bodies[bi]
+            lo_b, hi_b = b.bbox_world()
+            Pf = lat_pos(lattice_in_box(lo_b, hi_b, S.dx / 2.0), S.dx / 2.0)
+            dfine = b.distance(Pf, b.M1)
+            v_cav = float(np.count_nonzero(dfine >= 0.0)) * (S.dx / 2.0) ** 3
+            v_free = v_cav * (total / max(n_all, 1)) if n_all else 0.0
+            v_free = max(v_free, v_cav - len(occupied) * 0.0)   # capacity of the cavity (shaped fluids inside it are not subtracted)
             pos = 0
+            rep = dict(body=bi, capacity=v_cav, free_capacity=0.98 * v_cav, requested=0.0, overflow=0.0, fluids=[], open=bool(getattr(b, 'open', False)))
+            n_cap = int(round(0.98 * v_cav / S.dx ** 3))
+            n_used = 0
             for f in sorted(fl, key=lambda q: -D[q]['density']):
                 d = D[f]
                 vol = d['volume']
                 if vol <= 0 and d['mass'] > 0 and d['density'] > 0:
                     vol = d['mass'] / d['density']
-                n = int(round(vol / S.dx ** 3)) if vol > 0 else int(round(d['fill'] * total))
-                n = max(min(n, total - pos), 0)
-                placed[f] = lat_pos(I[pos:pos + n], S.dx)
-                pos += n
+                if vol <= 0:
+                    vol = d['fill'] * v_cav
+                rep['requested'] += vol
+                n = int(round(vol / S.dx ** 3))
+                n = max(min(n, n_cap - n_used), 0)
+                n_use = min(n, total - pos)
+                P = lat_pos(I[pos:pos + n_use], S.dx)
+                if n > n_use:                      # near-brim: the remaining particles go to the highest free spots of the cavity
+                    hi_pts = Pf[dfine >= 0.3 * S.dx]
+                    hi_pts = hi_pts[np.argsort(-_level(hi_pts, raw=True), kind='stable')]
+                    k = n - n_use
+                    P = np.vstack([P, hi_pts[S.rng.choice(min(len(hi_pts), 4 * k), size=min(k, len(hi_pts)), replace=False)]])
+                placed[f] = P
+                rep['fluids'].append((f, vol, n))
+                pos += n_use
+                n_used += n
+            rep['overflow'] = max(rep['requested'] - 0.98 * v_cav, 0.0)
+            S.fill_report.append(rep)
         # 3) gases in a container or free without a shape
         for f, d in enumerate(D):
             if placed[f] is not None or not d['gas']:
@@ -602,6 +642,17 @@ class FluidSolver:
         for b in self.bodies:
             b.settle()
         self.t += dt
+
+    def outside_count(self):
+        """Particles whose centre is outside the cavity of a container that holds them (0 when confinement works)."""
+        n = 0
+        for bi, b in enumerate(self.bodies):
+            if b.kind != 'CONTAINER':
+                continue
+            idx = self._bodies_for(bi)
+            if len(idx):
+                n += int(np.count_nonzero(b.distance(self.x[idx], b.M1) < 0.0))
+        return n
 
     def _fluid_pairs(self, mask):
         idx = np.flatnonzero(mask)
@@ -929,8 +980,18 @@ class FluidSolver:
                 continue
             sel = near[viol]
             d, nrm, _R, _s = b.distance_normal(P[sel], M, refine_band=2.0)
+            self.escapes += int(np.count_nonzero(d < 0.0)) if b.kind == 'CONTAINER' else 0   # centre beyond the wall: counted
             push = np.maximum(prad[idx[sel]] - d, 0.0)
             xs[idx[sel]] += nrm * push[:, None]
+            if b.kind == 'CONTAINER':         # safety: a second pass for anything still outside the cavity
+                d2 = b.distance(xs[idx[sel]], M)
+                bad = np.flatnonzero(d2 < 0.0)
+                for _ in range(3):
+                    if len(bad) == 0:
+                        break
+                    d3, n3, _R, _s = b.distance_normal(xs[idx[sel[bad]]], M, refine_band=2.0)
+                    xs[idx[sel[bad]]] += n3 * (prad[idx[sel[bad]]] - d3 + 0.25 * self.dx)[:, None]
+                    bad = bad[b.distance(xs[idx[sel[bad]]], M) < 0.0]
         gz = self.ground_z
         if gz is not None:
             viol = xs[:, 2] < gz + prad

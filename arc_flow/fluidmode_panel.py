@@ -79,6 +79,7 @@ class AF_PT_fm_main(_FMBase, Panel):
             row.operator("arcflow.fm_stop", icon='SNAP_FACE', text="Stop")
         else:
             row.operator("arcflow.fm_build", icon='PLAY', text="Build")
+        row.operator("arcflow.fm_fill", icon='MOD_FLUIDSIM', text="Fill / Settle")
         row.operator("arcflow.fm_reset", icon='FILE_REFRESH', text="Reset")
         row.operator("arcflow.fm_bake", icon='FREEZE', text="Bake")
         l.label(text=fm.status, icon='INFO')
@@ -172,7 +173,7 @@ class AF_PT_fm_solver(_FMBase, Panel):
         l = self.layout
         fm = _fm(ctx)
         c = l.column(align=True)
-        for k in ("max_particles", "spacing", "iterations", "max_substeps", "speedup", "gust", "ground_friction", "lotbcbp", "seed"):
+        for k in ("fill_mode", "fill_steps", "heat_start", "max_particles", "spacing", "iterations", "max_substeps", "speedup", "gust", "ground_friction", "lotbcbp", "seed"):
             c.prop(fm, k)
         c.prop(fm, "ground_temp_on")
         if fm.ground_temp_on:
