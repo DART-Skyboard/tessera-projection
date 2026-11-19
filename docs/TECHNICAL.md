@@ -116,6 +116,48 @@ REDUCE, same sphere, 991,018 faces, Resolution 0.05: 34,859 output faces (100% q
 Not done: Geometry Nodes exposure (skipped: not cheap), shape-key transfer, a half-mesh exact-symmetry mode for PAIR.
 Tests: `python3 tests/test_retopo.py`, `blender -b --factory-startup --python tests/test_retopo_bpy.py` (5.2.3 and 5.3.0). Renders: `docs/renders/retopo_*.png` (`docs/render_retopo.py`).
 
+## Fluid mode (volumetric, particle-based (Lagrangian) fluid dynamics)
+
+Panel switch **Combustion | Fluid**. Fluid mode simulates general fluids: mixing, thermal convection (lava lamp), free gas without a
+container. Any mesh can be a fluid (`Assign Selected as Fluid`); every fluid initialises itself from the properties you give
+(mass, volume, weight, density, temperature, velocity, viscosity, specific heat, conductivity, thermal expansion, phase, colour). Missing
+ones are derived (precedence: volume, then mass or weight/g, then density). `No container` selects a free fluid or one held by a
+container object. The Environment card (gravity presets or value, pressure with altitude, ambient gas density, temperature, wind and gusts,
+ground plane with friction and optional heat sink) acts on every fluid.
+
+**What is solved**
+- Liquids: FLIP/PIC on a staggered grid, variable-density pressure projection (Jacobi-preconditioned CG, p = 0 in air cells), Boussinesq
+  density rho = rho0 (1 - beta (T - Tref)), a position-only, one-sided density drift correction, Akinci-style cohesion between immiscible
+  phases, XSPH viscosity.
+- Gases: Lagrangian parcels with Archimedes buoyancy against the ambient density at altitude (ideal-gas density at the barometric pressure),
+  drag toward the wind with an Ornstein-Uhlenbeck gust, diffusion noise and soft repulsion between parcels.
+- Heat: heat sources (lamps), conservative pair conduction, relaxation to ambient / ground temperature by exposure.
+- Containers and colliders: the LOTBCBP signed-distance field (`core.sdf`), the ground plane. Moving bodies drive the fluid with the wall
+  surface velocity v_lin + omega x r at contact, plus friction.
+
+**What is approximated** (limits to know)
+- Solid to fluid is exact (no penetration, wall velocity, a solid displaces fluid). Fluid to solid is one-way: fluid does not push solids.
+- Gas parcels do not interact with liquid.
+- A grid pressure solver cannot separate fluids mixed below the cell size, so a random fine mixture does not stratify; start separated.
+- No turbulence model; viscosity and cohesion are calibrated, not measured. Pressure is weakly accurate (a few percent density error).
+- Rigid motion of a body only updates its matrix (blended across the frame); deformation triggers a rebuild of the field.
+- Heat transfer can be sped up (`Thermal speed-up`) so a lamp cycle fits an animation; this scales time for the thermal terms only.
+
+**Geometry Nodes:** `Tessera Fluid <name>` per fluid (inputs Mass, Volume, Density, Temperature, Velocity, Viscosity, Colour, No Container, Container,
+Scale; the solver writes the point attributes fm_velocity, fm_temperature, fm_density, fm_fluid_id, af_radius) and `Tessera Mesh Per Particle`.
+Setting an Object socket on a Geometry Nodes modifier hangs the depsgraph of this sandbox's headless Blender 5.2.3 and 5.3.0 (reproduced with
+a one-node group and no add-on code), so the Container socket is informational and the custom-mesh instance path is not covered by the headless
+test; the icosphere path is. A scene change during playback rebuilds the solver from a timer, not inside the frame-change handler.
+
+**Measured speed** (NumPy on Python 3.13, 2 shared CPU cores): 5,162 particles 0.24 s per frame; 18,900 particles 0.75 s per frame
+(4 drift iterations, up to 4 substeps). Lava lamp render demo: 6,400 particles at 0.34 s per frame.
+
+**Tests:** `python3 tests/test_fluidmode.py` (about 2.5 minutes: unit derivation, barometric environment, hot blob rises and cold sinks, stratification,
+mass conservation and containment, wind drift, helium and CO2 in Earth air, Earth / Mars free fall ratio, heating and conduction, moving wall,
+spinning gear tangential momentum, solid displaces fluid, parcel expansion with altitude) and
+`blender --factory-startup -b --python tests/test_fluidmode_blender.py` (modes and panels, lava lamp build, frame stepping, attributes, node groups,
+scrubbing, Assign Selected, Cycles CPU renders; passes on 5.2.3 and 5.3.0). Renders: `docs/render_fluid.py`.
+
 ## Support
 - Bugs and questions: https://github.com/DART-Skyboard/tessera-projection/issues
 - Source: https://github.com/DART-Skyboard/tessera-projection (GPL-3.0-or-later)

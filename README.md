@@ -68,6 +68,21 @@ The fast path pairs triangles into quads, so it keeps the source triangulation's
 
 The simulation is a simplified, documented model, not a full Navier-Stokes solve everywhere.
 
+## Fluid mode: volumetric, particle-based fluid dynamics
+
+<p align="center">
+  <img src="docs/renders/fluid_lamp_t0.png" width="48%" alt="Lava lamp at the start">
+  <img src="docs/renders/fluid_lamp_mid.png" width="48%" alt="Lava lamp mid-run: heated wax rising">
+</p>
+<p align="center">
+  <img src="docs/renders/fluid_free_gas.png" width="48%" alt="Free hot gas plume in wind">
+  <img src="docs/renders/fluid_gas_tower_instanced.png" width="48%" alt="Gas tower, instanced mesh per particle">
+</p>
+
+Switch the panel from Combustion to **Fluid** and turn any mesh into a self-initialising fluid (mass, volume, density, temperature, velocity, viscosity and more, with missing values derived). Fluids with or without a container, mixing, thermal convection (lava lamp), free gas rising or sinking in the Environment (gravity, barometric pressure, ambient density, wind, ground), moving containers and colliders, and Geometry Nodes groups per fluid.
+
+It solves liquids with FLIP/PIC and a variable-density pressure projection, and gases as buoyant Lagrangian parcels. Solid to fluid is exact; fluid to solid is one-way, and gas does not interact with liquid. Measured: 0.24 s per frame at 5,162 particles and 0.75 s at 18,900 (NumPy, 2 shared cores). Details and limits: [technical reference](docs/TECHNICAL.md#fluid-mode-volumetric-particle-based-lagrangian-fluid-dynamics).
+
 ## Install
 
 1. Download `tessera_projection-0.2.0.zip` (from extensions.blender.org or this repo's Releases).
@@ -83,9 +98,9 @@ From source: `./build.sh` validates and builds the zip into `dist/`.
 
 ## Status and roadmap
 
-Version 0.2.0 is tested headless on Blender 5.2.3 LTS and 5.3.0. Interactive UI testing and an EEVEE render check are still to do.
+Version 0.3.0 is tested headless on Blender 5.2.3 LTS and 5.3.0. Interactive UI testing and an EEVEE render check are still to do.
 
-Coming next (0.3.0): a general **Fluid mode** (mixing fluids, lava-lamp convection, free gas without containers, moving colliders), curvature-aligned quad layout, exact symmetry in the large-mesh path, shape-key transfer. See [docs/ROADMAP.md](docs/ROADMAP.md) and the [changelog](CHANGELOG.md).
+Coming next: two-way fluid-solid coupling, curvature-aligned quad layout, exact symmetry in the large-mesh path, shape-key transfer. See [docs/ROADMAP.md](docs/ROADMAP.md) and the [changelog](CHANGELOG.md).
 
 ## Documentation
 
