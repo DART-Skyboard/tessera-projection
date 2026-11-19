@@ -468,6 +468,107 @@ def plane_frame(n, p):
     return R, -R @ np.asarray(p, dtype=np.float64)
 
 
+# ---- symmetrize: choose the trusted side, pull positions onto the mirror, measure asymmetry -----------------------
+
+SYM_SIDES = ("AUTO", "LEFT", "RIGHT", "AVERAGE")
+
+
+def asymmetry_stats(P, n, p, dist_fn, diag):
+    """Mirror distance of surface sample points P about the plane (point p, normal n): every sample is reflected and
+    its distance to the surface (dist_fn(Q) -> distances) is taken.  Returns (max, mean) as fractions of `diag`."""
+    P = np.asarray(P, dtype=np.float64)
+    if not len(P):
+        return 0.0, 0.0
+    d = np.asarray(dist_fn(reflect(P, np.asarray(p, dtype=np.float64), np.asarray(n, dtype=np.float64)))) / diag
+    return float(d.max()), float(d.mean())
+
+
+def side_detail(V, loops, start, size, n, p):
+    """Per side of the plane: face count, area and integrated feature strength (sum of edge dihedral angles weighted by
+    the shorter incident edge, a curvature proxy).  Faces are assigned by their centroid (+ = positive normal side)."""
+    nrm, area, cen = face_geometry(V, loops, start, size)
+    pos = ((cen - p) @ n) > 0
+    E, ef, cnt = build_edges(loops, start, size)
+    dih = edge_dihedral(nrm, ef)
+    ok = ef[:, 0] >= 0
+    ep = pos[np.maximum(ef[:, 0], 0)]
+    ln = np.linalg.norm(V[E[:, 0]] - V[E[:, 1]], axis=1)
+    feat = dih * ln
+    out = {}
+    for name, m, em in (("+", pos, ok & ep), ("-", ~pos, ok & ~ep)):
+        out[name] = {"faces": int(m.sum()), "area": float(area[m].sum()), "feature": float(feat[em].sum())}
+    return out
+
+
+def choose_side(detail, side="AUTO"):
+    """Side whose geometry is trusted.  LEFT = the positive side of the plane normal, RIGHT = the negative side.
+    AUTO (and AVERAGE, which only needs a reference side for the topology) = the side with more detail: more faces
+    (finer sampling), when the counts are within 3% the larger integrated feature strength, then the larger area.
+    Returns (keep_positive, why)."""
+    if side == "LEFT":
+        return True, "left (+normal side) by choice"
+    if side == "RIGHT":
+        return False, "right (-normal side) by choice"
+    a, b = detail["+"], detail["-"]
+    ra = a["faces"] / max(b["faces"], 1)
+    if ra > 1.03:
+        return True, "more faces on +side (%d vs %d)" % (a["faces"], b["faces"])
+    if ra < 1.0 / 1.03:
+        return False, "more faces on -side (%d vs %d)" % (b["faces"], a["faces"])
+    fa, fb = a["feature"], b["feature"]
+    if abs(fa - fb) > 0.03 * max(fa, fb, 1e-300):
+        return fa >= fb, "more feature strength on %s-side" % ("+" if fa >= fb else "-")
+    return a["area"] >= b["area"], "larger area (counts and features equal)"
+
+
+def symmetrize_points(P, n, p, project_fn, keep_positive=True, side="AUTO", strength=1.0, seam_tol=0.0, pair=None):
+    """Move vertex positions towards an exact mirror about the plane (point p, normal n).
+
+    project_fn(Q) -> nearest points of Q on the ORIGINAL surface (the object's own projection).
+    pair=None: the vertices are not matched.  The vertices on the non-trusted side are moved onto the mirror image of
+      the trusted surface:  u' = lerp(u, reflect(project(reflect(u))), strength).  AVERAGE moves every vertex halfway
+      to the same mirror estimate (both sides).
+    pair (int array, partner index per vertex, i for self-paired/seam): the topology is already mirror-consistent and
+      P holds exact mirror images.  Then strength blends the partner side from the original surface (strength 0:
+      partner side projected back onto the source, strength 1: exact mirror); AVERAGE makes both sides the mean of
+      the trusted surface and the mirrored other side.
+    Vertices within seam_tol of the plane are projected onto the original surface and then snapped onto the plane.
+    Returns the new (n,3) array; deterministic, no side effects."""
+    P = np.asarray(P, dtype=np.float64)
+    n = np.asarray(n, dtype=np.float64); n = n / np.linalg.norm(n)
+    p = np.asarray(p, dtype=np.float64)
+    s = float(min(max(strength, 0.0), 1.0))
+    d = (P - p) @ n
+    seam = np.abs(d) <= seam_tol
+    kept = (d > 0) if keep_positive else (d < 0)
+    kept = kept & ~seam
+    other = ~kept & ~seam
+    out = P.copy()
+    if pair is None:
+        M = reflect(project_fn(reflect(P, p, n)), p, n)               # this vertex's mirrored counterpart on the source
+        if side == "AVERAGE":
+            out = P + s * (0.5 * (P + M) - P)
+        else:
+            out[other] = P[other] + s * (M[other] - P[other])
+    else:
+        pair = np.asarray(pair)
+        B = project_fn(P) if (side == "AVERAGE" or s < 1.0) else P    # source surface point under each vertex
+        if side == "AVERAGE":
+            # trusted vertex v and its partner u: both become the mean of v's source point and reflect(u's source point)
+            a = 0.5 * (B + reflect(B[pair], p, n))                    # mean of v's source point and its partner's, mirrored
+            tgt = np.where(kept[:, None], a, reflect(a[pair], p, n))  # the trusted vertex decides, the partner mirrors it
+            single = (pair == np.arange(len(P))) & ~seam
+            tgt = np.where((seam | single)[:, None], P, tgt)
+            out = B + s * (tgt - B)                                   # strength 0: back on the source
+        else:
+            out[other] = B[other] + s * (P[other] - B[other])
+    if seam.any():
+        S = project_fn(out[seam])
+        S = S - ((S - p) @ n)[:, None] * n[None, :]                   # onto the plane
+        out[seam] = S
+    return out
+
+
 def otsu_threshold(x, bins=64):
     """Otsu threshold of a 1-D sample; returns (threshold, separability 0..1)."""
     x = np.asarray(x, dtype=np.float64)
@@ -764,6 +865,11 @@ class RemeshSettings:
     axis: str = "X"
     sym_tolerance: float = 1e-4          # fraction of bbox diagonal
     keep_positive_side: bool = True
+    symmetrize: bool = True              # fix symmetry: mirror the trusted side (default ON when a plane is detected)
+    symmetrize_threshold: float = 0.5    # minimum plane confidence (1 - mean mirror deviation / 2% of the diagonal)
+    symmetrize_strength: float = 1.0     # 0 = keep the source shape on the other side, 1 = exact mirror
+    symmetrize_side: str = "AUTO"        # AUTO (side with more detail) | LEFT (+normal) | RIGHT (-normal) | AVERAGE
+    sym_plane: object = None             # (normal, point, info dict) given by the caller (fast path): skip detection
     crease_angle: object = None          # None = auto from the dihedral distribution (when auto), else radians
     sharp_angle: float = math.radians(50.0)
     threshold_mode: str = "AUTO"
@@ -1034,20 +1140,36 @@ def _symmetry_setup(work, st, diag):
         return out
     V, F = bm_arrays(work)
     loops, start, size = pack_faces(F)
-    P, cen, area = surface_sample_points(V, loops, start, size)
-    c = (cen * area[:, None]).sum(0) / max(area.sum(), 1e-300)
-    force = None
-    if rep["mode"] == "AXIS":
-        force = np.zeros(3); force[AXES[st.axis]] = 1.0
-    det = detect_symmetry(P, c, dist_fn, diag, force_normal=force)
+    if st.sym_plane is not None:                                     # plane found by the caller on the full-resolution mesh
+        pn, pp, info = st.sym_plane
+        det = {"normal": np.asarray(pn, dtype=np.float64), "point": np.asarray(pp, dtype=np.float64),
+               "cls": info.get("class", "near-symmetric"), "confidence": info.get("confidence", 1.0),
+               "mean": info.get("mean_dev", 0.0), "p95": info.get("p95_dev", 0.0), "frac_ok": 1.0 - info.get("asymmetric_fraction", 0.0),
+               "candidate_scores": info.get("candidate_scores", [])}
+        rep["plane_from_caller"] = True
+    else:
+        P, cen, area = surface_sample_points(V, loops, start, size)
+        c = (cen * area[:, None]).sum(0) / max(area.sum(), 1e-300)
+        force = None
+        if rep["mode"] == "AXIS":
+            force = np.zeros(3); force[AXES[st.axis]] = 1.0
+        det = detect_symmetry(P, c, dist_fn, diag, force_normal=force)
     rep.update({"class": det["cls"], "confidence": det["confidence"], "mean_dev": det["mean"], "p95_dev": det["p95"],
                 "normal": tuple(float(x) for x in det["normal"]), "point": tuple(float(x) for x in det["point"]),
                 "asymmetric_fraction": 1.0 - det["frac_ok"], "candidate_scores": det["candidate_scores"]})
-    enforce = det["cls"] in ("symmetric", "near-symmetric") or (rep["mode"] == "AXIS")
+    rep["symmetrize_threshold"] = st.symmetrize_threshold
+    if rep["mode"] == "AXIS":
+        enforce = True                                               # the user named the axis: always mirror
+    else:
+        enforce = bool(st.symmetrize) and det["cls"] != "asymmetric" and det["confidence"] >= st.symmetrize_threshold
     rep["enforced"] = bool(enforce)
     if not enforce:
         st.use_symmetry = False
-        rep["note"] = "asymmetric: not mirrored"
+        if not st.symmetrize:
+            rep["note"] = "Symmetrize is off: plane reported only, not mirrored"
+        else:
+            rep["note"] = "plane confidence %.2f below the Symmetrize threshold %.2f (%s): not mirrored" % (
+                det["confidence"], st.symmetrize_threshold, det["cls"])
         return rep, None
     R, t = plane_frame(det["normal"], det["point"])
     M = Matrix([[*R[0], t[0]], [*R[1], t[1]], [*R[2], t[2]], [0, 0, 0, 1]])
@@ -1055,13 +1177,17 @@ def _symmetry_setup(work, st, diag):
     work.normal_update()
     st.use_symmetry = True
     st.axis = "X"
-    # keep the half with more surface area (deterministic); the other half is replaced by the mirrored copy
+    # trusted side: LEFT/RIGHT by choice, AUTO/AVERAGE the side with more detail (more faces, then features, then area)
     V2, F2 = bm_arrays(work)
     l2, s2, z2 = pack_faces(F2)
-    _, a2, c2 = face_geometry(V2, l2, s2, z2)
-    pos = float(a2[c2[:, 0] > 0].sum()); neg = float(a2[c2[:, 0] < 0].sum())
-    st.keep_positive_side = pos >= neg
+    detail = side_detail(V2, l2, s2, z2, np.array([1.0, 0, 0]), np.zeros(3))
+    side = st.symmetrize_side if st.symmetrize_side in SYM_SIDES else "AUTO"
+    st.keep_positive_side, why = choose_side(detail, side)
+    pos, neg = detail["+"]["area"], detail["-"]["area"]
     rep["kept_side"] = "+" if st.keep_positive_side else "-"
+    rep["side_mode"] = side
+    rep["side_reason"] = why
+    rep["side_detail"] = detail
     rep["area_ratio_sides"] = min(pos, neg) / max(max(pos, neg), 1e-300)
     return rep, M.inverted()
 
@@ -1082,6 +1208,8 @@ def remesh_bmesh(src_bm, st, quadriflow_fn=None, ref_bvh=None, ref_sample_V=None
     work.verts.ensure_lookup_table()
     import copy as _copy
     st = _copy.copy(st)
+    if ref_bvh is not None and st.sym_plane is None and st.use_symmetry is not False:
+        st.use_symmetry = False        # the caller's reference BVH is in the source frame: only a caller-given plane keeps it valid
     sym_rep, M_inv = _symmetry_setup(work, st, diag)
     rep["symmetry"] = sym_rep
     # The object's own projection (nearest-surface BVH, the same one LOTBCBP collision uses) is the reference:
@@ -1100,8 +1228,10 @@ def remesh_bmesh(src_bm, st, quadriflow_fn=None, ref_bvh=None, ref_sample_V=None
         an.virt_pts, an.virt_dens = density_samples
     rep["analysis"] = {"counts": an.counts, "small_faces": an.info["small_faces"], "threshold": an.threshold,
                        "regions": an.info["regions"], "nonmanifold_edges": an.nonmanifold_edges}
+    sym_before = None
     if st.use_symmetry:
         rep["source_symmetry"] = source_symmetry(Vr, st.axis, st.sym_tolerance)
+        sym_before = _asymmetry_before(bvh, ref_sample_V if ref_sample_V is not None else Vr, diag)
 
     method = st.method
     q_in = an.counts["faces"]
@@ -1126,6 +1256,9 @@ def remesh_bmesh(src_bm, st, quadriflow_fn=None, ref_bvh=None, ref_sample_V=None
         out = quadriflow_fn(work, target or max(q_in // 2, 16), st)
         if out is not None:
             _project_all(out, bvh, an, st, ref_kind=None, pin_sharp=False, symmetric=False, ax=ax)
+            if st.use_symmetry:
+                rep["symmetrize"] = _symmetrize_output(out, bvh, st, diag, sym_before, pair_exact=False,
+                                                       sample_V=ref_sample_V if ref_sample_V is not None else Vr)
             rep["output"] = bm_report(out)
             rep["output"]["quadriflow"] = True
             rep["quality"] = final_quality(out, bvh, ref_sample_V if ref_sample_V is not None else Vr, st, ax)
@@ -1154,8 +1287,13 @@ def remesh_bmesh(src_bm, st, quadriflow_fn=None, ref_bvh=None, ref_sample_V=None
             bmesh.ops.delete(bm, geom=loose, context='VERTS')
         half = True
     join_to_quads(bm, st.join_angle, st.join_shape)
+    seam_info = None
+    if half:
+        seam_info = fix_seam_triangles(bm, ax, tol, st.join_angle, st.join_shape)
     nonquad = sum(1 for f in bm.faces if len(f.verts) != 4)
     rep["after_join"] = {"nonquad": nonquad, "faces": len(bm.faces)}
+    if seam_info:
+        rep["after_join"]["seam"] = seam_info
     # density target: raise by whole x4 levels when the requested count is far above the current one
     levels = 0
     if target:
@@ -1188,6 +1326,10 @@ def remesh_bmesh(src_bm, st, quadriflow_fn=None, ref_bvh=None, ref_sample_V=None
         smooth_bad_quads(bm, bvh, st, half, ax)
     if half:
         _mirror_half(bm, ax, tol)
+        rep["symmetrize"] = _symmetrize_output(bm, bvh, st, diag, sym_before, pair_exact=True,
+                                               sample_V=ref_sample_V if ref_sample_V is not None else Vr)
+        if seam_info:
+            rep["symmetrize"]["seam"] = seam_info
     rep["output"] = bm_report(bm)
     q = final_quality(bm, bvh, ref_sample_V if ref_sample_V is not None else Vr, st, ax)
     q["refine_passes_used"] = passes
@@ -1469,6 +1611,108 @@ def _finish_data(out, ref, bvh, st, rep):
         rep["transfer"] = {"uv_maps_found": 0, "uv_maps_transferred": 0, "skipped_by_user": True}
         return
     rep["transfer"] = transfer_data(out, ref, bvh, "KEEP" if st.uv_mode in ("KEEP", "KEEP_NEW") else "NONE", {})
+
+
+def fix_seam_triangles(bm, ax, tol, angle, shape):
+    """Odd triangles that touch the mirror plane (left over by the normal join) get a second, more tolerant join:
+    only faces within two rings of the plane take part, so the interior keeps the strict limits.  Works on the kept
+    half, so the result is mirrored with everything else.  Returns counts before/after."""
+    import bmesh
+    seam_v = [v for v in bm.verts if abs(v.co[ax]) <= tol]
+
+    def count():
+        return sum(1 for f in bm.faces if len(f.verts) == 3 and any(abs(v.co[ax]) <= tol for v in f.verts))
+    before = count()
+    if before:
+        ring1 = {f for v in seam_v for f in v.link_faces}
+        ring_v = {v for f in ring1 for v in f.verts}
+        ring2 = {f for v in ring_v for f in v.link_faces}
+        tris = [f for f in ring2 if len(f.verts) == 3]
+        if tris:
+            bmesh.ops.join_triangles(bm, faces=tris, cmp_seam=False, cmp_sharp=False, cmp_uvs=False, cmp_vcols=False,
+                                     cmp_materials=True, angle_face_threshold=min(angle * 1.75, math.radians(75.0)),
+                                     angle_shape_threshold=min(shape * 1.4, math.radians(85.0)), topology_influence=1.0)
+    bm.verts.ensure_lookup_table(); bm.edges.ensure_lookup_table(); bm.faces.ensure_lookup_table()
+    return {"triangles_before": before, "triangles_after": count()}
+
+
+def _bvh_dist(bvh, Q):
+    import mathutils
+    out = np.empty(len(Q))
+    for i, q in enumerate(Q):
+        hit = bvh.find_nearest(mathutils.Vector(q))
+        out[i] = hit[3] if hit and hit[3] is not None else 1e9
+    return out
+
+
+def _bvh_project(bvh, Q):
+    import mathutils
+    out = np.array(Q, dtype=np.float64, copy=True)
+    for i in range(len(Q)):
+        hit = bvh.find_nearest(mathutils.Vector(Q[i]))
+        if hit is not None and hit[0] is not None:
+            out[i] = hit[0][:]
+    return out
+
+
+def _sample(V, n=6000):
+    V = np.asarray(V, dtype=np.float64)
+    return V[:: max(1, len(V) // n)]
+
+
+def _asymmetry_before(bvh, sample_V, diag):
+    """Asymmetry of the SOURCE about x=0 (plane frame): reflected samples to the source surface."""
+    mx, mn = asymmetry_stats(_sample(sample_V), np.array([1.0, 0, 0]), np.zeros(3), lambda Q: _bvh_dist(bvh, Q), diag)
+    return {"max": mx, "mean": mn}
+
+
+def _symmetrize_output(bm, bvh, st, diag, before, pair_exact, sample_V):
+    """Final symmetrize step in the plane frame (x=0).  pair_exact: the bmesh already is an exact topological mirror
+    (JOIN_SPLIT half + mirror); strength / AVERAGE then re-blend it with the source.  Otherwise (Quadriflow) the
+    vertices are matched only through the surface.  Returns the report dict (asymmetry before/after, deviation)."""
+    import mathutils
+    from mathutils.bvhtree import BVHTree
+    bm.verts.index_update(); bm.edges.index_update()
+    bm.verts.ensure_lookup_table()
+    P = np.array([v.co[:] for v in bm.verts], dtype=np.float64).reshape(-1, 3)
+    n = np.array([1.0, 0, 0]); p0 = np.zeros(3)
+    side = st.symmetrize_side if st.symmetrize_side in SYM_SIDES else "AUTO"
+    s = min(max(float(st.symmetrize_strength), 0.0), 1.0)
+    pair = None
+    if pair_exact and len(P):
+        kd = mathutils.kdtree.KDTree(len(P))
+        for i, q in enumerate(P):
+            kd.insert(q, i)
+        kd.balance()
+        pair = np.arange(len(P))
+        tol_pair = 1e-6 * diag
+        for i, q in enumerate(P):
+            _, j, d = kd.find((-q[0], q[1], q[2]))
+            if d <= tol_pair:
+                pair[i] = j
+    seam_tol = st.sym_tolerance * diag
+    if pair is None and len(P):                                       # unpaired: seam = within a fraction of an edge
+        E = np.array([[e.verts[0].index, e.verts[1].index] for e in bm.edges]).reshape(-1, 2)
+        el = np.linalg.norm(P[E[:, 0]] - P[E[:, 1]], axis=1) if len(E) else np.zeros(1)
+        seam_tol = max(seam_tol, 0.2 * float(np.median(el)))
+    rep = {"enabled": True, "side": side, "strength": s, "kept_side": "+" if st.keep_positive_side else "-",
+           "topology_mirrored": bool(pair_exact),
+           "paired_vertices": int((pair != np.arange(len(P))).sum()) if pair is not None else None}
+    if len(P):
+        Q = symmetrize_points(P, n, p0, lambda X: _bvh_project(bvh, X), st.keep_positive_side, side, s, seam_tol, pair)
+        for v, q in zip(bm.verts, Q):
+            v.co = q
+        bm.normal_update()
+    # measure: asymmetry of the result about the same plane, deviation of its vertices from the ORIGINAL surface
+    Pn = np.array([v.co[:] for v in bm.verts], dtype=np.float64).reshape(-1, 3)
+    out_bvh = BVHTree.FromBMesh(bm, epsilon=0.0)
+    sv = _sample(Pn)
+    mx, mn = asymmetry_stats(sv, n, p0, lambda X: _bvh_dist(out_bvh, X), diag)
+    dv = _bvh_dist(bvh, sv) / diag
+    rep["asymmetry_before"] = before
+    rep["asymmetry_after"] = {"max": mx, "mean": mn}
+    rep["deviation_from_source"] = {"max": float(dv.max()) if len(dv) else 0.0, "mean": float(dv.mean()) if len(dv) else 0.0}
+    return rep
 
 
 def _mirror_half(bm, ax, tol):

@@ -139,13 +139,20 @@ def sample_deviation(out_me, src_bvh, src_V, plane, diag, n=20000):
     d1 = max((src_bvh.find_nearest(mathutils.Vector(p.tolist()))[3] for p in so), default=0.0)
     ss = src_V[:: max(1, len(src_V) // n)]
     d2 = max((out_bvh.find_nearest(mathutils.Vector(p.tolist()))[3] for p in ss), default=0.0)
-    sym = None
+    sym = sym_mean = None
+    before = None
     if plane is not None:
         nn = np.array(plane[0]); pp = np.array(plane[1])
         Q = so - 2.0 * ((so - pp) @ nn)[:, None] * nn[None, :]
-        sym = max((out_bvh.find_nearest(mathutils.Vector(q.tolist()))[3] for q in Q), default=0.0) / diag
-    return {"max_deviation": float(max(d1, d2) / diag), "symmetry_error": sym, "sampled": True,
-            "samples": int(len(so) + len(ss))}
+        dq = np.array([out_bvh.find_nearest(mathutils.Vector(q.tolist()))[3] for q in Q]) / diag
+        sym, sym_mean = float(dq.max()), float(dq.mean())
+        Q0 = ss - 2.0 * ((ss - pp) @ nn)[:, None] * nn[None, :]
+        d0 = np.array([src_bvh.find_nearest(mathutils.Vector(q.tolist()))[3] for q in Q0]) / diag
+        before = {"max": float(d0.max()), "mean": float(d0.mean())}
+    dv = np.array([src_bvh.find_nearest(mathutils.Vector(p.tolist()))[3] for p in so]) / diag
+    return {"max_deviation": float(max(d1, d2) / diag), "symmetry_error": sym, "symmetry_mean": sym_mean,
+            "asymmetry_before": before, "mean_deviation": float(dv.mean()) if len(dv) else 0.0,
+            "sampled": True, "samples": int(len(so) + len(ss))}
 
 
 def detect_plane_fast(V, loops, start, size, diag):
@@ -212,6 +219,7 @@ def fast_stages(obj, st, evaluated=True, mode="AUTO", target_reduce_max=300000):
     rep["analysis"] = {"counts": an.counts, "oversize_faces": an.info["oversize_faces"]}
     lap("analysis")
     plane = None
+    sym_on = False
     sym_rep = {"mode": "OFF" if st.use_symmetry is False else ("AXIS" if st.use_symmetry else "AUTO")}
     if st.use_symmetry is not False:
         yield 0.35, "Symmetry plane (sampled)"
@@ -222,6 +230,16 @@ def fast_stages(obj, st, evaluated=True, mode="AUTO", target_reduce_max=300000):
                         "note": "fast path: plane detected on a sample; topology is symmetric only if the source triangulation is"})
         if det["cls"] != "asymmetric":
             plane = (det["normal"], det["point"])
+        sym_on = bool(st.symmetrize) and det["cls"] != "asymmetric" and (det["confidence"] >= st.symmetrize_threshold or st.use_symmetry is True)
+        sym_rep["symmetrize_threshold"] = st.symmetrize_threshold
+        sym_rep["enforced"] = sym_on
+        if sym_on:
+            sym_rep["note"] = ("fast path: plane detected on a sample; Symmetrize " +
+                               ("moves positions and snaps the seam (PAIR: topology follows the source triangulation, not mirrored)"))
+        elif not st.symmetrize:
+            sym_rep["note"] = "Symmetrize is off: plane reported only"
+        else:
+            sym_rep["note"] = "plane confidence %.2f below the Symmetrize threshold %.2f: not symmetrized" % (det["confidence"], st.symmetrize_threshold)
     rep["symmetry"] = sym_rep
     lap("symmetry")
     new_me = None
@@ -251,6 +269,33 @@ def fast_stages(obj, st, evaluated=True, mode="AUTO", target_reduce_max=300000):
             P, nact = RF.relax_active(V, vn, outE, an.density_v, pinned, min(st.relax_iterations, 10), st.crease_density)
             rep["relaxed_vertices"] = nact
         lap("relax")
+        if sym_on:
+            yield 0.7, "Symmetrize (positions + seam snap)"
+            n_, p_ = np.asarray(plane[0], float), np.asarray(plane[1], float)
+            detail = R.side_detail(V, loops, start, size, n_, p_)
+            side = st.symmetrize_side if st.symmetrize_side in R.SYM_SIDES else "AUTO"
+            keep_pos, why = R.choose_side(detail, side)
+            sbv = bvh_for_mesh(src_me)
+
+            def _proj(Q):
+                out = np.array(Q, dtype=np.float64, copy=True)
+                for i in range(len(Q)):
+                    h = sbv.find_nearest(mathutils.Vector(Q[i].tolist()))
+                    if h is not None and h[0] is not None:
+                        out[i] = h[0][:]
+                return out
+            elen = np.linalg.norm(V[outE[:, 0]] - V[outE[:, 1]], axis=1) if st.crease_density > 0 and st.relax_iterations > 0 else None
+            if elen is None:
+                oE, _, _ = R.build_edges(out_loops, np.concatenate([[0], np.cumsum(out_size)[:-1]]), out_size)
+                elen = np.linalg.norm(V[oE[:, 0]] - V[oE[:, 1]], axis=1)
+            seam_tol = max(st.sym_tolerance * diag, 0.2 * float(np.median(elen)))
+            P = R.symmetrize_points(P, n_, p_, _proj, keep_pos, side, st.symmetrize_strength, seam_tol)
+            seam_n = int((np.abs((P - p_) @ n_) < 1e-9).sum())
+            rep["symmetrize"] = {"enabled": True, "side": side, "kept_side": "+" if keep_pos else "-", "side_reason": why,
+                                 "strength": st.symmetrize_strength, "topology_mirrored": False, "seam_vertices": seam_n,
+                                 "limits": "PAIR keeps the source triangulation: positions are mirrored onto the trusted "
+                                           "surface and the seam is snapped to the plane, but quad topology is not mirror-paired"}
+            lap("symmetrize")
         yield 0.75, "Writing mesh + attributes"
         new_me = write_mesh(obj.name + "_quad", P, out_loops, out_size)
         copy_attributes(src_me, new_me, loop_src, pr["face_src"], rep)
@@ -268,7 +313,7 @@ def fast_stages(obj, st, evaluated=True, mode="AUTO", target_reduce_max=300000):
         lap("cluster")
         # ... then Blender's collapse Decimate (robust, manifold-preserving) to the working size
         ntri = len(wme.polygons) if wme.polygons else 1
-        sym_exact = plane is not None and st.use_symmetry is not False
+        sym_exact = plane is not None and st.use_symmetry is not False and sym_on
         # with a mirror plane the exact-symmetry join/split pipeline is used: its natural output is ~2x the working
         # triangle count, so decimate to target/2; otherwise Quadriflow gets a 2x-target working mesh
         wk_tris = max(int(target // 2), 200) if sym_exact else 2 * target
@@ -283,7 +328,21 @@ def fast_stages(obj, st, evaluated=True, mode="AUTO", target_reduce_max=300000):
         rep["working_mesh_faces"] = len(dec.polygons)
         lap("decimate")
         yield 0.55, "Projection BVH of the original surface"
-        src_bvh = bvh_for_mesh(src_me)
+        sym_plane = None
+        ref_V = V[:: max(1, len(V) // 20000)]
+        pts = np.concatenate([V[:: max(1, len(V) // 150000)]])
+        if sym_exact and sym_on:
+            # the working mesh is taken into the plane frame inside remesh_bmesh: give it a reference in the same frame
+            from mathutils import Matrix
+            Rf, tf = R.plane_frame(plane[0], plane[1])
+            Mf = Matrix([[*Rf[0], tf[0]], [*Rf[1], tf[1]], [*Rf[2], tf[2]], [0, 0, 0, 1]])
+            fme = src_me.copy(); fme.transform(Mf)
+            src_bvh = bvh_for_mesh(fme); bpy.data.meshes.remove(fme)
+            ref_V = ref_V @ Rf.T + tf
+            pts = pts @ Rf.T + tf
+            sym_plane = (plane[0], plane[1], sym_rep)
+        else:
+            src_bvh = bvh_for_mesh(src_me)
         lap("bvh")
         yield 0.62, "Accurate remesh on the working mesh"
         wk = bmesh.new()
@@ -291,12 +350,14 @@ def fast_stages(obj, st, evaluated=True, mode="AUTO", target_reduce_max=300000):
         stw = _copy_settings(st, 0 if sym_exact else target)
         if sym_exact:
             stw.method = 'JOIN_SPLIT'
-        pts = np.concatenate([V[:: max(1, len(V) // 150000)]])
+            stw.sym_plane = sym_plane
+            if sym_plane is None:
+                stw.use_symmetry = False
         dens = an.density_v[:: max(1, len(V) // 150000)][: len(pts)]
-        out_bm, r2 = R.remesh_bmesh(wk, stw, None if sym_exact else _qf(), ref_bvh=src_bvh, ref_sample_V=V[:: max(1, len(V) // 20000)],
+        out_bm, r2 = R.remesh_bmesh(wk, stw, None if sym_exact else _qf(), ref_bvh=src_bvh, ref_sample_V=ref_V,
                                     density_samples=(pts, dens))
         wk.free()
-        for k in ("output", "quality", "symmetry", "after_join", "auto", "cleanup"):
+        for k in ("output", "quality", "symmetry", "symmetrize", "after_join", "auto", "cleanup"):
             if k in r2:
                 rep["reduce_" + k if k in ("cleanup",) else k] = r2[k]
         rep["method"] = "REDUCE (%s)" % r2.get("method")
@@ -330,6 +391,11 @@ def fast_stages(obj, st, evaluated=True, mode="AUTO", target_reduce_max=300000):
     q["within_tolerance"] = q["max_deviation"] <= st.deviation_tol
     q["deviation_tol"] = st.deviation_tol
     rep["quality"] = q
+    sy = rep.get("symmetrize")
+    if sy is not None and rep["method"] == "PAIR" and q.get("symmetry_error") is not None:
+        sy["asymmetry_before"] = q["asymmetry_before"]
+        sy["asymmetry_after"] = {"max": q["symmetry_error"], "mean": q["symmetry_mean"]}
+        sy["deviation_from_source"] = {"max": q["max_deviation"], "mean": q["mean_deviation"]}
     lap("measure")
     if obj.data.shape_keys:
         rep["shape_keys"] = "source has shape keys: the %s coordinates were used; keys are NOT transferred" % (

@@ -30,6 +30,19 @@ class AFRetopoProps(PropertyGroup):
                                  "box diagonal", default=1e-4, min=1e-7, max=0.05, precision=5)
     keep_positive: BoolProperty(name="Keep +Side", description="Keep the positive side of the mirror plane "
                                 "(otherwise the negative side)", default=True)
+    symmetrize: BoolProperty(name="Symmetrize", default=True,
+                             description="When a mirror plane is detected with enough confidence, FIX the symmetry: the trusted "
+                                         "side is mirrored (matched vertex pairs, seam on the plane) and the result is "
+                                         "re-measured against the source")
+    symmetrize_threshold: FloatProperty(name="Min Confidence", default=0.5, min=0.0, max=1.0,
+                                        description="Plane confidence needed before Symmetrize acts")
+    symmetrize_strength: FloatProperty(name="Strength", default=1.0, min=0.0, max=1.0,
+                                       description="0 keeps the source shape on the other side, 1 is an exact mirror")
+    symmetrize_side: EnumProperty(name="Trust", items=[
+        ('AUTO', "Auto", "The side with more detail (more faces, then features, then area)"),
+        ('LEFT', "Left (+)", "Trust the positive side of the plane normal"),
+        ('RIGHT', "Right (-)", "Trust the negative side of the plane normal"),
+        ('AVERAGE', "Average", "Both sides contribute: the mean of the surface and its mirror image")], default='AUTO')
     crease_angle: FloatProperty(name="Crease Angle", subtype='ANGLE', default=math.radians(25.0), min=0.01,
                                 max=math.pi, description="Dihedral angle at which an edge counts as a full crease "
                                 "for the density field")
@@ -84,7 +97,9 @@ def _settings(p):
     return R.RemeshSettings(
         method=p.method, auto=p.auto, deviation_tol=p.deviation_tol,
         use_symmetry=(None if p.auto and not p.use_symmetry else p.use_symmetry), axis=p.axis, sym_tolerance=p.sym_tolerance,
-        keep_positive_side=p.keep_positive, crease_angle=(None if p.auto else p.crease_angle), sharp_angle=p.sharp_angle,
+        keep_positive_side=p.keep_positive, symmetrize=p.symmetrize,
+        symmetrize_threshold=p.symmetrize_threshold, symmetrize_strength=p.symmetrize_strength,
+        symmetrize_side=p.symmetrize_side, crease_angle=(None if p.auto else p.crease_angle), sharp_angle=p.sharp_angle,
         threshold_mode=p.threshold_mode, manual_threshold=p.manual_threshold, target_faces=p.target_faces,
         crease_density=p.crease_density, band_rings=p.band_rings, relax_iterations=p.relax_iterations,
         preserve_sharp=p.preserve_sharp, preserve_boundary=p.preserve_boundary, resolution=p.resolution, uv_mode=p.uv_mode,
@@ -146,6 +161,12 @@ def _fmt(rep):
     if q:
         se = q.get("symmetry_error")
         s += "; max dev %.3f%%%s" % (100 * q["max_deviation"], (", sym err %.1e" % se) if se is not None else "")
+        sy = rep.get("symmetrize")
+        if sy and sy.get("asymmetry_after"):
+            s += "; symmetrize %s: asym max %.2e -> %.2e, mean %.2e -> %.2e, dev max %.3f%% mean %.4f%%%s" % (
+                sy["side"], sy["asymmetry_before"]["max"], sy["asymmetry_after"]["max"], sy["asymmetry_before"]["mean"],
+                sy["asymmetry_after"]["mean"], 100 * sy["deviation_from_source"]["max"], 100 * sy["deviation_from_source"]["mean"],
+                "" if sy.get("topology_mirrored", True) else " (positions only)")
         if "poles_valence3" in q:
             s += ", poles %d" % (q["poles_valence3"] + q["poles_valence5plus"])
     if rep.get("method"):

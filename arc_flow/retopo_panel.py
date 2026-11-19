@@ -49,6 +49,12 @@ class AF_PT_retopo(Panel):
             b.prop(p, "sym_tolerance")
             b.prop(p, "keep_positive")
         b = l.box()
+        b.prop(p, "symmetrize")
+        if p.symmetrize:
+            b.prop(p, "symmetrize_side")
+            b.prop(p, "symmetrize_strength", slider=True)
+            b.prop(p, "symmetrize_threshold", slider=True)
+        b = l.box()
         b.label(text="Crease density")
         b.prop(p, "crease_angle")
         b.prop(p, "crease_density")

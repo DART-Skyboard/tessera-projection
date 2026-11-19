@@ -293,8 +293,109 @@ def test_fast_numpy():
     ok(na > 0 and dev < 0.02, "tangent relaxation keeps points near the surface (dev %.4f, %d active)" % (dev, na))
 
 
+
+def _tri(F):
+    return [[f[0], f[k], f[k + 1]] for f in F for k in range(1, len(f) - 1)]
+
+
+def _dense(V, T, per=6, seed=0):
+    """Deterministic dense point sample of a triangle mesh (vertices + random barycentric points)."""
+    rng = np.random.default_rng(seed)
+    T = np.asarray(T)
+    w = rng.dirichlet([1, 1, 1], size=(len(T), per))
+    pts = (V[T][:, None, :, :] * w[:, :, :, None]).sum(2).reshape(-1, 3)
+    return np.concatenate([V, pts])
+
+
+def asym_ellipsoid(nu=64, nv=32):
+    """Ellipsoid with symmetric features (ears, brow) about x=0 plus an ASYMMETRIC bump / dent, then a rigid + scale
+    transform so the mirror plane is off-origin and rotated.  Returns (Vsym, Vasym, Vt_asym, T, plane_n, plane_p, M)."""
+    V, F = uv_sphere(1.0, nu, nv)
+    E = V * np.array([1.0, 1.35, 1.7])
+    def bump(c, s, a):
+        c = np.asarray(c, float)
+        return a * np.exp(-((E - c) ** 2).sum(1) / (2 * s * s))[:, None] * V
+    sym = E.copy()
+    for sx in (-1, 1):
+        sym += bump((0.9 * sx, 0.1, 0.9), 0.30, 0.35)           # ears
+    sym += bump((0.0, -1.1, 1.0), 0.25, 0.20)                   # brow
+    asy = sym + bump((0.8, 0.9, -0.5), 0.28, 0.12) - bump((-0.7, -0.8, 0.1), 0.25, 0.07)
+    q = np.array([0.9, 0.2, -0.3, 0.1]); q /= np.linalg.norm(q)
+    w, x, y, z = q
+    Rm = np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                   [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                   [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+    sc, shift = 1.7, np.array([5.0, -2.0, 8.0])
+    tf = lambda A: sc * (A @ Rm.T) + shift
+    return sym, asy, tf(asy), _tri(F), Rm[:, 0].copy(), shift.copy(), (sc, Rm, shift), tf(sym)
+
+
+def test_symmetrize_numpy():
+    sym, asy, Va, T, n, p, (sc, Rm, shift), Vs = asym_ellipsoid()
+    diag = R._bbox_diag(Va)
+    cloud = _dense(Va, T)
+    proj = lambda Q: cloud[R.nearest_index(Q, cloud)]
+    dist = lambda Q: R.nearest_distance(Q, cloud)
+    spacing = math.sqrt(sum(R.face_geometry(Va, *R.pack_faces(T))[1]) / len(cloud)) if False else 0.0
+    # (1) asymmetry of the source about the TRUE plane
+    mx0, mn0 = R.asymmetry_stats(Va, n, p, dist, diag)
+    ok(mx0 > 0.01 and mn0 > 3e-4, "source is asymmetric about the plane (max %.4f, mean %.5f of diag)" % (mx0, mn0))
+    # (2) detector still finds the plane and is confident enough for Symmetrize
+    l, st_, sz = R.pack_faces(T)
+    P, cen, area = R.surface_sample_points(Va, l, st_, sz)
+    det = R.detect_symmetry(P, (cen * area[:, None]).sum(0) / area.sum(), dist, diag)
+    ok(abs(det["normal"] @ n) > math.cos(math.radians(3)) and det["confidence"] >= 0.5,
+       "plane found on the asymmetric mesh (dot %.4f, confidence %.2f)" % (abs(det["normal"] @ n), det["confidence"]))
+    # (3) unpaired positions (fast PAIR / Quadriflow): non-trusted side pulled onto the mirror image of the trusted side
+    detail = R.side_detail(Va, l, st_, sz, n, p)
+    kp, why = R.choose_side(detail, "AUTO")
+    ok(isinstance(kp, bool) and why, "AUTO side chosen: %s" % why)
+    seam = 0.2 * float(np.median(np.linalg.norm(Va[[t[0] for t in T]] - Va[[t[1] for t in T]], axis=1)))
+    for side in ("AUTO", "LEFT", "RIGHT", "AVERAGE"):
+        keep = kp if side == "AUTO" else (side != "RIGHT") if side != "AVERAGE" else kp
+        Q = R.symmetrize_points(Va, n, p, proj, keep, side, 1.0, seam)
+        cl2 = _dense(Q, T)
+        mx1, mn1 = R.asymmetry_stats(Q, n, p, lambda X: R.nearest_distance(X, cl2), diag)
+        dev = R.nearest_distance(Q, cloud) / diag
+        ok(mn1 < 0.35 * mn0 and mx1 < 0.5 * mx0 + 5e-3,
+           "unpaired %-7s asymmetry max %.4f -> %.4f, mean %.5f -> %.5f; deviation from source max %.4f mean %.5f" % (side, mx0, mx1, mn0, mn1, dev.max(), dev.mean()))
+        ok(dev.max() < 1.3 * mx0 + 5e-3, "unpaired %s: shape fidelity kept (max deviation %.4f vs source asymmetry %.4f)" % (side, dev.max(), mx0))
+        d = (Q - p) @ n
+        ok(np.abs(d[np.abs((Va - p) @ n) <= seam]).max() < 1e-9, "unpaired %s: seam vertices lie exactly on the plane" % side)
+    # (4) exactly paired topology (JOIN_SPLIT half + mirror): trusted half of the asymmetric mesh + its mirror image
+    Rm_t = np.eye(3)
+    kd_pair = R.nearest_index(R.reflect(Vs, p, n), Vs)               # partner of every vertex (symmetric base mesh)
+    d0 = (Va - p) @ n
+    keep = True
+    kept = d0 > 1e-9
+    Pm = np.where(kept[:, None], Va, R.reflect(Va[kd_pair], p, n))
+    Pm[np.abs(d0) <= 1e-9] = Va[np.abs(d0) <= 1e-9]
+    for side, s in (("LEFT", 1.0), ("LEFT", 0.0), ("LEFT", 0.5), ("AVERAGE", 1.0), ("AVERAGE", 0.0)):
+        Q = R.symmetrize_points(Pm, n, p, proj, True, side, s, 1e-9, pair=kd_pair)
+        Mq = R.reflect(Q, p, n)
+        pair_err = np.linalg.norm(Mq - Q[kd_pair], axis=1).max() / diag
+        dev = R.nearest_distance(Q, cloud) / diag
+        if s == 1.0:
+            ok(pair_err < 1e-9, "paired %s s=1: vertices are exact mirror pairs (err %.1e), dev max %.4f mean %.5f" % (side, pair_err, dev.max(), dev.mean()))
+        elif s == 0.0:
+            ok(dev.max() < 1e-9 * 0 + 2e-3 and pair_err > 1e-3, "paired %s s=0: back on the source surface (dev max %.4f), not mirrored (%.4f)" % (side, dev.max(), pair_err))
+        else:
+            full = R.symmetrize_points(Pm, n, p, proj, True, side, 1.0, 1e-9, pair=kd_pair)
+            half0 = R.symmetrize_points(Pm, n, p, proj, True, side, 0.0, 1e-9, pair=kd_pair)
+            ok(np.allclose(Q, 0.5 * (full + half0), atol=1e-9), "paired %s s=0.5 is the blend of s=0 and s=1" % side)
+    q_avg = R.symmetrize_points(Pm, n, p, proj, True, "AVERAGE", 1.0, 1e-9, pair=kd_pair)
+    q_left = R.symmetrize_points(Pm, n, p, proj, True, "LEFT", 1.0, 1e-9, pair=kd_pair)
+    da = R.nearest_distance(q_avg, cloud).max() / diag
+    dl = R.nearest_distance(q_left, cloud).max() / diag
+    ok(da < dl, "AVERAGE splits the error between both sides (max deviation %.4f vs %.4f for LEFT)" % (da, dl))
+    ok(R.choose_side({"+": {"faces": 100, "area": 1, "feature": 1}, "-": {"faces": 140, "area": 1, "feature": 1}}, "AUTO")[0] is False
+       and R.choose_side({"+": {"faces": 100, "area": 1, "feature": 1}, "-": {"faces": 140, "area": 1, "feature": 1}}, "LEFT")[0] is True,
+       "AUTO picks the finer side, LEFT/RIGHT override")
+
+
 if __name__ == "__main__":
     test_fast_numpy()
+    test_symmetrize_numpy()
     test_detect_symmetry_numpy()
     test_orient()
     test_arcedge(); test_curvature(); test_grade(); test_virtual_subdivision_and_sparse()

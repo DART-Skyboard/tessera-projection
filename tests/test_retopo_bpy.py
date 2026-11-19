@@ -525,6 +525,128 @@ def test_asymmetric_not_forced():
     ok(rep["output"]["quad_ratio"] >= 0.98, "asymmetric mesh still remeshed to quads (%.3f)" % rep["output"]["quad_ratio"])
 
 
+def asym_ellipsoid_obj(detail_right=False):
+    """Triangulated ellipsoid with symmetric ears/brow plus an asymmetric bump and dent, random diagonal flips, then
+    rotated + scaled + shifted so the mirror plane is off-origin and tilted.  Returns (object, normal, point)."""
+    import random
+    from mathutils import Matrix
+    reset()
+    bpy.ops.mesh.primitive_uv_sphere_add(segments=48, ring_count=24, radius=1.0)
+    ob = bpy.context.active_object
+    me = ob.data
+    def bump(co, c, sg, a):
+        d = (co - Vector(c)).length_squared
+        return a * math.exp(-d / (2 * sg * sg))
+    for v in me.vertices:
+        u = v.co.copy()
+        e = Vector((u.x, u.y * 1.35, u.z * 1.7))
+        k = 1.0
+        for sx in (-1, 1):
+            k += bump(e, (0.9 * sx, 0.1, 0.9), 0.30, 0.35)
+        k += bump(e, (0.0, -1.1, 1.0), 0.25, 0.20)
+        k += bump(e, (0.8, 0.9, -0.5), 0.28, 0.12) - bump(e, (-0.7, -0.8, 0.1), 0.25, 0.07)   # asymmetric part
+        v.co = e * k
+    bm = bmesh.new(); bm.from_mesh(me)
+    bmesh.ops.triangulate(bm, faces=bm.faces[:])
+    rnd = random.Random(3)
+    bmesh.ops.rotate_edges(bm, edges=[e for e in bm.edges if len(e.link_faces) == 2 and rnd.random() < 0.3], use_ccw=False)
+    if detail_right:                                          # the -x side gets twice the tessellation
+        low = [f for f in bm.faces if f.calc_center_median().x < 0]
+        bmesh.ops.subdivide_edges(bm, edges=list({e for f in low for e in f.edges}), cuts=1, use_grid_fill=True)
+        bmesh.ops.triangulate(bm, faces=bm.faces[:])
+    bm.to_mesh(me); bm.free()
+    M = Matrix.Translation((5.0, -2.0, 8.0)) @ Matrix.Rotation(0.9, 4, Vector((0.4, 0.8, -0.3))) @ Matrix.Scale(1.7, 4)
+    me.transform(M); me.update()
+    return ob, (M.to_3x3() @ Vector((1, 0, 0))).normalized(), M @ Vector((0, 0, 0))
+
+
+def src_asym(ob, n, p):
+    bm = bmesh.new(); bm.from_mesh(ob.data)
+    bvh = BVHTree.FromBMesh(bm)
+    V = np.array([v.co[:] for v in bm.verts]); diag = R._bbox_diag(V)
+    n = np.array(n); p = np.array(p)
+    Q = V - 2.0 * ((V - p) @ n)[:, None] * n[None, :]
+    d = np.array([bvh.find_nearest(Vector(q))[3] for q in Q]) / diag
+    bm.free()
+    return float(d.max()), float(d.mean())
+
+
+def test_symmetrize():
+    ob, n, p = asym_ellipsoid_obj()
+    a0 = src_asym(ob, n, p)
+    ok(a0[0] > 0.01, "asymmetric ellipsoid source: mirror distance max %.4f mean %.5f of diag (off-origin tilted plane)" % a0)
+    res = {}
+    for side in ("AUTO", "LEFT", "RIGHT", "AVERAGE"):
+        new, rep, t = run(ob, symmetrize_side=side)
+        sy = rep["symmetry"]; sz = rep.get("symmetrize")
+        ok(sy["enforced"] and sz is not None, "%s: plane detected (confidence %.2f) and Symmetrize active" % (side, sy["confidence"]))
+        mi = mirror_err_plane(new, sy["normal"], sy["point"])
+        ok(mi < 3e-4, "%s: quad output vertices mirror-symmetric about the detected plane (err %.2e of diag)" % (side, mi))
+        ok(sz["asymmetry_after"]["max"] < 1e-6 and sz["asymmetry_before"]["max"] > 0.005,
+           "%s: surface asymmetry max %.4f -> %.2e, mean %.5f -> %.2e" % (side, sz["asymmetry_before"]["max"], sz["asymmetry_after"]["max"],
+                                                                         sz["asymmetry_before"]["mean"], sz["asymmetry_after"]["mean"]))
+        lim = 1.3 * a0[0] + 3e-3
+        ok(sz["deviation_from_source"]["max"] < lim and rep["output"]["quad_ratio"] >= 0.98,
+           "%s: deviation from source max %.4f mean %.5f (<= %.4f), quads %.3f, kept %s (%s)" % (
+               side, sz["deviation_from_source"]["max"], sz["deviation_from_source"]["mean"], lim, rep["output"]["quad_ratio"],
+               sz["kept_side"], rep["symmetry"].get("side_reason")))
+        ok(rep["output"]["tris"] == 0, "%s: no odd triangles left (seam triangles %s)" % (side, rep["after_join"].get("seam")))
+        res[side] = sz
+    ok(res["AVERAGE"]["deviation_from_source"]["max"] < 0.8 * max(res["LEFT"]["deviation_from_source"]["max"], res["RIGHT"]["deviation_from_source"]["max"]) + 1e-4,
+       "AVERAGE splits the error (max dev %.4f vs LEFT %.4f / RIGHT %.4f)" % (res["AVERAGE"]["deviation_from_source"]["max"],
+                                                                            res["LEFT"]["deviation_from_source"]["max"], res["RIGHT"]["deviation_from_source"]["max"]))
+    # strength 0: same topology, shape back on the source (asymmetry stays), strength 0.5 in between
+    n0, r0, _ = run(ob, symmetrize_strength=0.0, symmetrize_side="LEFT")
+    n5, r5, _ = run(ob, symmetrize_strength=0.5, symmetrize_side="LEFT")
+    z0, z5, z1 = r0["symmetrize"], r5["symmetrize"], res["LEFT"]
+    ok(z0["deviation_from_source"]["max"] < 0.5 * z1["deviation_from_source"]["max"] and z0["asymmetry_after"]["max"] > 0.3 * a0[0],
+       "strength 0 keeps the source shape (dev %.4f, asym %.4f)" % (z0["deviation_from_source"]["max"], z0["asymmetry_after"]["max"]))
+    ok(z0["asymmetry_after"]["max"] > z5["asymmetry_after"]["max"] > z1["asymmetry_after"]["max"],
+       "strength 0.5 is in between (asym %.4f > %.4f > %.2e)" % (z0["asymmetry_after"]["max"], z5["asymmetry_after"]["max"], z1["asymmetry_after"]["max"]))
+    # Symmetrize off: plane reported, not mirrored
+    nf, rf, _ = run(ob, symmetrize=False)
+    ok(not rf["symmetry"]["enforced"] and "symmetrize" not in rf, "Symmetrize off: not mirrored (%s)" % rf["symmetry"].get("note"))
+    # threshold above the confidence: not mirrored
+    nt, rt, _ = run(ob, symmetrize_threshold=0.999)
+    ok(not rt["symmetry"]["enforced"], "confidence below threshold: not mirrored (%s)" % rt["symmetry"].get("note"))
+    # QUADRIFLOW: positions symmetrized, topology only quadriflow's own
+    nq, rq, _ = run(ob, method='QUADRIFLOW', target_faces=1500)
+    zq = rq.get("symmetrize")
+    if rq.get("quadriflow_failed") or zq is None:
+        print("   (quadriflow unavailable/failed here)")
+    else:
+        ok(zq["topology_mirrored"] is False and zq["asymmetry_after"]["max"] < zq["asymmetry_before"]["max"],
+           "QUADRIFLOW: positions symmetrized (asym %.4f -> %.4f, topology not guaranteed)" % (zq["asymmetry_before"]["max"], zq["asymmetry_after"]["max"]))
+    # AUTO trusts the more detailed side: the -x side was subdivided, so '-' is kept
+    ob2, n2, p2 = asym_ellipsoid_obj(detail_right=True)
+    nw, rp, _ = run(ob2)
+    sd = rp["symmetry"]["side_detail"]
+    kept_n = rp["symmetry"]["kept_side"]
+    more = "+" if sd["+"]["faces"] > sd["-"]["faces"] else "-"
+    ok(kept_n == more and abs(sd["+"]["faces"] - sd["-"]["faces"]) > 0.1 * sd["+"]["faces"],
+       "AUTO keeps the more detailed side (%s: %d vs %d faces)" % (kept_n, sd["+"]["faces"], sd["-"]["faces"]))
+    # operator report string
+    st = bpy.context.scene
+    ok("symmetrize" in RO._fmt(rep) and "asym max" in RO._fmt(rep), "operator report mentions asymmetry before/after: %s" % RO._fmt(rep)[-150:])
+    # fast path (PAIR / REDUCE) on the same kind of mesh
+    from arc_flow import retopo_fast_ops as FO
+    ob3, n3, p3 = asym_ellipsoid_obj()
+    nfa, rfa, _ = run_fast(ob3)
+    sf = rfa.get("symmetrize")
+    ok(nfa is not None and sf is not None and rfa["method"] == "PAIR", "fast PAIR symmetrizes (%s)" % (rfa["symmetry"].get("note", "")[:80]))
+    if sf and "asymmetry_after" in sf:
+        ok(sf["asymmetry_after"]["mean"] < 0.5 * sf["asymmetry_before"]["mean"] and sf["deviation_from_source"]["max"] < 1.3 * a0[0] + 5e-3 and not sf["topology_mirrored"],
+           "PAIR: asymmetry max %.4f -> %.4f, mean %.5f -> %.5f; dev max %.4f; positions only (topology not mirrored)" % (
+               sf["asymmetry_before"]["max"], sf["asymmetry_after"]["max"], sf["asymmetry_before"]["mean"], sf["asymmetry_after"]["mean"], sf["deviation_from_source"]["max"]))
+    nre, rre, _ = run_fast(ob3, resolution=0.4)
+    sr = rre.get("symmetrize")
+    ok(nre is not None and sr is not None and sr["asymmetry_after"]["max"] < 1e-5 and sr["topology_mirrored"],
+       "fast REDUCE (off-origin tilted plane): exact mirror, asym %.4f -> %.2e, dev max %.4f, %s" % (
+           sr["asymmetry_before"]["max"] if sr else -1, sr["asymmetry_after"]["max"] if sr else -1, sr["deviation_from_source"]["max"] if sr else -1, rre.get("method")))
+    if nre is not None:
+        ok(mirror_err_plane(nre, rre["symmetry"]["normal"], rre["symmetry"]["point"]) < 3e-4, "fast REDUCE output vertices mirror-symmetric in world space")
+
+
 def run_fast(ob, **kw):
     from arc_flow import retopo_fast_ops as FO
     st = R.RemeshSettings(**kw)
@@ -641,6 +763,7 @@ if __name__ == "__main__":
     test_symmetry_detection()
     test_asym_triangulation()
     test_asymmetric_not_forced()
+    test_symmetrize()
     test_uv_transfer()
     test_fast_path()
     test_color_attributes()

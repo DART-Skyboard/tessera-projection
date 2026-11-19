@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+- Projection Remesh: **Symmetrize**. When the detected mirror plane has enough confidence (default on, minimum confidence 0.5) the quad output is made truly mirror-symmetric even if the source or its triangulation is not: choose the trusted side (Auto = the side with more detail, Left, Right, Average) and a strength 0..1; matched vertex pairs, seam vertices exactly on the plane, leftover triangles at the seam get a second tolerant join, every vertex stays projected on the original surface. The operator reports mirror asymmetry before/after (max/mean, fraction of the bounding diagonal) and the deviation from the source.
+- Large meshes: PAIR symmetrizes positions and snaps the seam (topology follows the source triangulation, not mirror-paired); REDUCE is an exact topological mirror, now also for planes off the origin or tilted (the reference surface is taken into the plane frame).
+
 ## 0.4.1
 - Combustion mode (Burn propellants, default on): fuel and oxidiser particles that meet in a chamber react into flame gas (igniter assumed, or autoignition temperature); the pair's O/F sets soot and chemiluminescence through the web app's flame model, ported to `core/flame.py` and checked against the JavaScript (reference values from node in `tests/flame_reference.json`).
 - Chamber gas ledger: p_c = m R T / V, drained at the choked throat mass flow (subsonic below the critical pressure ratio); the nozzle exit only passes that mass; gas speed follows the isentropic area-Mach relation (sonic at the throat, supersonic after), scaled to the world speed limit (physical numbers reported).

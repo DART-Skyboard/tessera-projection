@@ -38,6 +38,7 @@ Tessera Projection is built around one idea: **a mesh can be projected against i
 
 - **The mesh is its own reference.** Every new vertex is projected back onto the original surface, and the result is measured against it.
 - **Density from the surface itself.** Crease angle, small features and the Arc Edge curvature scale set the target size per region. No face selection in Edit Mode.
+- **Symmetrize.** With a confident mirror plane the quads are made truly symmetric: pick the side to trust (Auto, Left, Right, Average) and a strength; the report gives asymmetry before/after and the deviation from your source.
 - **Symmetry without setup.** The mirror plane is detected from the mesh, wherever the object sits and however it is rotated. Near-symmetric meshes (sculpts, triangulations that do not line up across the sides) are made symmetric; asymmetric regions are left alone and reported.
 - **Resolution multiplier, 0.01 to 12.** 1.0 is a one-to-one remesh; below 1.0 decimates, above 1.0 adds resolution. Run it again for more.
 - **Keeps your data.** UV maps (including UDIM tiles), colour attributes, vertex groups, materials and generic attributes are transferred; choose to keep the old UVs, add a fresh set, or skip.
