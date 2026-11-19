@@ -1,0 +1,309 @@
+"""Fluid mode solver tests (pure NumPy): python3 blender/tests/test_fluidmode.py"""
+import time
+import numpy as np
+from fm_helpers import FM, SDF, box, container
+from core import primitives as MS
+from core import atmosphere as ATM
+
+fails = [0]
+
+
+def ok(c, msg):
+    print(("PASS " if c else "FAIL ") + msg, flush=True)
+    if not c:
+        fails[0] += 1
+
+
+def run(S, seconds, dt=1.0 / 24.0, cb=None):
+    n = int(round(seconds / dt))
+    for k in range(n):
+        if cb:
+            cb(k, S)
+        S.step(dt)
+    return S
+
+
+def lattice_in(lo, hi, dx):
+    I = FM.lattice_in_box(lo, hi, dx)
+    return FM.lat_pos(I, dx)
+
+
+def sphere_pts(c, r, dx):
+    P = lattice_in(np.array(c) - r, np.array(c) + r, dx)
+    return P[np.linalg.norm(P - np.asarray(c), axis=1) < r]
+
+
+def test_units():
+    d = FM.derive_properties(mass=2.0, volume=0.002)
+    ok(abs(d['density'] - 1000.0) < 1e-9 and abs(d['weight'] - 2.0 * 9.80665) < 1e-9, "mass + volume -> density, weight = m g")
+    d = FM.derive_properties(density=800.0, volume=0.5)
+    ok(abs(d['mass'] - 400.0) < 1e-9, "density + volume -> mass")
+    d = FM.derive_properties(density=800.0, mass=400.0)
+    ok(abs(d['volume'] - 0.5) < 1e-12, "density + mass -> volume")
+    d = FM.derive_properties(weight=98.0665, volume=0.1)
+    ok(abs(d['mass'] - 10.0) < 1e-9 and abs(d['density'] - 100.0) < 1e-9, "weight -> mass (g) -> density")
+    d = FM.derive_properties(weight=24.79 * 5.0, volume=1.0, g=24.79)
+    ok(abs(d['mass'] - 5.0) < 1e-9, "weight uses the environment gravity")
+
+
+def test_environment():
+    e = FM.FEnv()
+    H = e.scale_height()
+    z = np.array([0.0, 1000.0, 5000.0, 8000.0])
+    P = e.pressure_at(z)
+    exp = 101325.0 * np.exp(-z * e.molar * 9.80665 / (FM.R_GAS * 288.15))
+    ok(np.allclose(P, exp, rtol=1e-9) and np.all(np.diff(P) < 0), "ambient pressure follows the barometric formula (decreases with altitude)")
+    ok(7000 < H < 9000, "Earth scale height about 8.4 km (%.0f m)" % H)
+    es = FM.FEnv.from_atmosphere(ATM.preset_state('EARTH'))
+    ok(abs(es.density_at(0.0) - ATM.preset_state('EARTH')['rho']) < 1e-6, "ambient density agrees with the Environment card atmosphere data")
+
+
+def test_boussinesq():
+    b = container((-.08, -.08, 0), (.08, .08, .2))
+    P = sphere_pts((0, 0, 0.1), 0.03, 0.008)
+    res = {}
+    for name, dT in (('hot', +40.0), ('cold', -40.0)):
+        car = FM.fluid_def('WATER', name='carrier', body=0, fill=0.85, beta=2e-3, k=0.01)
+        blob = FM.fluid_def('WATER', name='blob', body=0, shape=dict(kind='POINTS', pts=P), temperature=293.15 + dT, tref=293.15, beta=2e-3, k=0.01, miscible=False, group=1)
+        S = FM.FluidSolver.build([blob, car], [b], FM.FEnv(), dx=0.008)
+        z0 = S.x[S.lo[0]:S.hi[0], 2].mean()
+        run(S, 1.0)
+        res[name] = S.x[S.lo[0]:S.hi[0], 2].mean() - z0
+    ok(res['hot'] > 0.01, "hot (lighter, Boussinesq) blob rises in a carrier (+%.3f m)" % res['hot'])
+    ok(res['cold'] < -0.005 or res['cold'] < res['hot'] - 0.02, "cold (denser) blob sinks relative to the hot one (%.3f m)" % res['cold'])
+
+
+def test_stratify_and_mass():
+    b = container((-.07, -.07, 0), (.07, .07, .2))
+    dx = 0.008
+    P = FM.lat_pos(FM.lattice_in_box((-.06, -.06, 0.004), (.06, .06, .11), dx), dx)
+    # inverted start: water (heavy) on top of oil with a perturbed interface (Rayleigh-Taylor); a grid pressure solve cannot
+    # separate fluids that are mixed below the cell size, so the start is layered, like a poured test
+    zb = 0.055 + 0.008 * np.cos(2 * np.pi * P[:, 0] / 0.07) * np.cos(2 * np.pi * P[:, 1] / 0.07)
+    sel = P[:, 2] > zb
+    water = FM.fluid_def('WATER', name='water', body=0, shape=dict(kind='POINTS', pts=P[sel]), miscible=False)
+    oil = FM.fluid_def('MINERAL_OIL', name='oil', body=0, shape=dict(kind='POINTS', pts=P[~sel]), miscible=False, group=7)
+    S = FM.FluidSolver.build([water, oil], [b], FM.FEnv(), dx=dx)
+    m0 = [t['mass'] for t in S.totals()]
+    n0 = S.n
+    zw0, zo0 = S.x[S.lo[0]:S.hi[0], 2].mean(), S.x[S.lo[1]:S.hi[1], 2].mean()
+    run(S, 3.0)
+    zw, zo = S.x[S.lo[0]:S.hi[0], 2].mean(), S.x[S.lo[1]:S.hi[1], 2].mean()
+    ok(zo0 - zw0 < -0.03 and zo - zw > 0.02, "density stratification: inverted water-over-oil start swaps (oil above water: dz %.3f -> %.3f m)" % (zo0 - zw0, zo - zw))
+    zl = np.sort(S.x[S.lo[0]:S.hi[0], 2]); zu = np.sort(S.x[S.lo[1]:S.hi[1], 2])
+    ok(np.percentile(zl, 25) < np.percentile(zu, 25), "water layer sits below the oil layer (lower quartiles)")
+    m1 = [t['mass'] for t in S.totals()]
+    ok(S.n == n0 and np.allclose(m0, m1) and np.isfinite(S.x).all(), "mass conserved (%.3f kg water, %.3f kg oil), no particle lost" % (m1[0], m1[1]))
+    d = b.distance(S.x, np.eye(4))
+    ok(d.min() > -0.5 * dx, "all particles stay inside the container (min wall distance %.4f m)" % d.min())
+
+
+def test_gas_wind():
+    dx = 0.02
+    P = sphere_pts((0, 0, 1.0), 0.15, dx)
+    env = FM.FEnv(wind=(2.0, 0.0, 0.0), temperature=293.15)
+    g = FM.fluid_def('AIR', name='air', shape=dict(kind='POINTS', pts=P), volume=len(P) * dx ** 3, count=len(P), tref=293.15)
+    S = FM.FluidSolver.build([g], [], env, dx=dx)
+    x0 = S.x[:, 0].mean(); z0 = S.x[:, 2].mean()
+    run(S, 4.0)
+    dxm, dzm = S.x[:, 0].mean() - x0, S.x[:, 2].mean() - z0
+    tau = 1.0 / 0.6
+    expect = 2.0 * (4.0 - tau * (1 - np.exp(-4.0 / tau)))
+    ok(abs(dxm - expect) < 0.2 * expect, "free gas cloud drifts with the wind (%.2f m, drag model predicts %.2f m)" % (dxm, expect))
+    ok(abs(dzm) < 0.15, "neutrally buoyant air in air does not rise (dz %.3f m)" % dzm)
+
+
+def gas_dz(fluid, env, seconds=2.0, z=100.0, ground=None):
+    dx = 0.02
+    P = sphere_pts((0, 0, z), 0.12, dx)
+    g = FM.fluid_def(fluid, name=fluid, shape=dict(kind='POINTS', pts=P), volume=len(P) * dx ** 3, count=len(P), drag=0.05, diffusion=0.0, tref=293.15, temperature=293.15)
+    S = FM.FluidSolver.build([g], [], env, dx=dx)
+    z0 = S.x[:, 2].mean()
+    run(S, seconds)
+    return S.x[:, 2].mean() - z0
+
+
+def test_gas_buoyancy():
+    earth = FM.FEnv(temperature=293.15)
+    up = gas_dz('HELIUM', earth)
+    ok(up > 3.0, "helium rises in Earth air (+%.1f m in 2 s)" % up)
+    he_env = FM.FEnv(temperature=293.15, molar=0.004003)
+    flat = gas_dz('HELIUM', he_env)
+    ok(abs(flat) < 0.3, "helium does not rise in a helium atmosphere (dz %.2f m)" % flat)
+    down = gas_dz('CO2', earth)
+    ok(down < -2.5, "CO2 (heavier than air) sinks (%.1f m in 2 s)" % down)
+    air_up = gas_dz('AIR', earth)
+    ok(abs(air_up) < 0.6, "air in air floats (dz %.2f m)" % air_up)
+
+
+def test_gravity_scaling():
+    dx = 0.01
+    P = sphere_pts((0, 0, 5.0), 0.04, dx)
+    out = {}
+    for name in ('EARTH', 'MARS'):
+        st = ATM.preset_state(name)
+        env = FM.FEnv.from_atmosphere(st)
+        d = FM.fluid_def('WATER', name='drop', shape=dict(kind='POINTS', pts=P), body=-1, drag=0.0)
+        S = FM.FluidSolver.build([d], [], env, dx=dx)
+        z0 = S.x[:, 2].mean()
+        run(S, 0.8, dt=1.0 / 48.0)
+        out[name] = z0 - S.x[:, 2].mean()
+    ratio = out['EARTH'] / out['MARS']
+    expect = 9.80665 / 3.721
+    ok(abs(ratio - expect) < 0.06 * expect, "free fall distance Earth/Mars = %.3f (expected g ratio %.3f)" % (ratio, expect))
+
+
+def test_heat():
+    dx = 0.01
+    b = container((-.06, -.06, 0), (.06, .06, .15))
+    w = FM.fluid_def('WATER', name='w', body=0, fill=0.8, k=0.6)
+    S = FM.FluidSolver.build([w], [b], FM.FEnv(temperature=293.15), dx=dx, thermal_speedup=200.0)
+    t0 = S.T.mean()
+    run(S, 2.0, cb=lambda k, s: setattr(s, 'sources', [((0.0, 0.0, 0.02), 400.0, 0.05)]))
+    t1 = S.T.mean()
+    ok(t1 > t0 + 0.3, "heat source warms the fluid (%.2f -> %.2f K)" % (t0, t1))
+    hot = S.T.max()
+    S.sources = []
+    run(S, 6.0)
+    ok(S.T.max() < hot and S.T.mean() < t1 + 0.1 + 0.0, "after the source is removed the fluid cools / equalises (max %.2f -> %.2f K)" % (hot, S.T.max()))
+    # conduction conserves energy between a hot and a cold half (no ambient exchange)
+    w2 = FM.fluid_def('WATER', name='w2', body=0, fill=0.8, cool=1e-9)
+    S2 = FM.FluidSolver.build([w2], [b], FM.FEnv(), dx=dx, thermal_speedup=500.0)
+    S2.T[:] = np.where(S2.x[:, 0] > 0, 320.0, 290.0)
+    e0 = (S2.mass_ref * S2.cp[0] * S2.T).sum()
+    run(S2, 3.0)
+    e1 = (S2.mass_ref * S2.cp[0] * S2.T).sum()
+    ok(abs(e1 - e0) / e0 < 2e-3 and np.ptp(S2.T) < 30.0, "conduction conserves thermal energy (%.2e rel) and evens out (range %.1f K)" % (abs(e1 - e0) / e0, np.ptp(S2.T)))
+
+
+def test_moving_wall():
+    dx = 0.01
+    b = container((-.1, -.06, 0), (.1, .06, .15))
+    w = FM.fluid_def('WATER', name='w', body=0, fill=0.5)
+    S = FM.FluidSolver.build([w], [b], FM.FEnv(), dx=dx)
+    run(S, 0.6)
+    x0 = S.x[:, 0].mean()
+    nfr = 24
+    for k in range(nfr):
+        M = np.eye(4); M[0, 3] = 0.12 * (k + 1) / nfr
+        b.set_matrix(M)
+        S.step(1.0 / 24.0)
+    dxm = S.x[:, 0].mean() - x0
+    ok(dxm > 0.07, "moving container wall pushes the fluid along (mean x +%.3f m for a 0.12 m move)" % dxm)
+    d = b.distance(S.x, b.M1)
+    ok(d.min() > -0.5 * dx, "fluid stays inside the moving container (%.4f)" % d.min())
+
+
+def test_solid_displaces():
+    dx = 0.01
+    b = container((-.08, -.08, 0), (.08, .08, .25))
+    w = FM.fluid_def('WATER', name='w', body=0, fill=0.45)
+    S = FM.FluidSolver.build([w], [b], FM.FEnv(), dx=dx)
+    run(S, 0.6)
+    top0 = np.percentile(S.x[:, 2], 98)
+    V, T = MS.uvsphere(24, 12, 0.045)
+    col = FM.Body(SDF.PartField(V, T, 'AUTO', resolution=32, level=2), np.eye(4), 'COLLIDER', None, 0.0)
+    S.bodies.append(col)
+    z_start, z_end = 0.22, 0.045
+    nfr = 24
+    for k in range(nfr):
+        M = np.eye(4); M[2, 3] = z_start + (z_end - z_start) * (k + 1) / nfr
+        col.set_matrix(M)
+        S.step(1.0 / 24.0)
+    run(S, 0.5)
+    dsolid = col.distance(S.x, col.M1)
+    top1 = np.percentile(S.x[:, 2], 98)
+    ok(dsolid.min() > -0.7 * dx, "no fluid inside the dropped solid (min distance %.4f m)" % dsolid.min())
+    ok(top1 > top0 + 0.003, "the solid displaces fluid: surface rises %.3f -> %.3f m" % (top0, top1))
+
+
+def gear(n_teeth=10, r0=0.1, r1=0.12, h=0.03):
+    ang = np.linspace(0, 2 * np.pi, 4 * n_teeth, endpoint=False)
+    rr = np.tile([r0, r1, r1, r0], n_teeth)
+    pts = np.column_stack([rr * np.cos(ang), rr * np.sin(ang)])
+    n = len(pts)
+    V = np.vstack([np.column_stack([pts, np.zeros(n)]), np.column_stack([pts, np.full(n, h)]), [[0, 0, 0], [0, 0, h]]])
+    T = []
+    for i in range(n):
+        j = (i + 1) % n
+        T += [(i, j, n + j), (i, n + j, n + i), (2 * n, j, i), (2 * n + 1, n + i, n + j)]
+    return V, np.array(T)
+
+
+def spin_test(omega):
+    V, T = gear()
+    body = FM.Body(SDF.PartField(V, T, 'AUTO', resolution=48, level=2), np.eye(4), 'COLLIDER', None, 1.0)
+    dx = 0.01
+    P = FM.lat_pos(FM.lattice_in_box((0.05, -0.02, 0.05), (0.09, 0.02, 0.08), dx), dx)
+    d = FM.fluid_def('WATER', name='drop', shape=dict(kind='POINTS', pts=P), body=-1, drag=0.0, cohesion=0.0)
+    S = FM.FluidSolver.build([d], [body], FM.FEnv(), dx=dx)
+    th = 0.0
+    dt = 1.0 / 48.0
+    vts = []
+    for k in range(48):
+        th += omega * dt
+        M = np.eye(4); c, s = np.cos(th), np.sin(th)
+        M[:2, :2] = [[c, -s], [s, c]]
+        body.set_matrix(M)
+        S.step(dt)
+        if k > 24:
+            r = S.x.copy(); r[:, 2] = 0
+            rn = np.linalg.norm(r, axis=1)
+            tang = np.column_stack([-r[:, 1], r[:, 0], np.zeros(len(r))]) / np.maximum(rn, 1e-9)[:, None]
+            low = S.x[:, 2] < 0.05
+            if low.any():
+                vts.append(float(np.mean(np.einsum('ij,ij->i', S.v[low], tang[low]))))
+    r_mean = float(np.mean(np.linalg.norm(S.x[:, :2], axis=1)))
+    return float(np.mean(vts)) if vts else 0.0, r_mean
+
+
+def test_spinning_gear():
+    om = 2.0
+    vt, r = spin_test(om)
+    ok(vt > 0.5 * om * r and vt < 1.3 * om * r, "fluid on a spinning gear gets tangential momentum in the spin direction (%.3f m/s, omega r = %.3f)" % (vt, om * r))
+    vt0, _r = spin_test(0.0)
+    ok(abs(vt0) < 0.03, "a stationary gear gives no tangential momentum (%.3f m/s)" % vt0)
+    vt2, _r = spin_test(-om)
+    ok(vt2 < -0.5 * om * r, "reverse spin gives reverse momentum (%.3f m/s)" % vt2)
+
+
+def test_barometric_expansion():
+    dx = 0.05
+    env = FM.FEnv()
+    rs = {}
+    for z in (0.0, 5000.0):
+        P = sphere_pts((0, 0, z), 0.2, dx)
+        g = FM.fluid_def('AIR', name='a', shape=dict(kind='POINTS', pts=P), volume=len(P) * dx ** 3, count=len(P))
+        S = FM.FluidSolver.build([g], [], env, dx=dx)
+        rs[z] = float(S.parcel_radius().mean())
+    expect = (1.0 / np.exp(-5000.0 / env.scale_height())) ** (1.0 / 3.0)
+    ok(abs(rs[5000.0] / rs[0.0] - expect) < 0.03 * expect, "free gas parcels expand with altitude (radius ratio %.3f, barometric %.3f)" % (rs[5000.0] / rs[0.0], expect))
+
+
+def test_speed():
+    b = container((-.15, -.15, 0), (.15, .15, .4))
+    w = FM.fluid_def('WATER', name='w', body=0, fill=0.5)
+    for N in (5000, 20000):
+        S = FM.FluidSolver.build([w], [b], FM.FEnv(), max_particles=N)
+        S.step(1 / 24.0)
+        t = time.time()
+        for _ in range(3):
+            S.step(1 / 24.0)
+        dtm = (time.time() - t) / 3
+        print("SPEED %d particles: %.2f s per frame (%d drift iterations, up to %d substeps, %d CG iterations last)" % (S.n, dtm, S.iters, S.max_sub, S.cg_last), flush=True)
+
+
+if __name__ == '__main__':
+    t0 = time.time()
+    for fn in (test_units, test_environment, test_boussinesq, test_stratify_and_mass, test_gas_wind, test_gas_buoyancy, test_gravity_scaling,
+               test_heat, test_moving_wall, test_solid_displaces, test_spinning_gear, test_barometric_expansion, test_speed):
+        t = time.time()
+        try:
+            fn()
+        except Exception as ex:
+            import traceback
+            traceback.print_exc()
+            ok(False, "%s raised %r" % (fn.__name__, ex))
+        print("  (%s %.1fs)" % (fn.__name__, time.time() - t), flush=True)
+    print("FAILURES:", fails[0], "(%.0fs)" % (time.time() - t0))
+    raise SystemExit(1 if fails[0] else 0)

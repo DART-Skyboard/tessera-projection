@@ -6,6 +6,7 @@ interaction resolution can exceed both the modelled mesh and the fluid's own par
 from . import ops, panels, props, runtime
 from . import retopo_ops, retopo_panel  # Quad Remesh (LOTBCBP)
 from . import systems_ops  # Systems, crossfeed demos (Tessera Projection)
+from . import fluidmode_ops, fluidmode_panel, fluidmode_props  # Fluid mode (Tessera Projection)
 
 
 def register():
@@ -15,9 +16,11 @@ def register():
     runtime.register()
     retopo_ops.register(); retopo_panel.register()
     systems_ops.register()
+    fluidmode_props.register(); fluidmode_ops.register(); fluidmode_panel.register()
 
 
 def unregister():
+    fluidmode_panel.unregister(); fluidmode_ops.unregister(); fluidmode_props.unregister()
     systems_ops.unregister()
     retopo_panel.unregister(); retopo_ops.unregister()
     runtime.unregister()
