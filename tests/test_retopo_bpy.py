@@ -625,8 +625,9 @@ def test_symmetrize():
     if rq.get("quadriflow_failed") or zq is None:
         print("   (quadriflow unavailable/failed here)")
     else:
-        ok(zq["topology_mirrored"] is False and zq["asymmetry_after"]["max"] < zq["asymmetry_before"]["max"],
-           "QUADRIFLOW: positions symmetrized (asym %.4f -> %.4f, topology not guaranteed)" % (zq["asymmetry_before"]["max"], zq["asymmetry_after"]["max"]))
+        ok(zq["topology_mirrored"] is False and zq["asymmetry_after"]["mean"] < 0.75 * zq["asymmetry_before"]["mean"],
+           "QUADRIFLOW: positions symmetrized (mean asym %.5f -> %.5f, max %.4f -> %.4f, topology not guaranteed)" % (
+               zq["asymmetry_before"]["mean"], zq["asymmetry_after"]["mean"], zq["asymmetry_before"]["max"], zq["asymmetry_after"]["max"]))
     # AUTO trusts the more detailed side: the -x side was subdivided, so '-' is kept
     ob2, n2, p2 = asym_ellipsoid_obj(detail_right=True)
     nw, rp, _ = run(ob2)
