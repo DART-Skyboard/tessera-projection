@@ -58,7 +58,7 @@ class AF_ThermalObj(PropertyGroup):
     t_max: FloatProperty(name="Range max", default=340.0, description="K at the hot end of the ramp", update=_look_changed)
     ramp: EnumProperty(name="Ramp", items=TH.RAMP_ITEMS, default='INFERNO', update=_look_changed)
     shader: BoolProperty(name="Thermal shader", default=True, update=_look_changed, description="Replace the surface material with the temperature ramp (EEVEE and Cycles). Off restores the original material")
-    emission: FloatProperty(name="Glow", default=0.6, min=0.0, max=20.0, update=_look_changed, description="Emission strength of the ramp colour so it reads in any light")
+    emission: FloatProperty(name="Glow", default=0.3, min=0.0, max=20.0, update=_look_changed, description="Emission strength of the ramp colour so it reads in any light")
     solid: BoolProperty(name="Solid viewport colour", default=True, update=_look_changed, description="Also write the 'af_thermal_color' attribute and make it the active colour so Solid mode (colour: Attribute) shows it")
     gn: BoolProperty(name="Geometry Nodes output", default=True, update=_look_changed, description="Add the 'Tessera Thermal Surface' Geometry Nodes modifier (normalised value, colour, min / mean / max outputs)")
     couple: BoolProperty(name="Heat the fluid", default=False, description="The heat the surface exchanges with the fluid is given back to the particles as heat sources", update=_changed)

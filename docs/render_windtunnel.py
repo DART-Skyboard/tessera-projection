@@ -36,7 +36,7 @@ WT.load_example(sc)
 sc.frame_start, sc.frame_end = 1, FRAME + 2
 air = bpy.data.objects["Aircraft Airframe"]
 p = air.arc_flow_th
-p.t_min, p.t_max, p.speedup = 288.15, 325.0, 40.0
+p.t_min, p.t_max, p.speedup = 288.15, 312.0, 400.0
 FO.start(sc, play=False)
 for f in range(1, FRAME + 1):
     sc.frame_set(f)
@@ -67,17 +67,20 @@ def pathlines():
     """Smooth tubes through the cached positions of tracer particles that pass the aircraft."""
     cache = FO.RT.cache
     frames = sorted(f for f in cache if f <= FRAME)
-    X = np.stack([cache[f]['x'] for f in frames])             # (frames, n, 3)
-    V = np.stack([np.linalg.norm(cache[f]['v'], axis=1) for f in frames])
+    n0 = min(len(cache[f]['x']) for f in frames)                # emission grows the arrays: follow the particles that exist from the first frame
+    X = np.stack([cache[f]['x'][:n0] for f in frames])        # (frames, n, 3)
+    V = np.stack([np.linalg.norm(cache[f]['v'][:n0], axis=1) for f in frames])
     n = X.shape[1]
     ctr = np.array(air.matrix_world.translation)
     d = np.linalg.norm(X - ctr[None, None, :], axis=2).min(axis=0)
-    near = np.flatnonzero((d < 0.55) & (X[:, :, 0].max(axis=0) - X[:, :, 0].min(axis=0) > 0.6))
+    seg = np.linalg.norm(np.diff(X, axis=0), axis=2).sum(axis=0)
+    net = np.linalg.norm(X[-1] - X[0], axis=1) + 1e-6
+    near = np.flatnonzero((d < 0.45) & (X[:, :, 0].max(axis=0) - X[:, :, 0].min(axis=0) > 1.0) & (seg / net < 1.25))
     rng = np.random.default_rng(3)
     pick = rng.choice(near, size=min(NPATH, len(near)), replace=False) if len(near) else np.zeros(0, int)
     cu = bpy.data.curves.new("WT_Paths", 'CURVE')
     cu.dimensions = '3D'
-    cu.bevel_depth = 0.0042
+    cu.bevel_depth = 0.0028
     cu.bevel_resolution = 2
     cu.use_fill_caps = True
     mats = []
@@ -93,7 +96,7 @@ def pathlines():
         cu.materials.append(m)
     vmean = V.mean(axis=0)
     q = np.quantile(vmean[pick], [0.33, 0.66]) if len(pick) else (0, 0)
-    k = 3
+    k = 4
     for j in pick:
         pts = X[:, j, :]
         # moving average (smooths the parcel jitter), then a Bezier spline with automatic handles
@@ -135,8 +138,8 @@ def scene_look():
     w.node_tree.nodes['Background'].inputs[0].default_value = (0.012, 0.016, 0.024, 1)
     w.node_tree.nodes['Background'].inputs[1].default_value = 1.0
     sc.world = w
-    for nm, loc, en, size, col in (("key", (-1.0, -1.8, 3.2), 900, 2.5, (1.0, 0.95, 0.88)), ("rim", (2.2, 1.6, 2.2), 600, 2.0, (0.6, 0.75, 1.0)),
-                                   ("fill", (-2.0, 0.4, 1.0), 220, 3.0, (0.8, 0.88, 1.0))):
+    for nm, loc, en, size, col in (("key", (-1.0, -1.8, 3.2), 350, 2.5, (1.0, 0.95, 0.88)), ("rim", (2.2, 1.6, 2.2), 250, 2.0, (0.6, 0.75, 1.0)),
+                                   ("fill", (-2.0, 0.4, 1.0), 80, 3.0, (0.8, 0.88, 1.0))):
         ld = bpy.data.lights.new(nm, 'AREA')
         ld.energy, ld.size, ld.color = en, size, col
         lo = bpy.data.objects.new(nm, ld)
@@ -163,7 +166,7 @@ for case in CASES:
         sc.view_settings.view_transform = 'AgX'
         scene_look()
         pathlines()
-        camera((-1.55, -0.74, 1.05), (ctr.x + 0.05, 0.0, ctr.z - 0.02), 26)
+        camera((1.75, -0.78, 1.15), (ctr.x + 0.05, 0.0, ctr.z - 0.03), 28)
         r.filepath = os.path.join(OUT, 'windtunnel_thermal.png')
     else:
         r.engine = 'BLENDER_WORKBENCH'
@@ -178,6 +181,8 @@ for case in CASES:
         for fl in sc.arc_flow_fm.fluids:
             if fl.points_obj is not None:
                 fl.points_obj.hide_render = False
+                fl.particle_scale = 0.2
+                FO.apply_state(sc, FO.RT.cache.get(FRAME))
         tun = bpy.data.objects["Wind Tunnel"]
         tun.hide_render = True
         camera((-1.7, -2.6, 1.7), (ctr.x + 0.1, 0.0, ctr.z - 0.1), 32)

@@ -471,10 +471,10 @@ def add_aircraft(scene, location=None, thermal=True, spin_frames=(1, 250), rpm=1
         col.objects.link(e)
         e.parent = air
         e.matrix_parent_inverse = air.matrix_world.inverted()
-        e.location = (p[0] + loc[0], p[1] + loc[1], p[2] + loc[2])
+        e.location = tuple(p)          # parent inverse is identity (the airframe was still at the origin when parented)
         e.arc_flow_fm.heat_on = True
-        e.arc_flow_fm.heat_power = 150.0
-        e.arc_flow_fm.heat_radius = 0.07
+        e.arc_flow_fm.heat_power = 600.0
+        e.arc_flow_fm.heat_radius = 0.05
         heats.append(e)
     for o in [air] + rotors:
         mark_body(o)
@@ -482,8 +482,9 @@ def add_aircraft(scene, location=None, thermal=True, spin_frames=(1, 250), rpm=1
     for r in rotors:
         r.arc_flow_fm.friction = 0.6
     if thermal:
-        air.arc_flow_th.t_min, air.arc_flow_th.t_max = 288.15, 325.0
-        air.arc_flow_th.speedup = 40.0
+        air.arc_flow_th.t_min, air.arc_flow_th.t_max = 288.15, 312.0
+        air.arc_flow_th.speedup = 400.0
+        air.arc_flow_th.ramp = 'COLD_HOT'
         air.arc_flow_th.on = True
     return air, rotors, heats
 
