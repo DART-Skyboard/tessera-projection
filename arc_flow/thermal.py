@@ -67,7 +67,7 @@ class AF_ThermalObj(PropertyGroup):
     emissivity: FloatProperty(name="Emissivity", default=0.3, min=0.0, max=1.0, description="Thermal radiation of the surface to the ambient (limits how hot a wall next to a strong source gets)", update=_changed)
     recovery: FloatProperty(name="Recovery factor", default=0.85, min=0.0, max=1.0, description="Fraction of the kinetic temperature rise v^2 / 2cp recovered at the wall (turbulent boundary layer 0.85)", update=_changed)
     probe: FloatProperty(name="Probe radius", default=2.2, min=1.2, max=6.0, description="Fluid sampling radius in particle spacings", update=_changed)
-    speedup: FloatProperty(name="Wall speed-up", default=1.0, min=0.0, description="Multiplies the wall's heating time so slow real heating fits an animation (1 = real time)", update=_changed)
+    speedup: FloatProperty(name="Time scale", default=1.0, min=0.0, description="Wall time scale: simulated seconds of wall heating per second of animation (1 = real time; a metal skin needs minutes to heat, so animations use 10 to 50)", update=_changed)
 
 
 # ----------------------------------------------------------------------------- state
@@ -260,7 +260,8 @@ def update_object(scene, o, frame=None):
             h = p.probe * dx
             off = P0 + N0 * 0.5 * dx
             Ts, info = TH.surface_step(Ts, off, N0, X, V, T, cp, k, rho, mu, dt, h=h, dx=dx, ambient=ambient, L=L, C_a=p.wall_heat,
-                                       recovery=p.recovery, sources=srcs, alpha=p.absorb, speedup=p.speedup, emissivity=p.emissivity)
+                                       recovery=p.recovery, sources=srcs, alpha=p.absorb, speedup=p.speedup, emissivity=p.emissivity,
+                                       v_inf=tuple(scene.arc_flow.env.wind))
             st.cache[fr] = Ts
             st.info = info
         st.frame = frame

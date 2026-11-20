@@ -6,6 +6,7 @@ solver's particles around the sample are probed with a smooth kernel; the wall t
 
     probe      T_f, v_f, cp, k, rho, mu = kernel-weighted means of the particles within h of the sample (w = (1 - d/h)^2)
     coverage   c = min(1, sum(w) / w_ref)   (w_ref = weight of a fully packed half space; sparse gas parcels give c < 1)
+    stagnation windward faces add r |v_inf|^2 cos^2 / 2cp (free stream v_inf = the Environment wind)
     recovery   T_r = T_f + r |v_f - v_wall|^2 / (2 cp)                       r = 0.85 (turbulent boundary layer, Pr^(1/3))
     target     T_eq = c T_r + (1 - c) T_ambient
     h_conv     flat plate: Nu = 0.664 Re^(1/2) Pr^(1/3) (Re < 5e5), 0.037 Re^(4/5) Pr^(1/3) above, Re = rho |v_rel| L / mu;
@@ -149,7 +150,7 @@ def radiative_flux(P, sources, alpha=0.7, n=None, d_min=0.02):
 
 
 def surface_step(Ts, P, N, X, V, T, cp, k, rho, mu, dt, *, h, dx, ambient, L, C_a=4900.0, recovery=0.85, sources=(), alpha=0.7,
-                 v_wall=None, speedup=1.0, emissivity=0.0):
+                 v_wall=None, speedup=1.0, emissivity=0.0, v_inf=None):
     """One thermal step for the sample temperatures Ts (n,), positions P (n,3) already offset off the wall, wall normals N.
     Returns (Ts_new, info) with info = dict(coverage, T_fluid, h_conv, T_eq, q_conv W/m2, q_rad W/m2)."""
     pr = probe(P, X, V, T, cp, k, rho, mu, h, dx)
@@ -160,6 +161,11 @@ def surface_step(Ts, P, N, X, V, T, cp, k, rho, mu, dt, *, h, dx, ambient, L, C_
     Teq = np.where(pr['wsum'] > 0, c * Tr + (1.0 - c) * ambient, ambient)
     hc = convection_coefficient(np.where(pr['rho'] > 0, pr['rho'], 1.2), vrel, pr['mu'], pr['cp'], pr['k'], L)
     hc = np.where(pr['wsum'] > 0, hc * np.maximum(c, 0.05), H_NATURAL * 0.1)
+    if v_inf is not None and np.linalg.norm(v_inf) > 0:
+        # stagnation heating of the windward surfaces: the free stream is brought to rest at the wall, cos^2 of the incidence angle
+        vi = np.asarray(v_inf, float)
+        face = np.clip(-(N @ (vi / np.linalg.norm(vi))), 0.0, 1.0) ** 2
+        Teq = Teq + face * recovery * float(vi @ vi) / (2.0 * np.maximum(pr['cp'], 1.0))
     qr = radiative_flux(P, sources, alpha, N)
     dts = dt * speedup
     # the wall re-radiates: linearised  h_rad = 4 eps sigma T_m^3  toward the ambient temperature (caps the heating by close sources)

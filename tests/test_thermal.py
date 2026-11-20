@@ -44,6 +44,14 @@ for _ in range(2000):
 exp = 300.0 + 0.85 * 200.0 ** 2 / (2 * 1005.0)
 ok(abs(Ts[0] - exp) < 0.5, "recovery temperature %.2f K (expected %.2f)" % (Ts[0], exp))
 
+# stagnation heating: windward face gets r v^2 / 2cp, leeward none
+Pf = np.array([[0.0, 0, 0], [1.0, 0, 0]]); Nf = np.array([[-1.0, 0, 0], [1.0, 0, 0]])
+Tf = np.full(2, 300.0)
+for _ in range(3000):
+    Tf, _i = TH.surface_step(Tf, Pf, Nf, np.zeros((0, 3)), np.zeros((0, 3)), np.zeros(0), np.zeros(0), np.zeros(0), np.zeros(0), np.zeros(0), 1.0,
+                             h=0.1, dx=0.05, ambient=300.0, L=1.0, C_a=50.0, v_inf=(100.0, 0, 0))
+ok(abs(Tf[0] - (300.0 + 0.85 * 100.0 ** 2 / 2010.0)) < 0.2 and abs(Tf[1] - 300.0) < 0.05, "stagnation heating on the windward face only (%.2f, %.2f K)" % tuple(Tf))
+
 # no particles: ambient plus radiation from a heat source, inverse square, facing side only
 P3 = np.array([[1.0, 0, 0], [2.0, 0, 0], [-1.0, 0, 0]]); N3 = np.array([[-1.0, 0, 0], [-1.0, 0, 0], [-1.0, 0, 0]])
 q = TH.radiative_flux(P3, [((0, 0, 0), 1000.0, 0.01)], 0.7, N3)

@@ -25,7 +25,7 @@ FRAME = int(argv[1]) if len(argv) > 1 else 72
 OUT = argv[2] if len(argv) > 2 else os.path.join(HERE, 'renders')
 SAMPLES = int(os.environ.get('WT_SAMPLES', '64'))
 PCT = int(os.environ.get('WT_PCT', '100'))
-NPATH = int(os.environ.get('WT_PATHS', '160'))
+NPATH = int(os.environ.get('WT_PATHS', '30'))
 sc = bpy.context.scene
 sc.render.fps = 24
 for nm in ('Cube', 'Light', 'Camera'):
@@ -36,7 +36,9 @@ WT.load_example(sc)
 sc.frame_start, sc.frame_end = 1, FRAME + 2
 air = bpy.data.objects["Aircraft Airframe"]
 p = air.arc_flow_th
-p.t_min, p.t_max, p.speedup = 288.15, 312.0, 400.0
+p.t_min, p.t_max = 288.15, 345.0
+p.ramp = 'INFERNO'
+p.emission = 0.0
 FO.start(sc, play=False)
 for f in range(1, FRAME + 1):
     sc.frame_set(f)
@@ -64,50 +66,55 @@ def camera(loc, target, lens):
 
 
 def pathlines():
-    """Smooth tubes through the cached positions of tracer particles that pass the aircraft."""
+    """Calm streamlines: tracer particles that pass the aircraft, thinned to a minimum spacing, shown as the last 5 frames of their path
+    (a cubic fit in time removes the parcel jitter) and drawn as thin tubes coloured by speed."""
     cache = FO.RT.cache
-    frames = sorted(f for f in cache if f <= FRAME)
-    n0 = min(len(cache[f]['x']) for f in frames)                # emission grows the arrays: follow the particles that exist from the first frame
-    X = np.stack([cache[f]['x'][:n0] for f in frames])        # (frames, n, 3)
+    frames = [f for f in sorted(cache) if f <= FRAME][-5:]
+    n0 = min(len(cache[f]['x']) for f in sorted(cache) if f <= FRAME)
+    X = np.stack([cache[f]['x'][:n0] for f in frames])
     V = np.stack([np.linalg.norm(cache[f]['v'][:n0], axis=1) for f in frames])
-    n = X.shape[1]
     ctr = np.array(air.matrix_world.translation)
-    d = np.linalg.norm(X - ctr[None, None, :], axis=2).min(axis=0)
+    last = X[-1]
     seg = np.linalg.norm(np.diff(X, axis=0), axis=2).sum(axis=0)
     net = np.linalg.norm(X[-1] - X[0], axis=1) + 1e-6
-    near = np.flatnonzero((d < 0.45) & (X[:, :, 0].max(axis=0) - X[:, :, 0].min(axis=0) > 1.0) & (seg / net < 1.25))
-    rng = np.random.default_rng(3)
-    pick = rng.choice(near, size=min(NPATH, len(near)), replace=False) if len(near) else np.zeros(0, int)
+    ok_ = np.flatnonzero((np.abs(last[:, 0] - ctr[0]) < 0.9) & (np.linalg.norm(last[:, 1:] - ctr[1:], axis=1) < 0.55) & (last[:, 1] > ctr[1] - 0.15) & (seg / net < 1.6) & (net > 0.25))
+    print('median speed %.2f m/s, in window %d, mean net %.2f' % (np.median(V[-1]), int(((np.abs(last[:, 0] - ctr[0]) < 0.9) & (np.linalg.norm(last[:, 1:] - ctr[1:], axis=1) < 0.65)).sum()), float(net.mean())), flush=True)
+    rng = np.random.default_rng(5)
+    rng.shuffle(ok_)
+    pick = []
+    for j in ok_:
+        if all(np.linalg.norm(last[j] - last[i]) > 0.17 for i in pick):
+            pick.append(j)
+        if len(pick) >= NPATH:
+            break
     cu = bpy.data.curves.new("WT_Paths", 'CURVE')
     cu.dimensions = '3D'
-    cu.bevel_depth = 0.0028
-    cu.bevel_resolution = 2
+    cu.bevel_depth = 0.002
+    cu.bevel_resolution = 3
     cu.use_fill_caps = True
-    mats = []
-    for i, (nm, col) in enumerate((("slow", (0.25, 0.55, 1.0)), ("mid", (0.45, 0.85, 1.0)), ("fast", (0.9, 0.97, 1.0)))):
+    for nm, col in (("slow", (0.35, 0.65, 1.0)), ("mid", (0.6, 0.88, 1.0)), ("fast", (0.95, 0.98, 1.0))):
         m = bpy.data.materials.new("WT_Path_" + nm)
         m.use_nodes = True
         b = m.node_tree.nodes['Principled BSDF']
         b.inputs['Base Color'].default_value = (*col, 1)
         b.inputs['Emission Color'].default_value = (*col, 1)
-        b.inputs['Emission Strength'].default_value = 2.2
+        b.inputs['Emission Strength'].default_value = 0.9
         b.inputs['Roughness'].default_value = 0.4
         m.diffuse_color = (*col, 1)
         cu.materials.append(m)
     vmean = V.mean(axis=0)
-    q = np.quantile(vmean[pick], [0.33, 0.66]) if len(pick) else (0, 0)
-    k = 4
+    q = np.quantile(vmean[pick], [0.33, 0.66]) if pick else (0, 0)
+    tt = np.linspace(-1, 1, len(frames))
+    ts = np.linspace(-1, 1, 12)
     for j in pick:
-        pts = X[:, j, :]
-        # moving average (smooths the parcel jitter), then a Bezier spline with automatic handles
-        sm = np.stack([np.convolve(np.pad(pts[:, c], (k, k), mode='edge'), np.ones(2 * k + 1) / (2 * k + 1), mode='valid') for c in range(3)], axis=1)
-        sm = sm[::2]
+        sm = np.stack([np.polyval(np.polyfit(tt, X[:, j, c], 2), ts) for c in range(3)], axis=1)
         sp = cu.splines.new('BEZIER')
         sp.bezier_points.add(len(sm) - 1)
         for bp, pt in zip(sp.bezier_points, sm):
             bp.co = pt
             bp.handle_left_type = bp.handle_right_type = 'AUTO'
         sp.material_index = 0 if vmean[j] < q[0] else (1 if vmean[j] < q[1] else 2)
+    print("pathlines", len(pick), "candidates", len(ok_), flush=True)
     o = bpy.data.objects.new("WT_Paths", cu)
     sc.collection.objects.link(o)
     return o
@@ -117,7 +124,7 @@ def scene_look():
     tun = bpy.data.objects["Wind Tunnel"]
     m = tun.data.materials[0]
     b = m.node_tree.nodes['Principled BSDF']
-    for nm, val in (('Transmission Weight', 0.0), ('Alpha', 0.10)):
+    for nm, val in (('Transmission Weight', 0.0), ('Alpha', 0.03)):
         if nm in b.inputs:
             b.inputs[nm].default_value = val
     for fl in sc.arc_flow_fm.fluids:
@@ -130,16 +137,16 @@ def scene_look():
     fm = bpy.data.materials.new("floor")
     fm.use_nodes = True
     fb = fm.node_tree.nodes['Principled BSDF']
-    fb.inputs['Base Color'].default_value = (0.03, 0.035, 0.045, 1)
+    fb.inputs['Base Color'].default_value = (0.02, 0.022, 0.028, 1)
     fb.inputs['Roughness'].default_value = 0.35
     fl.data.materials.append(fm)
     w = bpy.data.worlds.new("wt_world")
     w.use_nodes = True
-    w.node_tree.nodes['Background'].inputs[0].default_value = (0.012, 0.016, 0.024, 1)
+    w.node_tree.nodes['Background'].inputs[0].default_value = (0.025, 0.028, 0.035, 1)
     w.node_tree.nodes['Background'].inputs[1].default_value = 1.0
     sc.world = w
-    for nm, loc, en, size, col in (("key", (-1.0, -1.8, 3.2), 350, 2.5, (1.0, 0.95, 0.88)), ("rim", (2.2, 1.6, 2.2), 250, 2.0, (0.6, 0.75, 1.0)),
-                                   ("fill", (-2.0, 0.4, 1.0), 80, 3.0, (0.8, 0.88, 1.0))):
+    for nm, loc, en, size, col in (("key", (1.2, -2.6, 3.0), 260, 3.0, (1.0, 1.0, 1.0)), ("rim", (-2.0, 1.8, 2.2), 120, 2.5, (0.9, 0.95, 1.0)),
+                                   ("fill", (2.2, 1.6, 1.0), 60, 3.0, (1.0, 1.0, 1.0))):
         ld = bpy.data.lights.new(nm, 'AREA')
         ld.energy, ld.size, ld.color = en, size, col
         lo = bpy.data.objects.new(nm, ld)
@@ -166,7 +173,7 @@ for case in CASES:
         sc.view_settings.view_transform = 'AgX'
         scene_look()
         pathlines()
-        camera((1.75, -0.78, 1.15), (ctr.x + 0.05, 0.0, ctr.z - 0.03), 28)
+        camera((1.9, -1.9, 1.55), (ctr.x + 0.0, 0.0, ctr.z - 0.02), 42)
         r.filepath = os.path.join(OUT, 'windtunnel_thermal.png')
     else:
         r.engine = 'BLENDER_WORKBENCH'

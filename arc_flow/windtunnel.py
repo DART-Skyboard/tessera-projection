@@ -24,7 +24,7 @@ COLLECTION = "WindTunnel"
 TUNNEL, AIRVOL, EMITTER = "Wind Tunnel", "Tunnel Air Volume", "Wind Emitter"
 AIR_NAME = "Tunnel Air"
 R_GAS = 8.314462618
-MAX_WIND = 18.0          # the fluid solver clamps particle speed at 20 m/s
+MAX_WIND = 40.0          # the solver's speed clamp (default 20 m/s) is raised to follow the wind: see _widen_clamp
 
 ATMOSPHERES = [('EARTH', "Earth", "1 atm, 288 K, 1 g, nitrogen / oxygen"), ('MARS', "Mars", "610 Pa carbon dioxide"),
                ('VENUS', "Venus", "92 bar, 737 K carbon dioxide"), ('TITAN', "Titan", "1.45 bar, 94 K nitrogen / methane"),
@@ -52,7 +52,7 @@ class AF_WTScene(PropertyGroup):
     height: FloatProperty(name="Height", default=1.5, min=0.3, unit='LENGTH')
     wall: FloatProperty(name="Wall thickness", default=0.06, min=0.005, unit='LENGTH', description="Real thickness of the tunnel shell")
     open_ends: BoolProperty(name="Open inlet and outlet", default=True, description="Off: a closed box")
-    wind: FloatProperty(name="Wind speed", default=14.0, min=0.0, max=MAX_WIND, description="m/s along +X (the solver clamps particle speed at 20 m/s)")
+    wind: FloatProperty(name="Wind speed", default=14.0, min=0.0, max=MAX_WIND, description="m/s along +X. The particle speed clamp follows the wind (1.5 x); more substeps are needed above about 20 m/s")
     count: IntProperty(name="Air parcels", default=9000, min=500, max=60000)
     emit: BoolProperty(name="Continuous wind", default=True, description="The Wind Emitter (an Emission surface at the inlet) keeps feeding fresh air into the tunnel")
     emit_cap: FloatProperty(name="Emission cap", default=1500.0, min=0.0, description="Most parcels per second the wind emitter adds (keeps the run time in check)")
@@ -400,14 +400,33 @@ def sim_frame_deforming(scene, frame):
     return _orig_sim_frame(scene, frame)
 
 
+_orig_build = None
+
+
+def build_solver_wide(scene):
+    S = _orig_build(scene)
+    try:
+        w = float(np.linalg.norm(scene.arc_flow.env.wind))
+        if S is not None and any(f.name == AIR_NAME for f in scene.arc_flow_fm.fluids):
+            S.vmax = max(float(S.vmax), 1.5 * w)      # wind-tunnel scenes: the particle speed clamp follows the wind
+    except Exception:
+        pass
+    return S
+
+
 def _install():
-    global _orig_sim_frame
+    global _orig_sim_frame, _orig_build
+    if FO.build_solver is not build_solver_wide:
+        _orig_build = FO.build_solver
+        FO.build_solver = build_solver_wide
     if FO.sim_frame is not sim_frame_deforming:
         _orig_sim_frame = FO.sim_frame
     FO.sim_frame = sim_frame_deforming
 
 
 def _remove_hook():
+    if FO.build_solver is build_solver_wide:
+        FO.build_solver = _orig_build
     if FO.sim_frame is sim_frame_deforming:
         FO.sim_frame = _orig_sim_frame
 
@@ -473,8 +492,8 @@ def add_aircraft(scene, location=None, thermal=True, spin_frames=(1, 250), rpm=1
         e.matrix_parent_inverse = air.matrix_world.inverted()
         e.location = tuple(p)          # parent inverse is identity (the airframe was still at the origin when parented)
         e.arc_flow_fm.heat_on = True
-        e.arc_flow_fm.heat_power = 600.0
-        e.arc_flow_fm.heat_radius = 0.05
+        e.arc_flow_fm.heat_power = 1500.0
+        e.arc_flow_fm.heat_radius = 0.10
         heats.append(e)
     for o in [air] + rotors:
         mark_body(o)
