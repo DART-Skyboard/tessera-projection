@@ -12,7 +12,7 @@ Collision, Boolean and quad-remesh projection for any mesh
 
 Short description (summary field on the listing):
 
-> Project a mesh against itself and its neighbours: a quad remesh with symmetrize, cavity Boolean projection, and a particle-based fluid and combustion simulator with shader presets, a wind tunnel and Geometry Nodes sockets.
+> Project a mesh against itself and its neighbours: a quad remesh with symmetrize, cavity Boolean projection, and a particle-based computational fluid dynamics engine (fluid and combustion) with shader presets, a wind tunnel and Geometry Nodes sockets.
 
 ## 2. Full description (Markdown, paste into the listing)
 
@@ -26,7 +26,7 @@ A quad remesh operator (it never touches the original or its modifiers).
 - Every new vertex is projected back onto the source surface; density follows creases, small features and the Arc Edge curvature scale. No face selection needed.
 - **Symmetrize**: with a detected mirror plane the quads are made truly mirror-symmetric. Choose the trusted side (Auto, Left, Right, Average) and a strength; the report shows asymmetry before and after and the deviation from your source. The plane is found from the mesh itself, wherever the object sits and however it is rotated.
 - **UV and data handling**: UV maps (including UDIM tiles), colour attributes, vertex groups, materials and generic attributes are transferred. Keep the old UVs, add a fresh set, or skip.
-- Resolution multiplier 0.01 to 12, Recalculate Normals (Outside), reads the evaluated or the base mesh, automatic fast path above 200,000 faces with progress and Esc to cancel.
+- Retopologizes from the projection at each point's local position and changes the resolution with a multiplier of 0.01 to 12 (above 1 subdivides up, below 1 decimates down). Recalculate Normals (Outside), reads the evaluated or the base mesh, automatic fast path above 200,000 faces with progress and Esc to cancel.
 
 ## Boolean Projection
 Cavities that intersect become one continuous through-cavity (Fluid Cavity union), with optional Boolean joint cuts in the walls.
@@ -88,7 +88,7 @@ Created by Justin Craig Venable, Radical Deepscale LLC (DART Meadow). GPL-3.0-or
 
 Allowed add-on tags (verified against docs.blender.org/manual/en/dev/advanced/extensions/tags.html on 2026-11-20): 3D View, Add Curve, Add Mesh, Animation, Bake, Camera, Compositing, Development, Game Engine, Geometry Nodes, Grease Pencil, Import-Export, Lighting, Material, Modeling, Mesh, Node, Object, Paint, Pipeline, Physics, Render, Rigging, Scene, Sculpt, Sequencer, System, Text Editor, Tracking, User Interface, UV.
 
-Current manifest tags: `Physics`, `Animation`, `Geometry Nodes`, `Render` (all valid). Suggested better set, since remeshing is a headline tool (change in `arc_flow/blender_manifest.toml` only if you agree): `Physics`, `Mesh`, `Modeling`, `Geometry Nodes`, `Material`.
+Current manifest tags: `Physics`, `Mesh`, `Modeling`, `Animation`, `Geometry Nodes`, `Render` (all valid). Suggested better set, since remeshing is a headline tool (change in `arc_flow/blender_manifest.toml` only if you agree): `Physics`, `Mesh`, `Modeling`, `Geometry Nodes`, `Material`.
 
 Permission `files` (manifest text, shown to users; the platform wants it short, starting with a capital and no trailing period):
 

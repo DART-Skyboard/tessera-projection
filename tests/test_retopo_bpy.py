@@ -209,17 +209,24 @@ def monkey_quads(sub=1):
     return ob
 
 
+def _res_order(counts, q0):
+    ok(counts[2.0] > counts[1.0] > counts[0.5] > counts[0.25], "multiplier above 1 raises and below 1 lowers the face count %s" % counts)
+
+
 def test_resolution():
     ob = monkey_quads(1)
     q0 = len(ob.data.polygons)
     print("   input quads", q0)
+    counts = {}
     for res in (0.25, 0.5, 1.0, 2.0):
         new, rep, t = run(ob, resolution=res)
         n = len(new.data.polygons)
+        counts[res] = n
         want = q0 * res
         ok(abs(n - want) / want <= 0.35, "resolution %.2f: %d faces (target %d, method %s, %.1fs)" % (res, n, want, rep["method"], t))
         ok(rep["predicted_faces"] in (None, int(round(want))), "predicted face count reported %s" % rep["predicted_faces"])
         ok(rep["output"]["quad_ratio"] >= 0.98 or rep["method"] == 'QUADRIFLOW', "res %.2f quad ratio %.3f" % (res, rep["output"]["quad_ratio"]))
+    _res_order(counts, q0)
     ok(RO.predicted_faces(ob, 0.5) == int(round(q0 * 0.5)), "UI prediction matches quad-equivalents x resolution")
     p = bpy.props.__dict__
     RO.register()

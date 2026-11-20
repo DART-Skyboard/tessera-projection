@@ -26,7 +26,7 @@ Tessera Projection is built around one idea: **a mesh can be projected against i
 |---|---|
 | **Projection Remesh** | A fast quad remesh. Dense, symmetric quads along creases, lips, wrinkles and ears; large quads on broad surfaces. Works on characters, cars, trees, CAD, and scans, at any position or rotation. |
 | **Boolean Projection** | Cavities that intersect become one continuous through-cavity, with optional Boolean joint cuts in the walls. |
-| **Arc Flow** | Self-initialising fluid and combustion simulation through those connected cavities: containers, channels, chambers and nozzles that start empty and only conduct, finite fills, leaks, plugs, thermal and stress colouring. Fluid mode adds liquids, gases, mixing, transmutation (steam, crystals, burning, rust), viscosity and emission surfaces, fluid volumes, a wind tunnel with thermal readback, 22 shader presets and Geometry Nodes sockets. |
+| **Arc Flow** | A computational fluid dynamics engine: self-initialising fluid and combustion simulation through those connected cavities: containers, channels, chambers and nozzles that start empty and only conduct, finite fills, leaks, plugs, thermal and stress colouring. Fluid mode adds liquids, gases, mixing, transmutation (steam, crystals, burning, rust), viscosity and emission surfaces, fluid volumes, a wind tunnel with thermal readback, 22 shader presets and Geometry Nodes sockets. |
 
 <p align="center">
   <img src="docs/renders/retopo_input_tris.png" width="46%" alt="Triangulated input mesh">
@@ -40,7 +40,7 @@ Tessera Projection is built around one idea: **a mesh can be projected against i
 - **Density from the surface itself.** Crease angle, small features and the Arc Edge curvature scale set the target size per region. No face selection in Edit Mode.
 - **Symmetrize.** With a confident mirror plane the quads are made truly symmetric: pick the side to trust (Auto, Left, Right, Average) and a strength; the report gives asymmetry before/after and the deviation from your source.
 - **Symmetry without setup.** The mirror plane is detected from the mesh, wherever the object sits and however it is rotated. Near-symmetric meshes (sculpts, triangulations that do not line up across the sides) are made symmetric; asymmetric regions are left alone and reported.
-- **Resolution multiplier, 0.01 to 12.** 1.0 is a one-to-one remesh; below 1.0 decimates, above 1.0 adds resolution. Run it again for more.
+- **Retopology and resolution in one step.** The mesh is retopologized from the projection at each point's local position, and the **resolution multiplier (0.01 to 12)** changes the face count: 1.0 is a one-to-one remesh, above 1.0 subdivides up, below 1.0 decimates down. Run it again for more.
 - **Keeps your data.** UV maps (including UDIM tiles), colour attributes, vertex groups, materials and generic attributes are transferred; choose to keep the old UVs, add a fresh set, or skip.
 - **Modifier-safe.** It is an operator, not a modifier. Read the evaluated mesh with any modifier order, or the base mesh. The original and its stack are never touched.
 - **Recalculate Normals (Outside)**, before, after, or on its own.

@@ -897,10 +897,29 @@ class FluidSolver:
     def pressure_at(self, z):
         return self.env.pressure_at(z)
 
+    def _sync_derived(self):
+        """Safety net: derived per-particle arrays that fell behind the particle count (an emitter added particles through a path that did not
+        grow them) are extended from the per-fluid values, so a frame never raises a shape error."""
+        n = len(self.fid)
+        for name, src in (('rho0_p', 'rho0'), ('beta_p', 'beta'), ('cp_p', 'cp')):
+            a = getattr(self, name, None)
+            if a is not None and a.shape[0] != n:
+                new = np.asarray(getattr(self, src))[self.fid].astype(float)
+                m = min(n, a.shape[0])
+                new[:m] = a[:m]
+                setattr(self, name, new)
+        g = getattr(self, 'gasp', None)
+        if g is not None and g.shape[0] != n:
+            new = np.asarray(self.gas)[self.fid].astype(bool)
+            m = min(n, g.shape[0])
+            new[:m] = g[:m]
+            self.gasp = new
+
     def rho_particles(self, T=None):
         """Current density of each particle (kg/m3): Boussinesq for liquids, ideal gas at ambient pressure for gases."""
         T = self.T if T is None else T
         f = self.fid
+        self._sync_derived()
         rho_l = self.rho0_p * np.clip(1.0 - self.beta_p * (T - self.tref[f]), 0.2, 5.0)
         Pz = self.env.pressure_at(self.x[:, 2])
         rho_g = self.rho0_p * (self.tref[f] / np.maximum(T, 1.0)) * (Pz / P_ATM)
