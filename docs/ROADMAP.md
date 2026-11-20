@@ -29,3 +29,6 @@ already reported), EEVEE render check.
 ## Next (0.3.0)
 - Fluid mode: volumetric particle-based fluid dynamics for general fluids (mixing, lava-lamp convection, free gas, fluids without containers, moving colliders, Environment-driven buoyancy and gravity, Geometry Nodes groups). Done in 0.3.0 (see docs/TECHNICAL.md). Next: fluid pushing solids (two-way), per-fluid particle refinement for small wax blobs, custom-mesh instancing verified headless.
 - Projection Remesh: curvature-aligned quad layout, exact symmetry in the large-mesh fast path, shape-key transfer, Geometry Nodes exposure.
+
+## XR and AI (planned, after 0.5.0)
+Optional link to NVIDIA's XR AI stack (voice agents, headset clients) through our own opt-in bridge and a separate local sidecar; the extension stays purely Blender (no NVIDIA code, network permission only while the bridge is on, off by default). Planned: AI agents and voice commands calling Tessera tools (remesh, simulation, thermal readback, examples, systems); headset scene proportions in, fluid and thermal overlays out; "XR Guided Examples" in the Examples panel. Phase 1 is one voice command driving one operator. Overlays are visual illustrations, not safety predictions. Details, performance limits and estimates: docs/XR_AI_ROADMAP.md.
