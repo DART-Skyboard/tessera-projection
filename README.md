@@ -13,7 +13,7 @@
   <img alt="Blender 5.2.3+" src="https://img.shields.io/badge/Blender-5.2.3%2B-orange">
   <img alt="Tested on 5.3.0" src="https://img.shields.io/badge/tested-5.2.3%20LTS%20%7C%205.3.0-blue">
   <img alt="License GPL-3.0-or-later" src="https://img.shields.io/badge/license-GPL--3.0--or--later-green">
-  <img alt="Version 0.2.0" src="https://img.shields.io/badge/version-0.2.0-informational">
+  <img alt="Version 0.5.0" src="https://img.shields.io/badge/version-0.5.0-informational">
 </p>
 
 ---
@@ -26,7 +26,7 @@ Tessera Projection is built around one idea: **a mesh can be projected against i
 |---|---|
 | **Projection Remesh** | A fast quad remesh. Dense, symmetric quads along creases, lips, wrinkles and ears; large quads on broad surfaces. Works on characters, cars, trees, CAD, and scans, at any position or rotation. |
 | **Boolean Projection** | Cavities that intersect become one continuous through-cavity, with optional Boolean joint cuts in the walls. |
-| **Arc Flow** | Self-initialising fluid and combustion simulation through those connected cavities: containers, channels, chambers and nozzles that start empty and only conduct, finite fills, leaks, plugs, thermal and stress colouring. |
+| **Arc Flow** | Self-initialising fluid and combustion simulation through those connected cavities: containers, channels, chambers and nozzles that start empty and only conduct, finite fills, leaks, plugs, thermal and stress colouring. Fluid mode adds liquids, gases, mixing, phase change, wind tunnel and thermal readback, with shader presets. |
 
 <p align="center">
   <img src="docs/renders/retopo_input_tris.png" width="46%" alt="Triangulated input mesh">
@@ -101,9 +101,49 @@ Assigned to a container (the lava lamp's glass cone), a fluid takes the cavity's
 
 It solves liquids with FLIP/PIC and a variable-density pressure projection, and gases as buoyant Lagrangian parcels. Solid to fluid is exact; fluid to solid is one-way, and gas does not interact with liquid. Measured: 0.24 s per frame at 5,162 particles and 0.75 s at 18,900 (NumPy, 2 shared cores). Details and limits: [technical reference](docs/TECHNICAL.md#fluid-mode-volumetric-particle-based-lagrangian-fluid-dynamics).
 
+## What is new in 0.5.0
+
+- **Remesh Symmetrize**: truly mirror-symmetric quads, with a before/after report.
+- **Fluid mode**: two-way gas pressure, transmutation (steam, crystals, burning, rust), a smooth merged liquid surface, soft volume gases, viscosity and emission surfaces, fluid volumes, any geometry as Container or Shape, several independent assets that mix and react.
+- **Shader presets**: 22 Cycles + EEVEE materials (water, glass, oil, lava, smoke, steam, flame ...).
+- **Wind tunnel and thermal readback**: surface temperature as attributes and colour, atmosphere presets for Earth, Mars, Venus, Titan and the Moon.
+- **Combustion**: per-engine chain with its own throat, choked flow and thrust.
+- **Geometry Nodes**: reusable Tessera node groups and an Add menu entry.
+- **Faster collision field**: triangle BVH and sparse bricks (see Performance).
+
+Full list: [changelog](CHANGELOG.md).
+
+<!-- Screenshots to add before publishing (placeholders): docs/renders/wind_tunnel_thermal.png, docs/renders/shader_presets_sheet.png, docs/renders/combustion_engine_plume.png -->
+
+## Performance (measured)
+
+Blender 5.3.0 headless, shared 2-core Linux machine, so timings are rough. Details and the machine notes are in the [technical reference](docs/TECHNICAL.md).
+
+| What | Measured |
+|---|---|
+| Projection Remesh, 98k triangles to quads | 1.4 s |
+| Projection Remesh, 991k triangles (fast path) | 13.6 s |
+| Projection Remesh, 3.97M triangles (fast path, about 5.4 GB RAM) | 83.7 s |
+| Collision field, 2000 near-surface queries on 99k triangles | 0.24 s (was 54 s) |
+| Collision field build (resolution 40), 99k triangles | 10 to 18 s (was 703 s) |
+| Collision field build (resolution 40), 998k triangles | 29 s, 2.9 GB |
+| Fluid mode, 5,162 particles | 0.24 s per frame |
+| Fluid mode, 18,900 particles | 0.75 s per frame |
+
+The fluid solver is NumPy on the CPU: frame times grow with particle count and it is not real time. The other fluid features (gas pressure, transmutation, thermal readback) add cost that is not yet benchmarked separately.
+
+## Limits
+
+- The fluid and combustion models are simplified, documented models (weakly compressible, no turbulence model), not a full Navier-Stokes solve; viscosity and cohesion are calibrated, not measured.
+- Steam and smoke are soft volumes or splats, not resolved vapour; frozen crystals still count as liquid in the grid projection.
+- The wind tunnel aircraft is a procedural stand-in, not a real model.
+- The large-mesh remesh path keeps the source triangulation's symmetry; the exact mirror is the accurate path and the reduce mode.
+- Verified headless on Blender 5.2.3 and 5.3.0 only (no interactive session, no GPU render check).
+- Details and open items: [technical reference](docs/TECHNICAL.md).
+
 ## Install
 
-1. Download `tessera_projection-0.2.0.zip` (from extensions.blender.org or this repo's Releases).
+1. Download `tessera_projection-0.5.0.zip` from this repository's Releases (the extensions.blender.org listing follows once the platform has approved it).
 2. In Blender: **Edit > Preferences > Get Extensions > (v) > Install from Disk**, pick the zip.
 3. Open the 3D Viewport sidebar (**N**), tab **Tessera**.
 
@@ -116,9 +156,9 @@ From source: `./build.sh` validates and builds the zip into `dist/`.
 
 ## Status and roadmap
 
-Version 0.3.0 is tested headless on Blender 5.2.3 LTS and 5.3.0. Interactive UI testing and an EEVEE render check are still to do.
+Version 0.5.0 is a release candidate, tested headless on Blender 5.2.3 LTS and 5.3.0 (every test, also from the built extension). Interactive UI use and GPU render checks are still to do.
 
-Coming next: two-way fluid-solid coupling, curvature-aligned quad layout, exact symmetry in the large-mesh path, shape-key transfer. See [docs/ROADMAP.md](docs/ROADMAP.md) and the [changelog](CHANGELOG.md).
+Coming next: curvature-aligned quad layout, exact symmetry in the large-mesh path, shape-key transfer. See [docs/ROADMAP.md](docs/ROADMAP.md) and the [changelog](CHANGELOG.md).
 
 ## Documentation
 

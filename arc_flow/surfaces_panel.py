@@ -86,7 +86,7 @@ def _fm(ctx):
 class AF_UL_srf(UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         row = layout.row(align=True)
-        row.label(text="", icon={'VISCOSITY': 'FORCE_VISCOSITY', 'EMISSION': 'PARTICLES', 'VOLUME': 'MESH_CUBE'}.get(item.kind, 'DOT'))
+        row.label(text="", icon={'VISCOSITY': 'FORCE_DRAG', 'EMISSION': 'PARTICLES', 'VOLUME': 'MESH_CUBE'}.get(item.kind, 'DOT'))
         row.prop(item, "name", text="", emboss=False)
         if item.kind != 'VOLUME':
             row.label(text="%d faces" % item.face_count if item.face_count else "no faces")
@@ -113,7 +113,7 @@ class AF_PT_srf(_Base, Panel):
             op = row.operator("arcflow.set_role", text=lab)
             op.role = r
         row = b.row(align=True)
-        op = row.operator("arcflow.srf_add", text="Viscosity surface", icon='FORCE_VISCOSITY'); op.kind = 'VISCOSITY'
+        op = row.operator("arcflow.srf_add", text="Viscosity surface", icon='FORCE_DRAG'); op.kind = 'VISCOSITY'
         op = row.operator("arcflow.srf_add", text="Emission surface", icon='PARTICLES'); op.kind = 'EMISSION'
         row.operator("arcflow.srf_add_volume", text="Fluid volume", icon='MESH_CUBE')
         r = l.row()
@@ -144,7 +144,7 @@ class AF_PT_srf(_Base, Panel):
             b.label(text="No faces stored yet: Edit faces, select, Apply", icon='INFO')
         c = l.box().column(align=True)
         if src.kind == 'VISCOSITY':
-            c.label(text="Viscous coupling", icon='FORCE_VISCOSITY')
+            c.label(text="Viscous coupling", icon='FORCE_DRAG')
             for k in ("coef", "noslip", "reach"):
                 c.prop(src, k)
             f = src.out_force
@@ -185,8 +185,8 @@ class AF_PT_srf(_Base, Panel):
 
 def prepare():
     """Clear DEFAULT_CLOSED on every Tessera panel except Examples (call before the panel modules register)."""
-    from . import fluidmode_panel, retopo_panel, systems_ops, tessera_nodes
-    for mod in (panels, fluidmode_panel, systems_ops, retopo_panel, tessera_nodes, __import__(__name__, fromlist=['x'])):
+    from . import fluidmode_panel, retopo_panel, systems_ops, tessera_nodes, shader_ops, thermal, windtunnel
+    for mod in (panels, fluidmode_panel, systems_ops, retopo_panel, tessera_nodes, shader_ops, thermal, windtunnel, __import__(__name__, fromlist=['x'])):
         for name in dir(mod):
             cls = getattr(mod, name)
             if isinstance(cls, type) and issubclass(cls, Panel) and getattr(cls, 'bl_category', "") == "Tessera" and cls.__name__ != "AF_PT_examples":

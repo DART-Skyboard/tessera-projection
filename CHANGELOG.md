@@ -1,6 +1,19 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
+Release candidate. Highlights since 0.4.1:
+- **Projection Remesh: Symmetrize.** Truly mirror-symmetric quad output (choose the trusted side and a strength), with a before/after asymmetry report; REDUCE mirrors exactly, also for planes off the origin.
+- **Fluid mode: new fluid behaviour.** Gas pressure with two-way coupling to liquids and walls, transmutation (water to steam, crystals growing from nuclei, burning, rust), a smooth merged liquid surface, soft volume gases (steam, smoke), viscosity and emission surfaces, Add Fluid Volume, and a generalised assignment model (any geometry as Container or Shape, spawn modes, primitives, several independent assets).
+- **Shader presets.** 22 Cycles + EEVEE materials (water, glass, oil, honey, lava, smoke, steam, flame ...) with exposed parameters and a Shader presets panel.
+- **Wind tunnel and thermal readback.** A wind tunnel builder (atmosphere presets for Earth, Mars, Venus, Titan, Moon), plain collision bodies, and surface temperature written to attributes and colour with an optional colour bar.
+- **Combustion.** Per-engine chain (channels and chambers form engines with their own throat, choked flow and thrust), exact reaction pairing, a Smooth surface render type for combustion liquids.
+- **Geometry Nodes.** Reusable Tessera node groups (source, particle cloud, surface, thermal, environment, spawn, viscosity, emission, fluid volume) and a Tessera entry in the Add menu.
+- **Collision field.** Triangle BVH and a sparse brick store make large collision meshes practical (see the numbers below); adaptive resolution.
+- **UI.** A collapsed Examples panel at the top of the Tessera tab, every other panel opens expanded; the word "demo" is gone from the interface.
+- **Release checks.** Every test runs on Blender 5.2.3 and 5.3.0 and from the built extension; a new test draws every panel headlessly (`tests/test_panels_draw.py`) and checks icons, properties, operators and that every Example loads.
+- Fixed: the Shader presets panel opened collapsed, unlike the rest of the Tessera tab.
+
+Details by area:
 - Fluid mode: gases now render as a soft volume by default (new gas fluids use Ray marching, never beads); transmuted steam / smoke / flame parcels are drawn through the volume path (Points to Volume, AF_Volume material); steam stills re-rendered (`docs/renders/transmute_steam_f85|f120|f150.png`, portrait, from saved states via `docs/render_from_state.py`).
 - Fluid mode: **transmutation** (`core/phase.py`). A JSON rule table (`"phase": [...]` next to `species` in the scene's Species rules) moves composition between species over time with animated blending (colour, density, heat capacity interpolate, no pop): GAS (liquid to steam / flame / smoke: the particle becomes a gas parcel at 50 % with hysteresis, rises and carries pressure), CRYSTAL (solid crystals grow shell by shell from nucleation points at the container walls, frozen in place, melt again above the window) and CHEM (first-order oxidation, rust tint, burning). Temperature / pressure / density windows, latent heat `q` with exact enthalpy bookkeeping (mass relabelled 1:1), presets `water_steam`, `wax`, `fuel_flame_smoke`, `salt_crystal`, `rust` (`phase.preset`, `phase.to_json`). Blender: transmuted gas is drawn as soft splats (`AFFMG_Phase`), crystals as flat-shaded faceted shards that grow with the solid fraction (`AFFMC_Crystals`), the liquid surface excludes both; examples `load_steam`, `load_crystal`; render scripts `docs/render_fluid.py steam|crystal`, `docs/render_from_state.py`. Tests: `test_phase` (mass, enthalpy, smooth fractions, crystal growth, melt, rust, JSON round trip).
 - Tests: surface-to-body link (`tests/test_surfaces_bpy.py`): a viscosity surface on a dynamic body is linked and the fluid's drag moves the Blender object.
