@@ -65,13 +65,18 @@ if demo == 'lamp':   # frame the whole lamp; the carrier liquid is a faint tint,
     bm.to_mesh(me); bm.free()
     liq = bpy.data.objects.new("TS_Liquid", me)
     sc.collection.objects.link(liq)
-    mt = bpy.data.materials.new("TS_LiquidMat"); mt.use_nodes = True
-    nt = mt.node_tree; nt.nodes.clear()
-    ob = nt.nodes.new('ShaderNodeOutputMaterial')
-    tr = nt.nodes.new('ShaderNodeBsdfTransparent')
-    pv = nt.nodes.new('ShaderNodeVolumeAbsorption')
-    pv.inputs['Color'].default_value = (0.55, 0.78, 1.0, 1.0); pv.inputs['Density'].default_value = float(os.environ.get("FLUID_RM", "9.0"))
-    nt.links.new(tr.outputs[0], ob.inputs['Surface']); nt.links.new(pv.outputs[0], ob.inputs['Volume'])
+    if os.environ.get('FLUID_SHADERS', '1') == '1':    # the Shader presets: refractive water with absorption inside the cone
+        from arc_flow import shader_presets as SP
+        mt = SP.build('WATER', name="TS_LiquidMat", reuse=False, Color=(0.55, 0.75, 1.0), Absorption_density=float(os.environ.get("FLUID_RM", "9.0")) * 0.6)
+    else:
+        mt = bpy.data.materials.new("TS_LiquidMat"); mt.use_nodes = True
+        nt = mt.node_tree; nt.nodes.clear()
+        ob = nt.nodes.new('ShaderNodeOutputMaterial')
+        tr = nt.nodes.new('ShaderNodeBsdfTransparent')
+        pv = nt.nodes.new('ShaderNodeVolumeAbsorption')
+        pv.inputs['Color'].default_value = (0.55, 0.78, 1.0, 1.0); pv.inputs['Density'].default_value = float(os.environ.get("FLUID_RM", "9.0"))
+        nt.links.new(tr.outputs[0], ob.inputs['Surface']); nt.links.new(pv.outputs[0], ob.inputs['Volume'])
+
     liq.data.materials.append(mt)
     fm.fluids[0].points_obj.hide_render = True
     for fl in list(fm.fluids)[1:]:                  # the wax: overlapping spheres read as one glossy blob
@@ -85,6 +90,13 @@ if demo == 'lamp':   # frame the whole lamp; the carrier liquid is a faint tint,
         lo.visible_camera = False   # and the lights themselves are not seen through the glass (the white bar)
         lo.rotation_euler = (lo.location * -1 + mathutils.Vector((0, 0, 0.17))).to_track_quat('-Z', 'Y').to_euler()
 FO.refresh_render(sc)
+if os.environ.get('FLUID_SETP'):      # debug: FLUID_SETP="Subsurface=0,Roughness=0.5" on every fluid's shader
+    from arc_flow import shader_presets as SP
+    kv = dict((a.split('=')[0], float(a.split('=')[1])) for a in os.environ['FLUID_SETP'].split(','))
+    for fl in fm.fluids:
+        for ob in (fl.points_obj,):
+            m = ob.modifiers['AF Render'].node_group.nodes['AF_Material'].material
+            print(m.name, SP.set_params(m, **kv))
 FO.apply_state(sc, FO.RT.start_snap)
 w = sc.world or bpy.data.worlds.new("TS_World")
 sc.world = w
@@ -93,7 +105,7 @@ bg = w.node_tree.nodes.get('Background')
 bg.inputs['Color'].default_value = (0.012, 0.014, 0.02, 1) if demo in ('lamp', 'mix') else (0.03, 0.04, 0.06, 1)
 bg.inputs['Strength'].default_value = 1.0
 sc.render.engine = 'CYCLES'
-if demo == 'mix':
+if demo in ('mix', 'lamp'):
     sc.view_settings.view_transform = 'Standard'
 sc.cycles.device = 'CPU'
 sc.cycles.use_denoising = os.environ.get('FLUID_DENOISE', '0') == '1'

@@ -10,6 +10,7 @@ from . import fluidmode_ops, fluidmode_panel, fluidmode_props  # Fluid mode (Tes
 from . import thermal, windtunnel  # thermal readback, wind tunnel builder
 from . import tessera_nodes  # reusable Tessera node groups, Add menu entry
 from . import surfaces_ops, surfaces_panel, surfaces_props  # surface sources, fluid volumes, Examples panel
+from . import shader_ops  # realistic shader presets (water, glass, lava, smoke ...)
 
 
 def register():
@@ -24,9 +25,11 @@ def register():
     surfaces_props.register(); surfaces_ops.register(); surfaces_panel.register()
     tessera_nodes.register()
     thermal.register(); windtunnel.register()
+    shader_ops.register()
 
 
 def unregister():
+    shader_ops.unregister()
     windtunnel.unregister(); thermal.unregister()
     tessera_nodes.unregister()
     surfaces_panel.unregister(); surfaces_ops.unregister(); surfaces_props.unregister()
