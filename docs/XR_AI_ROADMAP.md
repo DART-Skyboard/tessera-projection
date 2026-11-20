@@ -87,3 +87,22 @@ Chemist mixing beakers in AR (headset proportions, mixing and thermal overlay); 
 | 5 | XR Guided Examples, recorded guides, use-case packs, docs | 2 weeks |
 
 Proof exit: a spoken or typed request runs one undoable Tessera operation and returns a spoken result; no socket exists while the bridge is disabled.
+
+## 11. Sensors (camera, LiDAR, depth, other exposed hardware)
+
+Goal: one button per sensor class in the bridge; sensors **off by default**, data stays on the machine unless the user connects the XR link.
+
+**How each class is reached** (none of this is verified against the xr-ai docs unless stated; the hub itself carries camera frames and data channels, verified):
+- Headset camera passthrough, depth, planes, meshes: OpenXR extensions (passthrough, scene understanding/plane/mesh, depth; availability is runtime and vendor dependent, unverified), Meta and other vendor SDKs, ARKit/RealityKit on iPhone/iPad/visionOS (LiDAR depth, plane and mesh anchors; visionOS restricts raw camera access to enterprise entitlements, unverified), ARCore Depth on Android.
+- PC hardware: USB/UVC cameras (OpenCV/V4L2/AVFoundation), RealSense and Azure-Kinect-style depth cameras via their own SDKs, laser/LiDAR scanners over standard serial/Ethernet drivers, IMU, hand and eye tracking where the runtime exposes them.
+- Blender Python has only the `camera` and `microphone` extension permissions and no LiDAR, depth or OpenXR sensor API. Therefore the **sidecar (or a headset client) reads the hardware** and streams results into Blender through the loopback bridge; the extension itself never opens sensor drivers.
+
+**Formats**: point clouds and scene meshes as PLY/OBJ chunks or float32 numpy buffers (`.npy`) in the cache directory with a JSON header (units, frame, timestamp, pose); depth frames as 16-bit PNG or `.npy`; camera frames as JPEG/PNG. Large payloads by path and hash, small ones inline.
+
+**Sensors panel**: device list with a Detect button (the sidecar reports what it found); per sensor a status line (idle, streaming, error, frames per second), an Enable toggle and a one-button start/stop (Camera, Depth/LiDAR, Hand/Eye, IMU, Other); an OS permission prompt is triggered by the sidecar/client, with a clear message when denied; a privacy notice naming what is captured, where it goes (this machine only, or the connected XR link) and a "Stop all" button; no recording unless the user presses Record.
+
+**Mapping to Tessera**: scene meshes become collision bodies; plane detection sets the floor/ground and the Environment ground; depth gives object proportions and the enclosure for Environment/Systems detection; LiDAR point clouds are cleaned by Projection Remesh (decimate, then quad layout) before use; camera and depth frames also feed the XR AI vision tools through the sidecar.
+
+**Limits**: consumer LiDAR is low-resolution (cm-level noise, short range, holes on glass and shiny liquids), meshes arrive in chunks at about 1-10 Hz, round trip over the bridge adds tens to hundreds of milliseconds, and remeshing a dense cloud runs in seconds on the CPU. Treat sensor geometry as approximate; scale and registration come from the device.
+
+**Minimum viable step**: a Sensors panel with one Detect button and one UVC/USB camera toggle in the sidecar that saves a still into the cache and shows it as an image in Blender (about 3 days); next, import a single PLY point cloud from a file or depth camera and run Projection Remesh (about 1 week).
