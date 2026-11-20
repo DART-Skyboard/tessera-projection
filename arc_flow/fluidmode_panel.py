@@ -19,7 +19,10 @@ def _patch_polls():
     """Hide the combustion panels in Fluid mode (the Environment card stays): wrap each panel's poll."""
     for name in dir(panels):
         cls = getattr(panels, name)
-        if not (isinstance(cls, type) and issubclass(cls, Panel)) or cls.__name__ in _SHARED or getattr(cls, '_fm_patched', False):
+        # only this add-on's own combustion panels: dir(panels) also holds bpy.types.Panel and _Base, and patching those hid every panel
+        # without its own poll (Examples, Shader presets, Components, Projection Remesh ...) in Fluid mode
+        if not (isinstance(cls, type) and issubclass(cls, Panel) and cls.__name__.startswith('AF_PT_') and cls.__module__ == panels.__name__) \
+                or cls.__name__ in _SHARED or getattr(cls, '_fm_patched', False):
             continue
         orig = cls.__dict__.get('poll')
         orig_fn = orig.__func__ if isinstance(orig, classmethod) else None

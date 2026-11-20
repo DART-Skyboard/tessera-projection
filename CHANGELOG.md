@@ -11,6 +11,7 @@ Release candidate. Highlights since 0.4.1:
 - **Collision field.** Triangle BVH and a sparse brick store make large collision meshes practical (see the numbers below); adaptive resolution.
 - **UI.** A collapsed Examples panel at the top of the Tessera tab, every other panel opens expanded; the word "demo" is gone from the interface.
 - **Release checks.** Every test runs on Blender 5.2.3 and 5.3.0 and from the built extension; a new test draws every panel headlessly (`tests/test_panels_draw.py`) and checks icons, properties, operators and that every Example loads.
+- Fixed: in Fluid mode the Examples, Shader presets, Projection Remesh and Tessera node group panels disappeared (the combustion panel hider also caught the base Panel class); they are now visible in both modes. New test `tests/test_panel_polls.py`.
 - Fixed: the Shader presets panel opened collapsed, unlike the rest of the Tessera tab.
 
 Details by area:
