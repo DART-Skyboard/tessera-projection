@@ -48,25 +48,52 @@ def reset(w):
         c['T'] = 300.0
 
 
-def _geometry(w):
-    """Chambers (control volumes), throat and exit radii from the part openings."""
-    w.chambers = []
-    w.nozzle = None
-    ch = [i for i in w.active if w.parts[i].role == 'CHAMBER']
-    rad = []
+LEDGER_ROLES = ('CHAMBER', 'TRANSPORT')       # a combustion chamber is just another channel by geometry: every channel behaves like a chamber
+
+
+def _groups(w, parts):
+    """Connected groups of channel / chamber parts (an engine = its lines + chamber + nozzle): union over the openings that open into a neighbouring channel."""
+    par = {i: i for i in parts}
+
+    def find(a):
+        while par[a] != a:
+            par[a] = par[par[a]]
+            a = par[a]
+        return a
     for o in w.openings:
-        if w.parts[o['part']].role == 'CHAMBER':
-            rad.append(o)
-    for i in ch:
+        if o['part'] in par and o.get('partner', -1) in par:
+            par[find(o['part'])] = find(o['partner'])
+    roots = {}
+    return [roots.setdefault(find(i), len(roots)) for i in parts], len(roots)
+
+
+def _geometry(w):
+    """Chambers (control volumes), one nozzle (throat, exit) per connected group of channel parts, from the part openings."""
+    w.chambers = []
+    w.nozzles = []
+    w.nozzle = None
+    led = [i for i in w.active if w.parts[i].role in LEDGER_ROLES]
+    gid, ng = _groups(w, led)
+    grp_of = dict(zip(led, gid))
+    for g in range(ng):
+        members = [i for i in led if grp_of[i] == g]
+        rad = [o for o in w.openings if o['part'] in members and w.parts[o['part']].role == 'CHAMBER']
+        exits = [o for o in rad if o['state'] == 'OPEN']
+        if not exits:                                   # no nozzle part: the channel's own open ends are the exit (no expansion, throat = exit)
+            rad = [o for o in w.openings if o['part'] in members]
+            exits = [o for o in rad if o['state'] == 'OPEN']
+        nz = None
+        if rad and exits:
+            throat = min(rad, key=lambda o: o['radius'])
+            ex = max(exits, key=lambda o: o['radius'])
+            phi_t = float(w._gs(w.net['dist'], throat['centre'][None])[0]) if w.net is not None else 0.0
+            nz = dict(r_t=throat['radius'], r_e=ex['radius'], phi_t=phi_t, centre=ex['centre'], normal=np.asarray(ex['normal'], float), group=g)
+        w.nozzles.append(nz)
+    for i in led:
         q = w.parts[i]
         V = max(q.field.cavity_volume(), 1e-9) * w.scale[i] ** 3
-        w.chambers.append(dict(part=i, V=V, m=0.0, budget=0.0, born=0.0, T=300.0, P=w.env.pressure))
-    exits = [o for o in rad if o['state'] == 'OPEN']
-    if rad and exits:
-        throat = min(rad, key=lambda o: o['radius'])
-        ex = max(exits, key=lambda o: o['radius'])
-        phi_t = float(w._gs(w.net['dist'], throat['centre'][None])[0]) if w.net is not None else 0.0
-        w.nozzle = dict(r_t=throat['radius'], r_e=ex['radius'], phi_t=phi_t, centre=ex['centre'], normal=np.asarray(ex['normal'], float))
+        w.chambers.append(dict(part=i, V=V, m=0.0, budget=0.0, born=0.0, T=300.0, P=w.env.pressure, group=grp_of[i]))
+    w.nozzle = next((n for n in w.nozzles if n is not None), None)
     w.dom_c = np.asarray(w._world_bounds()[0] + w._world_bounds()[1], float) * 0.5 if w.active else np.zeros(3)
     ids = {fl['spec']['role']: n for n, fl in enumerate(w.fluids) if fl['spec']['role'] in ('FUEL', 'OXIDIZER')}
     w.fuel_i, w.ox_i = ids.get('FUEL', -1), ids.get('OXIDIZER', -1)
@@ -78,12 +105,19 @@ def _geometry(w):
     cv = w.exh_cp - w.exh_R
     w.exh_gamma = float(w.exh_cp / cv) if cv > 1 else 1.2
     w.exh_gamma = min(max(w.exh_gamma, 1.15), 1.4)
+    w.engines = [dict(P_c=w.env.pressure, T=300.0, mdot_in=0.0, mdot_out=0.0, choked=False, M_exit=0.0, v_exit=0.0, v_throat=0.0, vscale=1.0, p_exit=0.0,
+                      thrust=0.0, thrust_vec=np.zeros(3), isp=0.0, nozzle=nz) for nz in w.nozzles]
 
 
-def _noz_state(w, T0):
-    """Physical choked / expanded state of the nozzle at the current chamber pressure and temperature."""
-    p = w.bstats['P_c']
-    nz = w.nozzle
+def _nz(w, c):
+    """Nozzle that drains chamber ledger c."""
+    return w.nozzles[c['group']] if w.nozzles and 0 <= c['group'] < len(w.nozzles) else None
+
+
+def _noz_state(w, T0, nz=None, p=None):
+    """Physical choked / expanded state of a nozzle at a chamber pressure and temperature."""
+    nz = nz or w.nozzle
+    p = w.bstats['P_c'] if p is None else p
     if nz is None:
         return None
     g, R = w.exh_gamma, w.exh_R
@@ -92,9 +126,9 @@ def _noz_state(w, T0):
     return dict(ar=ar, exit=ex, vt=FL.throat_velocity(T0, g, R))
 
 
-def mdot_out(w, P, T):
+def mdot_out(w, P, T, nz=None):
     """Mass flow through the throat for chamber pressure P (Pa), temperature T: choked above the critical pressure ratio, subsonic below."""
-    nz = w.nozzle
+    nz = nz or w.nozzle
     if nz is None or P <= w.env.pressure:
         return 0.0
     g, R = w.exh_gamma, w.exh_R
@@ -173,14 +207,15 @@ def react(w, dt):
 
 
 def chamber_update(w, dt):
-    """Integrate the chamber gas ledgers over dt: p_c = m R T / V, drained at the throat mass flow."""
+    """Integrate the chamber gas ledgers over dt: p_c = m R T / V, drained at the throat mass flow of the ledger's nozzle (one per engine / channel group)."""
     pe = w.env.pressure
     R = w.exh_R
-    P_max = 0.0
-    din = 0.0
-    dout = 0.0
+    ng = max(len(w.nozzles), 1)
+    G = [dict(P_c=pe, T=300.0, mdot_in=0.0, mdot_out=0.0, m=0.0) for _ in range(ng)]
     for c in w.chambers:
-        din += c.pop('born', 0.0) / max(dt, 1e-9)
+        g = G[c['group']]
+        nz = _nz(w, c)
+        g['mdot_in'] += c.pop('born', 0.0) / max(dt, 1e-9)
         c['born'] = 0.0
         T = max(c['T'], 300.0)
         t = 0.0
@@ -188,7 +223,7 @@ def chamber_update(w, dt):
         n = 0
         while t < dt - 1e-12 and n < 400:
             P = pe + c['m'] * R * T / c['V']
-            md = mdot_out(w, P, T)
+            md = mdot_out(w, P, T, nz)
             tau = c['m'] / max(md, 1e-9) if md > 0 else dt
             h = min(dt - t, max(0.2 * tau, dt / 400.0))
             dm = min(md * h, c['m'])
@@ -198,27 +233,60 @@ def chamber_update(w, dt):
             n += 1
         c['budget'] = min(c['budget'] + out_tot, 2.0 * out_tot + 4.0 * max(float(w.mass.max()), 1e-6))
         c['P'] = pe + c['m'] * R * T / c['V']
-        P_max = max(P_max, c['P'])
-        dout += out_tot / max(dt, 1e-9)
-    w.bstats['P_c'] = P_max if w.chambers else pe
-    w.bstats['mdot_in'] = din
-    w.bstats['mdot_out'] = dout
+        if c['P'] > g['P_c']:
+            g['P_c'], g['T'] = c['P'], T
+        g['m'] += c['m']
+        g['mdot_out'] += out_tot / max(dt, 1e-9)
+    eng = []
+    for k, g in enumerate(G):
+        nz = w.nozzles[k] if k < len(w.nozzles) else None
+        e = dict(P_c=g['P_c'], T=g['T'], mdot_in=g['mdot_in'], mdot_out=g['mdot_out'], choked=False, M_exit=0.0, v_exit=0.0, v_throat=0.0, vscale=1.0, p_exit=0.0,
+                 thrust=0.0, thrust_vec=np.zeros(3), isp=0.0, nozzle=nz)
+        if nz is not None:
+            st = _noz_state(w, max(g['T'], 300.0), nz, g['P_c'])
+            e['choked'] = bool(pe / max(g['P_c'], 1.0) <= FL.critical_pressure_ratio(w.exh_gamma))
+            e['v_throat'] = st['vt']
+            e['p_exit'] = st['exit']['p']
+            if e['choked']:
+                e['M_exit'], e['v_exit'] = st['exit']['M'], st['exit']['v']
+            e['vscale'] = min(1.0, w.p.vmax / max(max(st['exit']['v'], st['vt']), 1e-9))
+            # thrust of the nozzle on the engine (reaction to the exhaust): F = mdot v_e + (p_e - p_amb) A_e, pointing opposite to the exit normal
+            if e['choked']:
+                e['thrust'] = e['mdot_out'] * st['exit']['v'] + (st['exit']['p'] - pe) * math.pi * nz['r_e'] ** 2
+            e['thrust_vec'] = -nz['normal'] * e['thrust']
+            e['isp'] = e['thrust'] / max(e['mdot_out'] * 9.80665, 1e-9) if e['choked'] else 0.0
+        eng.append(e)
+    w.engines = eng
+    b = w.bstats
+    top = max(eng, key=lambda e: e['P_c'])
+    b['P_c'] = top['P_c'] if w.chambers else pe
+    b['mdot_in'] = sum(e['mdot_in'] for e in eng)
+    b['mdot_out'] = sum(e['mdot_out'] for e in eng)
     if w.nozzle is not None and w.chambers:
-        T0 = max(w.chambers[0]['T'], 300.0)
-        st = _noz_state(w, T0)
-        w.bstats['choked'] = bool(pe / max(w.bstats['P_c'], 1.0) <= FL.critical_pressure_ratio(w.exh_gamma))
-        w.bstats['v_throat'] = st['vt']
-        w.bstats['M_exit'] = st['exit']['M'] if w.bstats['choked'] else 0.0
-        w.bstats['v_exit'] = st['exit']['v'] if w.bstats['choked'] else 0.0
-        w.bstats['p_exit'] = st['exit']['p']
-        v_phys = max(st['exit']['v'], st['vt'])
-        w.bstats['vscale'] = min(1.0, w.p.vmax / max(v_phys, 1e-9))
-        # thrust of the nozzle on the engine (reaction to the exhaust): F = mdot v_e + (p_e - p_amb) A_e, pointing opposite to the exit normal
-        Ae = math.pi * nz_r_e(w) ** 2
-        F = (w.bstats['mdot_out'] * st['exit']['v'] + (st['exit']['p'] - pe) * Ae) if w.bstats['choked'] else 0.0
-        w.bstats['thrust'] = F
-        w.bstats['thrust_vec'] = -w.nozzle['normal'] * F
-        w.bstats['isp'] = F / max(w.bstats['mdot_out'] * 9.80665, 1e-9) if w.bstats['choked'] else 0.0
+        act = [e for e in eng if e['nozzle'] is not None]
+        b['choked'] = any(e['choked'] for e in act)
+        b['v_throat'] = top['v_throat'] if top['nozzle'] is not None else max(e['v_throat'] for e in act)
+        b['M_exit'] = max(e['M_exit'] for e in act)
+        b['v_exit'] = max(e['v_exit'] for e in act)
+        b['p_exit'] = top['p_exit'] if top['nozzle'] is not None else act[0]['p_exit']
+        b['vscale'] = min(e['vscale'] for e in act)
+        b['thrust'] = sum(e['thrust'] for e in act)
+        b['thrust_vec'] = sum((e['thrust_vec'] for e in act), np.zeros(3))
+        b['isp'] = b['thrust'] / max(b['mdot_out'] * 9.80665, 1e-9) if b['choked'] else 0.0
+
+
+def particle_group(w, idx):
+    """Engine group of gas particles: the group of the chamber they were born in, else the group of the nearest nozzle exit."""
+    idx = np.asarray(idx)
+    h = w.home[idx]
+    lg = np.array([c['group'] for c in w.chambers], np.int32) if w.chambers else np.zeros(1, np.int32)
+    out = np.where(h >= 0, lg[np.clip(h, 0, len(lg) - 1)], -1)
+    miss = out < 0
+    if miss.any():
+        cen = np.array([n['centre'] if n is not None else np.full(3, 1e9) for n in w.nozzles])
+        d = np.linalg.norm(w.pos[idx[miss]][:, None, :] - cen[None], axis=2)
+        out[miss] = np.argmin(d, axis=1)
+    return out
 
 
 def nz_r_e(w):
@@ -237,7 +305,7 @@ def vent_gate(w, idx, h):
     order = np.argsort(w.age[idx])[::-1]
     for k in order:
         i = idx[k]
-        c = w.chambers[w.home[i]] if 0 <= w.home[i] < len(w.chambers) else w.chambers[0]
+        c = w.chambers[w.home[i]] if 0 <= w.home[i] < len(w.chambers) else max(w.chambers, key=lambda q: q['budget'])
         if c['budget'] >= w.mass[i]:
             c['budget'] -= w.mass[i]
             allow[k] = True
@@ -245,18 +313,26 @@ def vent_gate(w, idx, h):
     return allow
 
 
-def gas_speed_cap(w, phi, rad_loc):
-    """Local gas speed along the nozzle: isentropic area-Mach (sonic at the throat, supersonic downstream), scaled to the world's speed limit."""
-    nz = w.nozzle
-    s = w.bstats['vscale']
+def gas_speed_cap(w, phi, rad_loc, grp=None):
+    """Local gas speed along the nozzle: isentropic area-Mach (sonic at the throat, supersonic downstream), scaled to the world's speed limit.
+    grp: engine group of each particle (per-engine throat, stagnation temperature and speed scale)."""
     g, R = w.exh_gamma, w.exh_R
-    T0 = max(w.chambers[0]['T'], 300.0) if w.chambers else 3000.0
-    ar = np.clip((rad_loc / max(nz['r_t'], 1e-9)) ** 2, 1.0, 400.0)
-    Ms = np.interp(ar, _AR_TABLE(g)[0], _AR_TABLE(g)[1])
-    Mb = np.interp(ar, _AR_TABLE(g)[0], _AR_TABLE(g)[2])
-    M = np.where(phi < nz['phi_t'], Ms, Mb)
+    n = len(w.engines) if getattr(w, 'engines', None) else 0
+    if grp is None or n == 0:
+        grp = np.zeros(len(phi), np.int32)
+    nzs = [e['nozzle'] or w.nozzle for e in w.engines] if n else [w.nozzle]
+    r_t = np.array([z['r_t'] for z in nzs])[grp]
+    phi_t = np.array([z['phi_t'] for z in nzs])[grp]
+    sc = np.array([e['vscale'] for e in w.engines])[grp] if n else np.full(len(phi), w.bstats['vscale'])
+    T0 = np.array([max(e['T'], 300.0) for e in w.engines])[grp] if n else np.full(len(phi), 3000.0)
+    T0 = np.where(T0 <= 300.0, max((c['T'] for c in w.chambers), default=3000.0), T0)
+    ar = np.clip((rad_loc / np.maximum(r_t, 1e-9)) ** 2, 1.0, 400.0)
+    tab = _AR_TABLE(g)
+    Ms = np.interp(ar, tab[0], tab[1])
+    Mb = np.interp(ar, tab[0], tab[2])
+    M = np.where(phi < phi_t, Ms, Mb)
     Tl = T0 / (1.0 + 0.5 * (g - 1.0) * M * M)
-    return M * np.sqrt(g * R * Tl) * s
+    return M * np.sqrt(g * R * Tl) * sc
 
 
 _AR_CACHE = {}
@@ -293,7 +369,12 @@ def ground_jet(w, fre, x, v, below, h):
     if not sel.any():
         return
     vz = v[sel, 2]
-    radial = x[sel] - np.array([w.nozzle['centre'][0], w.nozzle['centre'][1], x[sel, 2].mean()]) if w.nozzle is not None else x[sel] * 0
+    if w.nozzles and any(n is not None for n in w.nozzles):
+        cen = np.array([n['centre'] if n is not None else np.full(3, 1e9) for n in w.nozzles])
+        k = np.argmin(np.linalg.norm(x[sel][:, None, :2] - cen[None, :, :2], axis=2), axis=1)    # nearest nozzle axis: each engine has its own wall jet
+        radial = x[sel] - np.column_stack([cen[k, 0], cen[k, 1], x[sel, 2]])
+    else:
+        radial = x[sel] * 0
     radial[:, 2] = 0
     rn = np.linalg.norm(radial, axis=1, keepdims=True)
     u = radial / np.maximum(rn, 1e-6)

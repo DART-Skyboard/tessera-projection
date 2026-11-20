@@ -184,7 +184,9 @@ class AF_PT_fluids(_Base, Panel):
                 c.label(text="Color blend is driven by the AF_ColorBlend shape key", icon='SHAPEKEY_DATA')
             else:
                 c = b.box()
-                c.label(text="Gaussian splat", icon='LIGHTPROBE_SPHERE')
+                if f.render_mode == 'SURFACE':
+                    c.label(text="Liquid: smooth merged surface (shader preset)", icon='MOD_FLUIDSIM')
+                c.label(text="Gaussian splat" if f.render_mode == 'SPLAT' else "Flame gas and smoke: Gaussian splat", icon='LIGHTPROBE_SPHERE')
                 for k in ("gs_resolution", "gs_density", "gs_scale", "gs_blend", "gs_object", "gs_material"):
                     c.prop(f, k)
         if af.fluids:

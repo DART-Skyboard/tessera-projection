@@ -161,7 +161,8 @@ class AF_FluidItem(PropertyGroup):
     # render
     render_mode: EnumProperty(name="Render type", items=[('POINTS', "Points", "Instance an object on every point"),
                                                          ('RAYMARCH', "Ray marching", "Volumetric density rendered by the render engine"),
-                                                         ('SPLAT', "Gaussian splat", "Soft gaussian blobs")], default='POINTS')
+                                                         ('SPLAT', "Gaussian splat", "Soft gaussian blobs"),
+                                                         ('SURFACE', "Smooth surface", "Liquid propellant as one smooth merged surface (touching fuel and oxidiser join with a neck, colour blends across the seam); flame gas and smoke are drawn as Gaussian splats")], default='POINTS')
     # points card
     pt_object: PointerProperty(name="Instance object", type=bpy.types.Object, description="Object instanced on every point (empty = icosphere)")
     pt_collection: PointerProperty(name="Instance collection", type=bpy.types.Collection)

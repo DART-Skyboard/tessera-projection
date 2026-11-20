@@ -607,7 +607,7 @@ class World:
                 rho_g = np.maximum(self.bstats['P_c'] * self.exh_M / (F.R_GAS * Tg), 0.05)
                 acc[gasm] = dirv[gasm] * (dpg / (rho_g * (phi[gasm] + net['L0'])))[:, None] * (reach & (gn[:, 0] > 1e-6))[gasm][:, None]
                 vcap = np.array(vcap, float)
-                vcap[gasm] = np.maximum(BURN.gas_speed_cap(self, phi[gasm], np.maximum(rad_loc[gasm], self.nozzle['r_t'])), 1.0)
+                vcap[gasm] = np.maximum(BURN.gas_speed_cap(self, phi[gasm], np.maximum(rad_loc[gasm], self.nozzle['r_t']), BURN.particle_group(self, con[gasm])), 1.0)
             visc = np.array([self.fluids[f]['spec']['visc'] for f in range(len(self.fluids))])[self.pfluid[con]]
             if p.chemistry:
                 visc = np.where(gasm, 0.0, visc)
@@ -670,7 +670,9 @@ class World:
                     if p.chemistry and self.nozzle is not None:
                         gg = self.kind[gs] > 0
                         if gg.any():
-                            vj = np.where(gg, max(self.bstats['v_exit'], self.bstats['v_throat'] * 0.4) * self.bstats['vscale'], vj)
+                            eg = self.engines[int(BURN.particle_group(self, gs[gg][:1])[0])] if getattr(self, 'engines', None) else None
+                            vg = (max(eg['v_exit'], eg['v_throat'] * 0.4) * eg['vscale']) if eg else max(self.bstats['v_exit'], self.bstats['v_throat'] * 0.4) * self.bstats['vscale']
+                            vj = np.where(gg, vg, vj)
                     self.vel[gs] = jd * vj[:, None]
                     self.state[gs] = 2; self.age[gs] = 0; self.pin[gs] = -1
                     if p.chemistry:

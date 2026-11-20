@@ -402,7 +402,7 @@ def bind_objects(scene):
             else:
                 gn.set_modifier_inputs(mr, {"Splat Object": fl.gs_object, "Use Object": fl.gs_object is not None, "Resolution": fl.gs_resolution,
                                             "Density": fl.gs_density, "Scale": fl.gs_scale})
-            on = fl.render_mode == {'Points': 'POINTS', 'Volume': 'RAYMARCH', 'Splat': 'SPLAT'}[label]
+            on = fl.render_mode == {'Points': 'POINTS', 'Volume': 'RAYMARCH', 'Splat': 'SPLAT'}[label] or (label == 'Splat' and fl.render_mode == 'SURFACE')
             o.hide_viewport = not on
             o.hide_render = not on
         # shape key (on a separate 1-vertex control object, so it never overrides the particle positions)
@@ -514,7 +514,11 @@ def apply_state(scene, world, snap=None):
         if len(me.vertices) != len(idx):
             continue
         me.vertices.foreach_set('co', pos[idx].astype(np.float32).ravel())
-        me.attributes['af_radius'].data.foreach_set('value', r[idx])
+        ri = r[idx]
+        if fl.render_mode == 'SURFACE':          # liquid particles are drawn by the merged surface mesh; the splat object keeps only flame gas / smoke
+            from . import combustion_surface as CS
+            ri = ri * CS.gas_mask(world, src, fi, idx)
+        me.attributes['af_radius'].data.foreach_set('value', ri)
         me.attributes['af_tn'].data.foreach_set('value', tn[idx])
         me.attributes['af_speed'].data.foreach_set('value', speed[idx])
         me.attributes['af_fmix'].data.foreach_set('value', fmix[idx])
@@ -525,6 +529,8 @@ def apply_state(scene, world, snap=None):
         for ob in (fl.points_obj, fl.volume_obj, fl.splat_obj):
             if ob is not None:
                 ob['af_ignition'] = ign
+    from . import combustion_surface as CS
+    CS.update(scene, world, src)
     ht, st, pr, te = src['part_heat'], src['part_stress'], src['part_press'], src['part_T']
     for i, o in enumerate(RT.parts):
         if i >= len(ht):
