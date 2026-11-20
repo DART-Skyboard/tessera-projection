@@ -79,11 +79,24 @@ if demo == 'lamp':   # frame the whole lamp; the carrier liquid is a faint tint,
 
     liq.data.materials.append(mt)
     fm.fluids[0].points_obj.hide_render = True
+    # the bulb glow and its point light sit inside the wax at the bottom and blow the base out to white: tone them down
+    bulb = bpy.data.objects.get("TS_LampBulb")
+    if bulb is not None:
+        bulb.hide_render = True
+    pl = bpy.data.objects.get("TS_LampLight")
+    if pl is not None:
+        pl.data.energy = float(os.environ.get('FLUID_BULB', '6.0'))
+        pl.data.use_shadow = False
+    base = bpy.data.objects.get("TS_LampBase")
+    if base is not None and not base.data.materials:
+        bm_ = bpy.data.materials.new("TS_BaseMat"); bm_.use_nodes = True
+        bb = bm_.node_tree.nodes['Principled BSDF']; bb.inputs['Base Color'].default_value = (0.12, 0.12, 0.14, 1); bb.inputs['Roughness'].default_value = 0.35; bb.inputs['Metallic'].default_value = 0.8
+        base.data.materials.append(bm_)
     for fl in list(fm.fluids)[1:]:                  # the wax: overlapping spheres read as one glossy blob
-        fl.particle_scale = 2.1
+        fl.particle_scale = float(os.environ.get('FLUID_WAXPS', '2.8'))
         if os.environ.get('FLUID_WAXSURF', '0') == '1':
             fl.render_mode = 'SURFACE'
-    for nm, loc, en, sz in (("TS_Key", (0.5, -0.8, 0.45), 120.0, 0.4), ("TS_Rim", (-0.5, 0.5, 0.35), 60.0, 0.3)):
+    for nm, loc, en, sz in (("TS_Key", (0.5, -0.8, 0.45), 90.0, 0.4), ("TS_Rim", (-0.5, 0.5, 0.35), 120.0, 0.3), ("TS_Back", (0.0, 0.9, 0.2), 150.0, 0.5)):
         ld = bpy.data.lights.new(nm, 'AREA'); ld.energy = en; ld.size = sz
         lo = bpy.data.objects.new(nm, ld); sc.collection.objects.link(lo); lo.location = loc
         lo.visible_glossy = False   # no mirror images of the area lights in the glass

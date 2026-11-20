@@ -2,8 +2,9 @@
 
 Liquid propellant particles (not yet reacted: kind 0) of every fluid in Smooth surface mode go through one density field (core/fluidsurface.SurfaceBuilder, the same
 builder as Fluid mode): fuel and oxidiser that touch join with a neck, colours blend across the seam, the mesh changes continuously from frame to frame.  The mesh
-`AFCS_Liquids` carries the colour attribute `fm_color` and a shader preset material (Water by default; Auto picks Oil for fuels).  Flame gas and smoke of the same
-fluids stay particles (Gaussian splat)."""
+`AFCS_Liquids` carries the colour attribute `fm_color` and a shader preset material (Water by default; Auto picks Oil for fuels).  Flame gas and smoke are drawn as soft
+volumes (Points to Volume + shader preset volumes Flame / Smoke / Soot, objects `AFCP_core|flame|smoke|soot`); `scene.arc_flow["plume_volume"] = 0` goes back to
+Gaussian splats."""
 import bpy
 import numpy as np
 
@@ -21,10 +22,19 @@ def _is_gas(world, fi):
         return False
 
 
+def plume_on(af):
+    try:
+        return bool(af.get('plume_volume', 1))
+    except Exception:
+        return True
+
+
 def gas_mask(world, src, fi, idx):
     """1.0 for particles the splat object draws (flame gas, smoke, gas fluids), 0.0 for liquid propellant drawn by the surface mesh."""
     if _is_gas(world, fi):
         return np.ones(len(idx), np.float32)
+    if 'kind' in src and plume_on(bpy.context.scene.arc_flow):
+        return (src['state'][idx] == 2).astype(np.float32) * (src['kind'][idx] == 0)     # flame / smoke go to the volume objects
     if 'kind' in src:
         return ((src['kind'][idx] > 0) | (src['state'][idx] == 2)).astype(np.float32)     # free-flying liquid stays particles
     return np.zeros(len(idx), np.float32)
@@ -67,7 +77,7 @@ def update(scene, world, src):
             cs.append(np.tile(np.asarray(fl.color, float), (len(idx), 1)))
     if xs:
         X = np.vstack(xs)
-        rl = world.rad[np.concatenate([RT0.RT.fl_slots[fi][liquid[RT0.RT.fl_slots[fi]]] for fi, _ in fls])]
+        rl = src['rad'][np.concatenate([RT0.RT.fl_slots[fi][liquid[RT0.RT.fl_slots[fi]]] for fi, _ in fls])]
         dx = float(np.median(rl)) / (world.p.radius_scale * 1.6) * 1.612       # spacing of the particles at their own volume
     else:
         dx = 0.1
@@ -98,3 +108,105 @@ def update(scene, world, src):
     me.materials.clear()
     me.materials.append(_material(af, fls, world))
     me.update()
+
+
+# ----------------------------------------------------------------------------- plume volumes
+# class: (shader preset, radius scale, voxel factor, material overrides)
+_PLUME = {
+    'core': ('FLAME', 0.9, dict(Density=0.04, Temperature=2900.0, Blackbody_intensity=5.0)),
+    'flame': ('FLAME', 1.5, dict(Density=0.03, Temperature=1500.0, Blackbody_intensity=0.9)),
+    'smoke': ('SMOKE', 1.7, dict(Density=0.35, Blackbody_intensity=0.0)),
+    'soot': ('SOOT', 1.6, dict(Density=0.7)),
+}
+
+
+def _gate_emission(mat):
+    """Principled Volume emission is not scaled by density, so it would fill the whole grid bounding box: multiply it by the density grid."""
+    nt = mat.node_tree
+    pv = next((n for n in nt.nodes if n.bl_idname == 'ShaderNodeVolumePrincipled'), None)
+    if pv is None:
+        return
+    at = nt.nodes.new('ShaderNodeAttribute')
+    at.attribute_name = 'density'
+    mu = nt.nodes.new('ShaderNodeMath')
+    mu.operation = 'MULTIPLY'
+    for sk in ('Blackbody Intensity', 'Emission Strength'):
+        s_ = pv.inputs[sk]
+        if s_.is_linked:
+            src = s_.links[0].from_socket
+            nt.links.new(src, mu.inputs[0])
+        else:
+            mu.inputs[0].default_value = s_.default_value
+        nt.links.new(at.outputs['Fac'], mu.inputs[1])
+        nt.links.new(mu.outputs[0], s_)
+        break
+
+
+def _plume_obj(scene, cls, n):
+    from . import gn, shading
+    from . import shader_presets as SP
+    name = "AFCP_" + cls
+    o = bpy.data.objects.get(name)
+    me = bpy.data.meshes.get(name)
+    if me is None or len(me.vertices) != n:
+        old = me
+        me = bpy.data.meshes.new(name + ".tmp")
+        me.vertices.add(n)
+        if 'af_radius' not in me.attributes:
+            me.attributes.new('af_radius', 'FLOAT', 'POINT')
+        if o is not None:
+            o.data = me
+        if old is not None:
+            bpy.data.meshes.remove(old)
+        me.name = name
+    if o is None:
+        o = bpy.data.objects.new(name, me)
+        RT0._collection(scene).objects.link(o)
+        mr = o.modifiers.new("AF Render", 'NODES')
+        mr.node_group = gn.render_group('RayMarch', "AFCP_" + cls)
+        key, rs, over = _PLUME[cls]
+        mat = SP.build(key, name="TesseraPlume [%s]" % cls, grid=True, reuse=False)
+        SP.set_params(mat, **over)
+        _gate_emission(mat)
+        gn.set_group_material(mr.node_group, mat)
+        o['af_rs'] = rs
+    return o, me
+
+
+def update_plume(scene, world, src):
+    af = scene.arc_flow
+    on = plume_on(af) and 'kind' in src
+    fi_on = [fi for fi, fl in enumerate(af.fluids) if fl.render_mode == 'SURFACE']
+    from .core import flame as FLM
+    kind, soot, temp = src.get('kind'), src.get('soot'), src['temp']
+    groups = {}
+    if on and fi_on:
+        idx = np.concatenate([RT0.RT.fl_slots[fi] for fi in fi_on if fi < len(RT0.RT.fl_slots)] or [np.zeros(0, int)]).astype(int)
+        idx = idx[(kind[idx] > 0) & (src['state'][idx] == 2)]
+        fade = src['fade'][idx]
+        tnf = np.clip((temp[idx] - FLM.FLAME['TLO']) / (FLM.FLAME['THI'] - FLM.FLAME['TLO']), 0.0, 1.0)
+        k = kind[idx]
+        sm = src['smk'][idx]
+        groups['core'] = (idx[(k == 1) & (tnf > 0.62)], fade[(k == 1) & (tnf > 0.62)])
+        groups['flame'] = (idx[(k == 1) & (tnf <= 0.62)], fade[(k == 1) & (tnf <= 0.62)])
+        sel = (k == 2) & (soot[idx] < 0.45)
+        groups['smoke'] = (idx[sel], fade[sel] * np.clip(sm[sel] * 2.5, 0.3, 1.0))
+        sel = (k == 2) & (soot[idx] >= 0.45)
+        groups['soot'] = (idx[sel], fade[sel] * np.clip(sm[sel] * 2.5, 0.3, 1.0))
+    for cls in _PLUME:
+        ii, fd = groups.get(cls, (np.zeros(0, int), np.zeros(0)))
+        o = bpy.data.objects.get("AFCP_" + cls)
+        if len(ii) == 0:
+            if o is not None:
+                o.hide_viewport = o.hide_render = True
+            continue
+        o, me = _plume_obj(scene, cls, len(ii))
+        o.hide_viewport = o.hide_render = False
+        me.vertices.foreach_set('co', src['pos'][ii].astype(np.float32).ravel())
+        rad = src['rad'][ii].astype(np.float32) * np.clip(fd, 0.05, 1.0).astype(np.float32)
+        me.attributes['af_radius'].data.foreach_set('value', rad)
+        me.update()
+        mr = o.modifiers.get("AF Render")
+        from . import gn
+        r_med = float(np.median(src['rad'][ii]))
+        gn.set_modifier_inputs(mr, {"Density": 1.0, "Voxel Size": max(r_med * 0.7, 1e-3), "Radius Scale": float(o.get('af_rs', 1.5))})

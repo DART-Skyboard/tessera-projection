@@ -66,12 +66,30 @@ for nm, loc, en, col, sz in (("key", (-4, -14, 12), 6000, (1.0, 0.92, 0.82), 6.0
     lo = bpy.data.objects.new(nm, ld); sc.collection.objects.link(lo); lo.location = loc
     lo.rotation_euler = (Vector((6, 0, 0)) - lo.location).to_track_quat('-Z', 'Y').to_euler()
 cam = bpy.data.objects.new("cam", bpy.data.cameras.new("cam")); sc.collection.objects.link(cam); sc.camera = cam
-c = Vector((6.5, 1.5, -0.2)); cam.location = c + Vector((2.0, -34.0, 9.0)); cam.data.lens = 36
+c = Vector((6.5, 1.5, -0.2)); cam.location = c + Vector((2.0, -float(os.environ.get('CAM_DIST', '34')), float(os.environ.get('CAM_UP', '9')))); cam.data.lens = 36
 cam.rotation_euler = (c - cam.location).to_track_quat('-Z', 'Y').to_euler()
+from arc_flow import combustion_surface as CSF
+PS = float(os.environ.get('PLUME_DENS', '1'))       # plume density multiplier for look iteration
+for _k, _v in CSF._PLUME.items():
+    _v[2]['Density'] = _v[2]['Density'] * PS
 t0 = time.time()
+import pickle
+CACHE = os.environ.get('CHAIN_CACHE')           # simulate once, then iterate on looks from the saved snapshots
+cached = pickle.load(open(CACHE, 'rb')) if CACHE and os.path.exists(CACHE) else {}
+saved = {}
+if cached:
+    for h in (bpy.app.handlers.frame_change_pre, bpy.app.handlers.frame_change_post, bpy.app.handlers.depsgraph_update_post, bpy.app.handlers.render_pre):
+        h.clear()          # the render must show the cached state, not the solver's current frame
 for f in range(1, max(FRAMES) + 1):
-    sc.frame_set(f)
+    if not cached:
+        sc.frame_set(f)
     if f in FRAMES:
+        if f in cached:
+            runtime.apply_state(sc, runtime.RT.world, cached[f])
+        else:
+            saved[f] = runtime.RT.world.snapshot()
+            if CACHE:
+                continue                       # simulate-only pass
         sc.render.filepath = os.path.join(OUT, "combustion_chain_%s_f%03d.png" % (VARIANT.lower(), f))
         t1 = time.time()
         bpy.ops.render.render(write_still=True)
@@ -79,4 +97,10 @@ for f in range(1, max(FRAMES) + 1):
         st = wd.bstats
         print("frame %d: %d alive, engines %s bar, %d smoke, %d faded, %d removed at domain; simulated %.0f s, rendered %.0f s" % (
             f, st['alive'], [round(e['P_c'] / 1e5, 1) for e in wd.engines], st['smoke'], st['faded'], st['removed_domain'], t1 - t0, time.time() - t1), flush=True)
+if CACHE and saved:
+    pickle.dump(saved, open(CACHE, 'wb'))
 runtime.stop(sc)
+if os.environ.get('CHAIN_DEBUG'):
+    for o in bpy.data.objects:
+        if o.name.startswith('AFCP'):
+            print('PLUME', o.name, len(o.data.vertices), o.hide_render, [m.name for m in o.modifiers])

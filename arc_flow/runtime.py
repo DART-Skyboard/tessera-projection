@@ -531,6 +531,7 @@ def apply_state(scene, world, snap=None):
                 ob['af_ignition'] = ign
     from . import combustion_surface as CS
     CS.update(scene, world, src)
+    CS.update_plume(scene, world, src)
     ht, st, pr, te = src['part_heat'], src['part_stress'], src['part_press'], src['part_T']
     for i, o in enumerate(RT.parts):
         if i >= len(ht):
