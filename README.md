@@ -101,6 +101,24 @@ Assigned to a container (the lava lamp's glass cone), a fluid takes the cavity's
 
 It solves liquids with FLIP/PIC and a variable-density pressure projection, and gases as buoyant Lagrangian parcels. Solid to fluid is exact; fluid to solid is one-way, and gas does not interact with liquid. Measured: 0.24 s per frame at 5,162 particles and 0.75 s at 18,900 (NumPy, 2 shared cores). Details and limits: [technical reference](docs/TECHNICAL.md#fluid-mode-volumetric-particle-based-lagrangian-fluid-dynamics).
 
+## Gallery
+
+Real Blender 5.3 screenshots of every feature (software OpenGL capture, so viewports use plain shading). Full set and capture script: `docs/gallery/`.
+
+<p align="center">
+  <img src="docs/gallery/featured_1920x1080.png" width="96%" alt="Tessera Projection in the Blender 5.3 interface">
+</p>
+<p align="center">
+  <img src="docs/gallery/01_projection_remesh.png" width="48%" alt="Projection Remesh with Symmetrize">
+  <img src="docs/gallery/03_twin_crossfeed_enhanced.png" width="48%" alt="Twin engines joined by a crossfeed channel">
+  <img src="docs/gallery/05_fluid_mode_lava_lamp.png" width="48%" alt="Fluid mode: lava lamp">
+  <img src="docs/gallery/06_colour_mixing.png" width="48%" alt="Colour mixing">
+  <img src="docs/gallery/08d_wind_tunnel_thermal.png" width="48%" alt="Wind tunnel with thermal readback">
+  <img src="docs/gallery/08e_transmutation_crystal.png" width="48%" alt="Transmutation: crystallisation">
+  <img src="docs/gallery/08b_shader_presets.png" width="48%" alt="Realistic shader presets">
+  <img src="docs/gallery/09_cycles_render_window.png" width="48%" alt="Cycles render window">
+</p>
+
 ## What is new in 0.5.0
 
 - **Remesh Symmetrize**: truly mirror-symmetric quads, with a before/after report.
@@ -156,7 +174,7 @@ From source: `./build.sh` validates and builds the zip into `dist/`.
 
 ## Status and roadmap
 
-Version 0.5.0 is a release candidate, tested headless on Blender 5.2.3 LTS and 5.3.0 (every test, also from the built extension). Interactive UI use and GPU render checks are still to do.
+Version 0.5.0 is tested headless on Blender 5.2.3 LTS and 5.3.0 (every test, also from the built extension). Interactive UI use and GPU render checks are still to do.
 
 Coming next: curvature-aligned quad layout, exact symmetry in the large-mesh path, shape-key transfer. See [docs/ROADMAP.md](docs/ROADMAP.md) and the [changelog](CHANGELOG.md).
 
@@ -165,7 +183,7 @@ Coming next: curvature-aligned quad layout, exact symmetry in the large-mesh pat
 - [Technical reference](docs/TECHNICAL.md): methods, benchmarks, limits, tests
 - [Publishing notes](PUBLISHING.md)
 - [Extensions-platform listing text, limitations and screenshot plan](docs/LISTING.md)
-- Gallery images: `docs/gallery/` (added with the listing); more renders in `docs/renders/`
+- Gallery images: `docs/gallery/` (UI screenshots for every feature); more renders in `docs/renders/`
 
 ## Support and contributing
 
