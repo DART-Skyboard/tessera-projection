@@ -6,9 +6,9 @@ Never commit, paste or log an API token. The scripts read it from the environmen
 
 ```
 ./build.sh                     # validate + build dist/tessera_projection-<version>.zip (needs Blender 5.2.3+)
-blender --command extension validate blender/arc_flow
-python3 blender/tests/test_solver.py                                  # pure NumPy solver tests
-blender --factory-startup -b --python blender/tests/test_blender.py   # headless Blender test (add-on from source)
+blender --command extension validate arc_flow
+python3 tests/test_solver.py                                  # pure NumPy solver tests
+blender --factory-startup -b --python tests/test_blender.py   # headless Blender test (add-on from source)
 ```
 
 To test the zip itself in a clean config (what a reviewer does):
@@ -16,10 +16,10 @@ To test the zip itself in a clean config (what a reviewer does):
 ```
 export BLENDER_USER_CONFIG=$(mktemp -d) BLENDER_USER_SCRIPTS=$(mktemp -d) BLENDER_USER_EXTENSIONS=$(mktemp -d)
 blender -b --command extension install-file -r user_default --enable dist/tessera_projection-0.2.0.zip
-blender -b --python blender/tests/test_blender.py -- --installed
+blender -b --python tests/test_blender.py -- --installed
 ```
 
-Manifest checklist (`blender/arc_flow/blender_manifest.toml`): `id` stays `arc_flow` forever; bump `version` for every upload
+Manifest checklist (`arc_flow/blender_manifest.toml`): `id` stays `tessera_projection` forever; bump `version` for every upload
 (the platform rejects a version number it already has); `tagline` at most 64 characters, no trailing period; `license`
 is an SPDX id (`GPL-3.0-or-later`); `tags` must come from the platform list (validated by `extension validate`);
 `blender_version_min` is the oldest Blender actually tested (5.2.3); `[permissions]` lists only `files` (cache read/write).
