@@ -26,7 +26,7 @@ Tessera Projection is built around one idea: **a mesh can be projected against i
 |---|---|
 | **Projection Remesh** | A fast quad remesh. Dense, symmetric quads along creases, lips, wrinkles and ears; large quads on broad surfaces. Works on characters, cars, trees, CAD, and scans, at any position or rotation. |
 | **Boolean Projection** | Cavities that intersect become one continuous through-cavity, with optional Boolean joint cuts in the walls. |
-| **Arc Flow** | Self-initialising fluid and combustion simulation through those connected cavities: containers, channels, chambers and nozzles that start empty and only conduct, finite fills, leaks, plugs, thermal and stress colouring. Fluid mode adds liquids, gases, mixing, phase change, wind tunnel and thermal readback, with shader presets. |
+| **Arc Flow** | Self-initialising fluid and combustion simulation through those connected cavities: containers, channels, chambers and nozzles that start empty and only conduct, finite fills, leaks, plugs, thermal and stress colouring. Fluid mode adds liquids, gases, mixing, transmutation (steam, crystals, burning, rust), viscosity and emission surfaces, fluid volumes, a wind tunnel with thermal readback, 22 shader presets and Geometry Nodes sockets. |
 
 <p align="center">
   <img src="docs/renders/retopo_input_tris.png" width="46%" alt="Triangulated input mesh">
@@ -143,8 +143,8 @@ The fluid solver is NumPy on the CPU: frame times grow with particle count and i
 
 ## Install
 
-1. Download `tessera_projection-0.5.0.zip` from this repository's Releases (the extensions.blender.org listing follows once the platform has approved it).
-2. In Blender: **Edit > Preferences > Get Extensions > (v) > Install from Disk**, pick the zip.
+1. Download `tessera_projection-0.5.0.zip` from this repository's Releases (or, once approved, from extensions.blender.org: **Edit > Preferences > Get Extensions**, search *Tessera Projection*). Do not unzip it.
+2. In Blender 5.2.3 or newer: **Edit > Preferences > Get Extensions > (v) menu, top right > Install from Disk**, pick the zip.
 3. Open the 3D Viewport sidebar (**N**), tab **Tessera**.
 
 From source: `./build.sh` validates and builds the zip into `dist/`.
@@ -164,6 +164,8 @@ Coming next: curvature-aligned quad layout, exact symmetry in the large-mesh pat
 
 - [Technical reference](docs/TECHNICAL.md): methods, benchmarks, limits, tests
 - [Publishing notes](PUBLISHING.md)
+- [Extensions-platform listing text, limitations and screenshot plan](docs/LISTING.md)
+- Gallery images: `docs/gallery/` (added with the listing); more renders in `docs/renders/`
 
 ## Support and contributing
 
