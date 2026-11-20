@@ -492,18 +492,52 @@ def add_aircraft(scene, location=None, thermal=True, spin_frames=(1, 250), rpm=1
         e.matrix_parent_inverse = air.matrix_world.inverted()
         e.location = tuple(p)          # parent inverse is identity (the airframe was still at the origin when parented)
         e.arc_flow_fm.heat_on = True
-        e.arc_flow_fm.heat_power = 1500.0
-        e.arc_flow_fm.heat_radius = 0.10
+        e.arc_flow_fm.heat_power = 2500.0
+        e.arc_flow_fm.heat_radius = 0.12
         heats.append(e)
+    nozzles = []
+    try:
+        from . import surfaces_ops as SO
+        for i, p in enumerate(vtol.EXHAUSTS):
+            side = "R" if i == 0 else "L"
+            bm = bmesh.new()
+            bmesh.ops.create_grid(bm, x_segments=1, y_segments=1, size=0.5)
+            for v in bm.verts:
+                v.co = (0.0, v.co.x * 0.07, v.co.y * 0.07)
+            nz = _mesh_obj("Engine Nozzle %s" % side, bm, col)
+            nz.parent = air
+            nz.location = (p[0] - 0.035, p[1], p[2])
+            nz.hide_render = True
+            nz.display_type = 'WIRE'
+            sr = SO.srf(scene)
+            e = sr.items.add()
+            e.kind, e.name, e.obj, e.preset = 'EMISSION', "Exhaust %s" % side, nz, 'AIR'
+            e.rate, e.speed, e.spread, e.temperature = 500.0, 22.0, 6.0, 460.0
+            e.max_particles = 3000
+            SO.store_faces(e, np.ones(len(nz.data.polygons), bool))
+            SO.sync_source(scene, e)
+            fl = SO.fluid_of(scene, e)
+            if fl is not None:
+                fl.color = (1.0, 0.7, 0.4)
+                fl.render_mode = 'POINTS'
+                fl.particle_scale = 0.5
+            try:
+                from . import surfaces_gn as SGN
+                SGN.ensure_modifier(nz, e)
+            except Exception:
+                pass
+            nozzles.append(nz)
+    except Exception as ex:
+        FO.RT.msg = "Engine exhaust emitters: %s" % ex
     for o in [air] + rotors:
         mark_body(o)
     air.arc_flow_fm.friction = 0.15
     for r in rotors:
         r.arc_flow_fm.friction = 0.6
     if thermal:
-        air.arc_flow_th.t_min, air.arc_flow_th.t_max = 288.15, 312.0
-        air.arc_flow_th.speedup = 400.0
-        air.arc_flow_th.ramp = 'COLD_HOT'
+        air.arc_flow_th.t_min, air.arc_flow_th.t_max = 288.15, 345.0
+        air.arc_flow_th.speedup = 60.0
+        air.arc_flow_th.wall_heat = 600.0
         air.arc_flow_th.on = True
     return air, rotors, heats
 
@@ -530,7 +564,7 @@ def _linear(o):
 
 def load_example(scene, with_thermal=True):
     """Example: Wind tunnel.  Clears the previous tunnel objects and builds tunnel, air, aircraft, thermal readback."""
-    for n in ("Aircraft Rotor R", "Aircraft Rotor L", "Aircraft Airframe", "Engine Exhaust R", "Engine Exhaust L"):
+    for n in ("Aircraft Rotor R", "Aircraft Rotor L", "Aircraft Airframe", "Engine Exhaust R", "Engine Exhaust L", "Engine Nozzle R", "Engine Nozzle L"):
         _remove(n)
     wt = scene.arc_flow_wt
     wt.source, wt.atmosphere = 'PRESET', 'EARTH'

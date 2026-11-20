@@ -9,6 +9,7 @@ import math
 
 import bpy
 import numpy as np
+from mathutils import Vector
 from bpy.app.handlers import persistent
 from bpy.props import BoolProperty, EnumProperty, FloatProperty, PointerProperty
 from bpy.types import Operator, Panel, PropertyGroup
@@ -56,11 +57,12 @@ class AF_ThermalObj(PropertyGroup):
     domain: EnumProperty(name="Domain", items=[('POINT', "Points", "One temperature per vertex"), ('FACE', "Faces", "One temperature per face")], default='POINT', update=_changed)
     t_min: FloatProperty(name="Range min", default=288.15, description="K at the cold end of the ramp", update=_look_changed)
     t_max: FloatProperty(name="Range max", default=340.0, description="K at the hot end of the ramp", update=_look_changed)
-    ramp: EnumProperty(name="Ramp", items=TH.RAMP_ITEMS, default='INFERNO', update=_look_changed)
+    ramp: EnumProperty(name="Ramp", items=TH.RAMP_ITEMS, default='THERMAL', update=_look_changed)
     shader: BoolProperty(name="Thermal shader", default=True, update=_look_changed, description="Replace the surface material with the temperature ramp (EEVEE and Cycles). Off restores the original material")
     emission: FloatProperty(name="Glow", default=0.3, min=0.0, max=20.0, update=_look_changed, description="Emission strength of the ramp colour so it reads in any light")
     solid: BoolProperty(name="Solid viewport colour", default=True, update=_look_changed, description="Also write the 'af_thermal_color' attribute and make it the active colour so Solid mode (colour: Attribute) shows it")
     gn: BoolProperty(name="Geometry Nodes output", default=True, update=_look_changed, description="Add the 'Tessera Thermal Surface' Geometry Nodes modifier (normalised value, colour, min / mean / max outputs)")
+    legend: BoolProperty(name="Colour bar legend", default=False, update=_look_changed, description="A colour bar with the minimum and maximum temperature (K and C), attached to the scene camera, so renders carry a legend")
     couple: BoolProperty(name="Heat the fluid", default=False, description="The heat the surface exchanges with the fluid is given back to the particles as heat sources", update=_changed)
     wall_heat: FloatProperty(name="Wall heat capacity", default=4900.0, min=1.0, description="J/(m2 K): density x specific heat x thickness of the skin (2 mm aluminium = 4900)", update=_changed)
     absorb: FloatProperty(name="Absorptivity", default=0.7, min=0.0, max=1.0, description="Fraction of the radiation from heat sources that the surface absorbs", update=_changed)
@@ -457,7 +459,7 @@ def _gn_group(domain):
     b.link(out(gi, 'Max K'), inp(mr, 'From Max'))
     cr = b.node('ShaderNodeValToRGB', y=120, x=200)
     b.link(out(mr, 'Result'), inp(cr, 'Fac'))
-    st = TH.RAMPS['INFERNO']
+    st = TH.RAMPS['THERMAL']
     ramp = cr.color_ramp
     while len(ramp.elements) > 2:
         ramp.elements.remove(ramp.elements[-1])
@@ -511,10 +513,105 @@ def _solid_view(o):
             me.color_attributes.render_color_index = list(me.color_attributes).index(c)
 
 
+def _legend_names(o):
+    b = "Thermal Legend %s" % o.name
+    return b, (b + " max", b + " min", b + " title")
+
+
+def remove_legend(o):
+    b, ts = _legend_names(o)
+    for n in (b,) + ts:
+        ob = bpy.data.objects.get(n)
+        if ob is not None:
+            d = ob.data
+            bpy.data.objects.remove(ob, do_unlink=True)
+            if d is not None and d.users == 0:
+                (bpy.data.meshes if isinstance(d, bpy.types.Mesh) else bpy.data.curves).remove(d)
+
+
+def ensure_legend(o, scene=None):
+    """Colour bar with the range in K and C: a gradient plane and three text objects, parented to the scene camera (or beside the object)."""
+    sc = scene or bpy.context.scene
+    p = o.arc_flow_th
+    remove_legend(o)
+    cam = sc.camera
+    col = sc.collection
+    if cam is not None:
+        d = 1.0
+        hw = d * (cam.data.sensor_width / 2.0) / cam.data.lens
+        aspect = sc.render.resolution_y / max(sc.render.resolution_x, 1)
+        hh = hw * aspect
+        bh, bw = hh * 1.25, hh * 0.13
+        cx, cy = hw * 0.86, 0.0
+        origin = (cx, cy, -d)
+    else:
+        bh, bw, cx, cy = 0.5, 0.06, 0.0, 0.0
+        origin = tuple(o.matrix_world.translation + Vector((0.0, -1.0, 0.0)))
+    name, (tmax, tmin, ttl) = _legend_names(o)
+    n = 32
+    me = bpy.data.meshes.new(name)
+    verts = [(sx * bw / 2, (i / n - 0.5) * bh, 0.0) for i in range(n + 1) for sx in (-1, 1)]
+    faces = [(2 * i, 2 * i + 1, 2 * i + 3, 2 * i + 2) for i in range(n)]
+    me.from_pydata(verts, [], faces)
+    rgb = TH.ramp_color(np.repeat(np.linspace(0, 1, n + 1), 2), p.ramp)
+    ca = me.color_attributes.new("Legend", 'FLOAT_COLOR', 'POINT')
+    ca.data.foreach_set('color', np.concatenate([rgb, np.ones((len(rgb), 1))], axis=1).astype(np.float32).ravel())
+    me.color_attributes.active_color = ca
+    mat = bpy.data.materials.new(name)
+    nt = enable_nodes(mat)
+    nt.nodes.clear()
+    b = Builder(nt)
+    at = b.node('ShaderNodeAttribute', y=0); at.attribute_name = "Legend"; at.attribute_type = 'GEOMETRY'
+    em = b.node('ShaderNodeEmission', y=0)
+    eo = b.node('ShaderNodeOutputMaterial', y=0)
+    b.link(out(at, 'Color'), inp(em, 'Color'))
+    b.link(out(em, 'Emission'), inp(eo, 'Surface'))
+    mat.diffuse_color = (1, 1, 1, 1)
+    me.materials.append(mat)
+    plane = bpy.data.objects.new(name, me)
+    col.objects.link(plane)
+    tmat = bpy.data.materials.new(name + " text")
+    tnt = enable_nodes(tmat)
+    tnt.nodes.clear()
+    tb = Builder(tnt)
+    te = tb.node('ShaderNodeEmission', y=0)
+    inp(te, 'Color').default_value = (1, 1, 1, 1)
+    to = tb.node('ShaderNodeOutputMaterial', y=0)
+    tb.link(out(te, 'Emission'), inp(to, 'Surface'))
+    tmat.diffuse_color = (1, 1, 1, 1)
+    objs = [plane]
+    size = bh * 0.065
+    for nm, body, ty in ((tmax, "%.0f K  %.0f C" % (p.t_max, p.t_max - 273.15), bh / 2 - size * 0.4), (tmin, "%.0f K  %.0f C" % (p.t_min, p.t_min - 273.15), -bh / 2 - size * 0.4),
+                         (ttl, "Surface temperature", bh / 2 + size * 1.2)):
+        cu = bpy.data.curves.new(nm, 'FONT')
+        cu.body, cu.size = body, size
+        cu.align_x = 'RIGHT' if nm != ttl else 'RIGHT'
+        cu.materials.append(tmat)
+        t = bpy.data.objects.new(nm, cu)
+        col.objects.link(t)
+        t.location = (-bw * 0.8, ty, 0.0)
+        t.parent = plane
+        objs.append(t)
+    plane.parent = cam
+    plane.location = origin
+    if cam is None:
+        plane.rotation_euler = (math.pi / 2, 0, 0)
+    for ob in objs:
+        ob['af_th_legend'] = o.name
+    return plane
+
+
 def refresh_look(o):
     p = o.arc_flow_th
     if not p.on:
         return
+    if p.legend:
+        try:
+            ensure_legend(o)
+        except Exception as ex:
+            FO.RT.msg = "Legend: %s" % ex
+    else:
+        remove_legend(o)
     if p.shader:
         _apply_material(o)
     else:
@@ -544,6 +641,7 @@ def enable(o):
 def disable(o):
     STATE.pop(o.name, None)
     _restore_material(o)
+    remove_legend(o)
     m = o.modifiers.get(MOD_NAME)
     if m is not None:
         o.modifiers.remove(m)
@@ -647,7 +745,7 @@ class AF_PT_thermal(Panel):
         r.prop(p, "t_min"); r.prop(p, "t_max")
         col.prop(p, "ramp")
         col = l.column(align=True)
-        col.prop(p, "shader"); col.prop(p, "solid"); col.prop(p, "gn"); col.prop(p, "couple")
+        col.prop(p, "shader"); col.prop(p, "solid"); col.prop(p, "gn"); col.prop(p, "legend"); col.prop(p, "couple")
         if p.shader:
             col.prop(p, "emission")
         box = l.box()

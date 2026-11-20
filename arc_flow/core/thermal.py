@@ -24,6 +24,8 @@ SIGMA = 5.670374e-8
 H_NATURAL = 5.0
 
 RAMPS = {
+    'THERMAL': [(0.00, (0.02, 0.05, 0.55)), (0.17, (0.00, 0.35, 0.95)), (0.33, (0.00, 0.80, 0.90)), (0.48, (0.10, 0.80, 0.20)),
+                (0.62, (0.95, 0.90, 0.05)), (0.76, (1.00, 0.50, 0.00)), (0.90, (0.90, 0.07, 0.03)), (1.00, (1.00, 0.95, 0.90))],
     'INFERNO': [(0.00, (0.001, 0.000, 0.014)), (0.20, (0.258, 0.039, 0.406)), (0.40, (0.578, 0.148, 0.404)),
                 (0.60, (0.865, 0.317, 0.226)), (0.80, (0.988, 0.645, 0.040)), (1.00, (0.988, 1.000, 0.645))],
     'TURBO': [(0.00, (0.190, 0.072, 0.232)), (0.17, (0.275, 0.440, 0.900)), (0.35, (0.100, 0.800, 0.800)),
@@ -32,11 +34,11 @@ RAMPS = {
                  (0.70, (0.960, 0.600, 0.200)), (1.00, (0.800, 0.050, 0.030))],
     'GRAY': [(0.00, (0.02, 0.02, 0.02)), (1.00, (1.0, 1.0, 1.0))],
 }
-RAMP_ITEMS = [('INFERNO', "Inferno", "Black, purple, orange, pale yellow"), ('TURBO', "Turbo", "Blue, green, yellow, red"),
+RAMP_ITEMS = [('THERMAL', "Thermal", "Deep blue, cyan, green, yellow, orange, red, white-hot"), ('INFERNO', "Inferno", "Black, purple, orange, pale yellow"), ('TURBO', "Turbo", "Blue, green, yellow, red"),
               ('COLD_HOT', "Cold to hot", "Blue, white, red"), ('GRAY', "Grayscale", "")]
 
 
-def ramp_color(t, ramp='INFERNO'):
+def ramp_color(t, ramp='THERMAL'):
     """Colour (n, 3) for normalised values t in [0, 1] (piecewise linear, same stops as the shader ramp)."""
     t = np.clip(np.asarray(t, float), 0.0, 1.0)
     st = RAMPS[ramp]

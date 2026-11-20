@@ -37,7 +37,8 @@ sc.frame_start, sc.frame_end = 1, FRAME + 2
 air = bpy.data.objects["Aircraft Airframe"]
 p = air.arc_flow_th
 p.t_min, p.t_max = 288.15, 345.0
-p.ramp = 'INFERNO'
+p.speedup, p.wall_heat = 60.0, 600.0
+p.ramp = 'THERMAL'
 p.emission = 0.0
 FO.start(sc, play=False)
 for f in range(1, FRAME + 1):
@@ -70,7 +71,7 @@ def pathlines():
     (a cubic fit in time removes the parcel jitter) and drawn as thin tubes coloured by speed."""
     cache = FO.RT.cache
     frames = [f for f in sorted(cache) if f <= FRAME][-5:]
-    n0 = min(len(cache[f]['x']) for f in sorted(cache) if f <= FRAME)
+    n0 = min(len(cache[f]["x"]) for f in frames)
     X = np.stack([cache[f]['x'][:n0] for f in frames])
     V = np.stack([np.linalg.norm(cache[f]['v'][:n0], axis=1) for f in frames])
     ctr = np.array(air.matrix_world.translation)
@@ -92,18 +93,34 @@ def pathlines():
     cu.bevel_depth = 0.002
     cu.bevel_resolution = 3
     cu.use_fill_caps = True
-    for nm, col in (("slow", (0.35, 0.65, 1.0)), ("mid", (0.6, 0.88, 1.0)), ("fast", (0.95, 0.98, 1.0))):
-        m = bpy.data.materials.new("WT_Path_" + nm)
+    NB = 8
+    ambient = float(sc.arc_flow.env.temperature)
+    lo, hi = p.t_min, p.t_max
+    for i in range(NB):
+        col = TM.TH.ramp_color(np.array([i / (NB - 1)]), 'THERMAL')[0]
+        m = bpy.data.materials.new("WT_Path_%d" % i)
         m.use_nodes = True
-        b = m.node_tree.nodes['Principled BSDF']
-        b.inputs['Base Color'].default_value = (*col, 1)
-        b.inputs['Emission Color'].default_value = (*col, 1)
-        b.inputs['Emission Strength'].default_value = 0.9
-        b.inputs['Roughness'].default_value = 0.4
+        bs = m.node_tree.nodes['Principled BSDF']
+        bs.inputs['Base Color'].default_value = (*col, 1)
+        bs.inputs['Emission Color'].default_value = (*col, 1)
+        bs.inputs['Emission Strength'].default_value = 1.6
+        bs.inputs['Roughness'].default_value = 0.4
         m.diffuse_color = (*col, 1)
         cu.materials.append(m)
-    vmean = V.mean(axis=0)
-    q = np.quantile(vmean[pick], [0.33, 0.66]) if pick else (0, 0)
+    Tm = np.stack([cache[f]['T'][:n0] for f in frames]).mean(axis=0)
+    # hot plume tracers: the hottest particles downstream of the exhausts
+    ex = [np.array(e.matrix_world.translation) for e in bpy.data.objects if e.name.startswith("Engine Exhaust")]
+    hot = []
+    if ex:
+        dd = np.min([np.linalg.norm(last - e, axis=1) for e in ex], axis=0)
+        cand = np.flatnonzero((dd < 1.4) & (last[:, 0] > min(e[0] for e in ex) - 0.05) & (net > 0.25))
+        cand = cand[Tm[cand] < ambient + 400.0]
+        cand = cand[np.argsort(-Tm[cand])][:14]
+        for j in cand:
+            if all(np.linalg.norm(last[j] - last[i]) > 0.05 for i in hot):
+                hot.append(j)
+    print("plume tracers", len(hot), "hottest tracer %.1f K" % (Tm[hot].max() if hot else 0), flush=True)
+    pick = list(pick) + [j for j in hot if j not in pick]
     tt = np.linspace(-1, 1, len(frames))
     ts = np.linspace(-1, 1, 12)
     for j in pick:
@@ -113,7 +130,7 @@ def pathlines():
         for bp, pt in zip(sp.bezier_points, sm):
             bp.co = pt
             bp.handle_left_type = bp.handle_right_type = 'AUTO'
-        sp.material_index = 0 if vmean[j] < q[0] else (1 if vmean[j] < q[1] else 2)
+        sp.material_index = int(np.clip((Tm[j] - lo) / max(hi - lo, 1e-6), 0, 1) * (NB - 1))
     print("pathlines", len(pick), "candidates", len(ok_), flush=True)
     o = bpy.data.objects.new("WT_Paths", cu)
     sc.collection.objects.link(o)
@@ -170,10 +187,12 @@ for case in CASES:
         sc.cycles.samples = SAMPLES
         sc.cycles.use_denoising = True
         sc.cycles.max_bounces = 5
-        sc.view_settings.view_transform = 'AgX'
+        sc.view_settings.view_transform = 'Standard'
         scene_look()
         pathlines()
         camera((1.9, -1.9, 1.55), (ctr.x + 0.0, 0.0, ctr.z - 0.02), 42)
+        p.legend = False
+        p.legend = True
         r.filepath = os.path.join(OUT, 'windtunnel_thermal.png')
     else:
         r.engine = 'BLENDER_WORKBENCH'
@@ -193,6 +212,8 @@ for case in CASES:
         tun = bpy.data.objects["Wind Tunnel"]
         tun.hide_render = True
         camera((-1.7, -2.6, 1.7), (ctr.x + 0.1, 0.0, ctr.z - 0.1), 32)
+        p.legend = False
+        p.legend = True
         r.filepath = os.path.join(OUT, 'windtunnel_viewport.png')
     bpy.ops.render.render(write_still=True)
     print("rendered", r.filepath, flush=True)

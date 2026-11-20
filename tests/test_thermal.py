@@ -78,7 +78,8 @@ ok(src and abs(tot - 20.0 * 50.0 * 4.0 * 1.0) / (20.0 * 50.0 * 4.0) < 0.2 and al
 ok(all(s[1] < 0 for s in TH.patch_sources(Pp, area, np.full(400, 250.0), info, 0.5)), "cold wall cools the fluid")
 
 # ramp
-c = TH.ramp_color(np.array([0.0, 0.5, 1.0]), 'INFERNO')
+c = TH.ramp_color(np.array([0.0, 0.5, 1.0]), 'THERMAL')
+ok(c[0][2] > c[0][0] and c[1][1] > c[1][2] and c[2].min() > 0.85, 'thermal ramp: blue cold, green middle, white hot')
 ok(c.shape == (3, 3) and c[0].sum() < c[2].sum(), "ramp colours")
 print("FAILED %d" % fails[0] if fails[0] else "ALL PASS")
 sys.exit(1 if fails[0] else 0)
