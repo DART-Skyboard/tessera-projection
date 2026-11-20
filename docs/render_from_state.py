@@ -24,18 +24,21 @@ S._derive(np.arange(S.n))
 FO.apply_state(sc)
 for h in (bpy.app.handlers.frame_change_pre, bpy.app.handlers.frame_change_post, bpy.app.handlers.depsgraph_update_post):
     h.clear()           # the render must show this state, not the solver's cached frame
-for nm, loc, en, sz in (("TS_Key", (0.4, -0.7, 0.4), 35.0, 0.4), ("TS_Rim", (-0.4, 0.4, 0.3), 12.0, 0.4)):
+KEY = float(os.environ.get('FLUID_KEY', '400'))
+for nm, loc, en, sz in (("TS_Key", (0.9, -1.0, 0.7), KEY, 0.8), ("TS_Rim", (-0.8, 0.9, 0.5), KEY * 0.8, 0.8), ("TS_Under", (0.0, -0.8, -0.1), KEY * 0.3, 0.6)):
     ld = bpy.data.lights.new(nm, 'AREA'); ld.energy = en; ld.size = sz
     lo = bpy.data.objects.new(nm, ld); sc.collection.objects.link(lo); lo.location = loc
-    lo.rotation_euler = (1.2, 0, 0.5)
+    d_ = (__import__('mathutils').Vector((0.0, 0.0, 0.25)) - lo.location)
+    lo.rotation_euler = d_.to_track_quat('-Z', 'Y').to_euler()
     lo.visible_camera = False
+    lo.visible_glossy = False
 w = sc.world or bpy.data.worlds.new("TS_World"); sc.world = w; w.use_nodes = True
 w.node_tree.nodes['Background'].inputs['Color'].default_value = (0.012, 0.014, 0.02, 1)
 sc.render.engine = 'CYCLES'; sc.cycles.device = 'CPU'
 sc.view_settings.view_transform = 'Standard'
 sc.cycles.use_denoising = os.environ.get('FLUID_DENOISE', '1') == '1'
 sc.cycles.samples = int(os.environ.get('FLUID_SAMPLES', '48'))
-sc.render.resolution_x, sc.render.resolution_y = 960, 540
+sc.render.resolution_x, sc.render.resolution_y = int(os.environ.get('FLUID_W', '960')), int(os.environ.get('FLUID_H', '540'))
 sc.render.resolution_percentage = int(os.environ.get('FLUID_RES_PCT', '100'))
 sc.render.filepath = os.path.abspath(out)
 print("n gas", int(S.gasp.sum()))

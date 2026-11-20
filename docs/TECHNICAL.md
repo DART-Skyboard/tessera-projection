@@ -154,7 +154,7 @@ ground plane with friction and optional heat sink) acts on every fluid.
   crystals freeze in place from nuclei at the container walls and grow shell by shell. Limits: a frozen particle is pinned but still counts as liquid in the
   grid projection (it does not form a true solid cell); the liquid surface excludes gas parcels and crystals, which are drawn by their own objects, so the
   surface of a partly converted particle changes at the 0.5 / 0.6 switch (the composition colour and density blend before it); steam / smoke render as soft
-  beads (instanced small spheres) of the parcels, not as a volume or soft splats (the Splat group rendered them as blocky cards); species densities are defined at 293.15 K.
+  a soft volume (Points to Volume with the AF_Volume material, noise breakup, density falloff; `AF_PHASE_GAS_DENSITY` tunes it), with a halo wider than the parcels; species densities are defined at 293.15 K.
 - A grid pressure solver cannot separate fluids mixed below the cell size, so a random fine mixture does not stratify; start separated.
 - No turbulence model; viscosity and cohesion are calibrated, not measured. Pressure is weakly accurate (a few percent density error).
 - Rigid motion of a body only updates its matrix (blended across the frame); deformation triggers a rebuild of the field.

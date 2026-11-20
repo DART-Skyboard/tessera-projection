@@ -401,6 +401,7 @@ def _update_merged_surface(scene, S, fls, snap):
     me.update()
 
 
+PHASE_GAS_DENSITY = float(__import__('os').environ.get('AF_PHASE_GAS_DENSITY', '4'))
 _ICO = None
 
 
@@ -453,19 +454,19 @@ def _update_phase_objects(scene, S, snap):
             o = bpy.data.objects.new(name, me)
             col.objects.link(o)
             mr = o.modifiers.new("AF Render", 'NODES')
-            mr.node_group = gn.render_group('Points', "FM_PhaseGas")
-            pm = shading.points_material().copy()
-            pm.name = "TesseraPhaseGas"
-            shading.set_params(pm, AF_Color=(0.95, 0.97, 1.0), AF_TintMix=0.0, AF_Emission=0.0)
-            gn.set_group_material(mr.node_group, pm)
-            gn.set_modifier_inputs(mr, {"Instance Object": None, "Use Object": False, "Instance Collection": None, "Use Collection": False, "Scale": 1.0})
+            mr.node_group = gn.render_group('RayMarch', "FM_PhaseGas")
+            vm = shading.volume_material().copy()
+            vm.name = "TesseraPhaseGas"
+            shading.set_params(vm, AF_ColorA=(0.95, 0.97, 1.0), AF_ColorB=(0.95, 0.97, 1.0), AF_Density=PHASE_GAS_DENSITY, AF_Absorb=0.5, AF_Noise=0.9, AF_NoiseScale=22.0, AF_Anisotropy=0.4)
+            gn.set_group_material(mr.node_group, vm)
+            gn.set_modifier_inputs(mr, {"Density": 1.0, "Voxel Size": max(S.dx * 0.55, 1e-3), "Radius Scale": 1.25})
         elif len(o.data.vertices) != len(tg):
             o.data = _points_mesh(name, len(tg))
         me = o.data
         o.hide_render = o.hide_viewport = False
         rgba = np.concatenate([colr[tg], np.ones((len(tg), 1))], axis=1).astype(np.float32)
         me.vertices.foreach_set('co', X[tg].astype(np.float32).ravel())
-        me.attributes['af_radius'].data.foreach_set('value', (rad[tg] * 0.2).astype(np.float32))
+        me.attributes['af_radius'].data.foreach_set('value', (rad[tg] * 1.0).astype(np.float32))
         for an, av in (('af_alpha', 0.45), ('af_fmix', 1.0)):
             if an not in me.attributes:
                 me.attributes.new(an, 'FLOAT', 'POINT')
@@ -753,7 +754,9 @@ def add_fluid(scene, preset='WATER', name=None, primitive=False):
     fl.preset = preset
     apply_preset(fl, preset)
     if fl.kind == 'LIQUID':
-        fl.render_mode = 'SURFACE'              # liquids render as one smooth, merged surface by default (gases stay particles / volume)
+        fl.render_mode = 'SURFACE'              # liquids render as one smooth, merged surface by default
+    else:
+        fl.render_mode = 'RAYMARCH'             # gases render as a soft volume by default, never as beads
     if primitive:
         fl.shape_source, fl.prim_type, fl.spawn_mode = 'PRIMITIVE', 'SPHERE', 'VOLUME'
         fl.prim_loc = tuple(scene.cursor.location)
@@ -1181,7 +1184,7 @@ def load_steam(scene, max_particles=5000):
     fm.speedup = 1.0
     fm.heat_start = 1
     scene.frame_start, scene.frame_end = 1, 200
-    _camera(scene, col, (0.0, -1.8, 0.25), lens=50)
+    _camera(scene, col, (0.0, -1.05, 0.27), lens=50)
     mark_dirty()
 
 
