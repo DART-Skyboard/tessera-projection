@@ -7,6 +7,7 @@ from bpy.props import (BoolProperty, CollectionProperty, EnumProperty, FloatProp
                        PointerProperty, StringProperty)
 from bpy.types import PropertyGroup
 
+from . import spawn as SP
 from .core import fluidmode as FM
 
 
@@ -48,7 +49,12 @@ def apply_preset(fl, key):
 
 
 def mesh_poll(self, obj):
-    return obj.type == 'MESH'
+    """A Container may be any geometry: mesh, curve (channel), surface, text, metaball."""
+    return obj.type in SP.CONTAINER_TYPES
+
+
+def shape_poll(self, obj):
+    return obj.type in SP.SHAPE_TYPES or bool(getattr(obj, 'particle_systems', None))
 
 
 class AF_FMFluid(PropertyGroup):
@@ -75,7 +81,18 @@ class AF_FMFluid(PropertyGroup):
     # geometry
     no_container: BoolProperty(name="No container", default=True, description="Ticked: a free fluid or gas moving in the air.  Unticked: held by the container object below", update=_dirty)
     container: PointerProperty(name="Container", type=bpy.types.Object, poll=mesh_poll, description="Cavity, tank or tower (may be elevated)", update=_dirty)
-    shape: PointerProperty(name="Shape", type=bpy.types.Object, description="Any object as the fluid's geometry: a closed mesh is filled with particles, an open mesh or a point cloud gives its surface / vertices", update=_dirty)
+    shape: PointerProperty(name="Shape", type=bpy.types.Object, poll=shape_poll, description="Any geometry as the fluid's shape: mesh, curve (a channel), surface, text, metaball, point cloud or an object with a particle system. A closed shape is filled, an open one gives its surface; see Spawn", update=_dirty)
+    shape_source: EnumProperty(name="Shape from", items=[('PRIMITIVE', "Primitive", "A built-in primitive (sphere of points by default): edit its size and position, or replace it by an object"),
+                                                         ('OBJECT', "Object", "The Shape object (empty = fill the Container)")], default='OBJECT', update=_dirty)
+    prim_type: EnumProperty(name="Primitive", items=SP.PRIM_ITEMS, default='SPHERE', update=_dirty)
+    prim_size: FloatProperty(name="Size", default=0.1, min=1e-3, unit='LENGTH', description="Radius (sphere, cylinder, cone), half edge (cube, plane) or major radius (torus)", update=_dirty)
+    prim_loc: FloatVectorProperty(name="Location", size=3, default=(0.0, 0.0, 0.5), subtype='TRANSLATION', unit='LENGTH', update=_dirty)
+    prim_rot: FloatVectorProperty(name="Rotation", size=3, default=(0.0, 0.0, 0.0), subtype='EULER', update=_dirty)
+    prim_scale: FloatVectorProperty(name="Scale", size=3, default=(1.0, 1.0, 1.0), min=1e-3, update=_dirty)
+    spawn_mode: EnumProperty(name="Spawn", items=SP.SPAWN_ITEMS, default='AUTO', update=_dirty)
+    spawn_density: FloatProperty(name="Density", default=1.0, min=0.02, max=1.0, subtype='FACTOR', description="Fraction of the generated particles that is kept (1 = the full lattice / surface layer / every vertex or Blender particle)", update=_dirty)
+    psys_name: StringProperty(name="Particle system", default="", description="Name of the object's particle system (empty = every emitter system)", update=_dirty)
+    d_spawn: StringProperty(default="")
     fill: FloatProperty(name="Fill", default=50.0, min=0.0, max=100.0, subtype='PERCENTAGE', description="Percent of the container when there is no Shape and no Volume", update=_dirty)
     count: IntProperty(name="Gas parcels", default=2000, min=8, max=60000, description="Number of parcels a gas is represented by", update=_dirty)
     # appearance / render
@@ -131,6 +148,7 @@ class AF_FMScene(PropertyGroup):
 
 
 class AF_FMObject(PropertyGroup):
+    channel_radius: FloatProperty(name="Channel radius", default=0.02, min=1e-4, unit='LENGTH', description="A curve (or an edge-only mesh) without its own bevel is tubed to this radius when it is used as a Container or Shape (a channel / pipe)", update=_dirty)
     heat_on: BoolProperty(name="Heat source", default=False, description="Warms (or, with negative power, cools) the fluid near this object: a lamp, a burner, an ice block", update=_dirty)
     heat_power: FloatProperty(name="Power", default=25.0, description="W", update=_dirty)
     heat_radius: FloatProperty(name="Radius", default=0.05, min=1e-3, unit='LENGTH', update=_dirty)

@@ -11,6 +11,7 @@ build on the outputs.  Existing groups are kept (your edits survive); delete a g
 import bpy
 
 from . import gn
+from . import spawn as SP
 from .nodeutil import Builder, add_socket, fresh_group, inp, out
 
 
@@ -28,7 +29,7 @@ def _named(b, name, data_type, y):
     return out(n, 'Attribute')
 
 
-FLUID_VERSION = 3
+FLUID_VERSION = 4
 
 
 def build_fluid_group(name, fl=None):
@@ -54,6 +55,11 @@ def build_fluid_group(name, fl=None):
     add_socket(ng, "Container", 'NodeSocketObject', 'INPUT', desc="Container object (when No Container is off; mirrors the panel)")
     add_socket(ng, "Shape", 'NodeSocketObject', 'INPUT', desc="Shape object (mirrors the panel; use Tessera Fluid Source to spawn from a shape inside a node tree)")
     add_socket(ng, "Fill", 'NodeSocketFloat', 'INPUT', 50.0, 0.0, 100.0, desc="Percent of the container (mirrors the panel)")
+    add_socket(ng, "Spawn Mode", 'NodeSocketInt', 'INPUT', 0, 0, 4, desc="Panel Spawn mode: 0 auto, 1 volume, 2 surface, 3 vertices / points, 4 particle system (mirrors the panel; Tessera Fluid Spawn does it in nodes)")
+    add_socket(ng, "Spawn Density", 'NodeSocketFloat', 'INPUT', 1.0, 0.0, 1.0, desc="Fraction of the generated particles kept (mirrors the panel)")
+    add_socket(ng, "Use Primitive", 'NodeSocketBool', 'INPUT', False, desc="The Shape is a primitive (mirrors the panel)")
+    add_socket(ng, "Primitive", 'NodeSocketInt', 'INPUT', 0, 0, 5, desc="0 sphere, 1 cube, 2 cylinder, 3 cone, 4 torus, 5 plane (mirrors the panel)")
+    add_socket(ng, "Primitive Size", 'NodeSocketFloat', 'INPUT', 0.1, 1e-3, desc="m (mirrors the panel)")
     add_socket(ng, "Gas Parcels", 'NodeSocketInt', 'INPUT', 2000, 8, desc="Gas parcel count (mirrors the panel)")
     add_socket(ng, "Specific Heat", 'NodeSocketFloat', 'INPUT', 4181.0, 1.0, desc="J/(kg K)")
     add_socket(ng, "Heat Added", 'NodeSocketFloat', 'INPUT', 0.0, desc="J/kg added to every particle")
@@ -147,7 +153,9 @@ def set_fluid_inputs(mod, fl, fm):
         "Mass": fl.d_mass or fl.mass, "Volume": fl.d_volume or fl.volume, "Density": fl.d_density or fl.density,
         "Temperature": fl.temperature, "Velocity": tuple(fl.velocity), "Viscosity": fl.visc, "Cohesion": fl.cohesion, "Mixing Rate": fl.mix_rate,
         "Colour": (fl.color[0], fl.color[1], fl.color[2], 1.0), "Fluid ID": _fluid_index(fl, fm), "Gas": fl.kind == 'GAS',
-        "No Container": bool(fl.no_container), "Fill": fl.fill, "Gas Parcels": fl.count, "Specific Heat": fl.cp, "Scale": 1.0,
+        "No Container": bool(fl.no_container), "Fill": fl.fill, "Gas Parcels": fl.count,
+        "Spawn Mode": [k for k, _n, _d in SP.SPAWN_ITEMS].index(fl.spawn_mode), "Spawn Density": fl.spawn_density,
+        "Use Primitive": fl.shape_source == 'PRIMITIVE', "Primitive": [k for k, _n, _d in SP.PRIM_ITEMS].index(fl.prim_type), "Primitive Size": fl.prim_size, "Specific Heat": fl.cp, "Scale": 1.0,
         "Render Mode": {'POINTS': 0, 'RAYMARCH': 1, 'SPLAT': 0, 'SURFACE': 2}.get(fl.render_mode, 0), "Radius Scale": 2.0,
         "Build Volume And Surface": False}
     vals.update(_env_values())

@@ -112,11 +112,34 @@ class AF_PT_fm_fluids(_FMBase, Panel):
         r.prop(fl, "kind", expand=True)
         b = l.box()
         b.label(text="Where it is", icon='OUTLINER_OB_MESH')
-        b.prop(fl, "shape")
+        r = b.row(align=True)
+        r.prop(fl, "shape_source", expand=True)
+        if fl.shape_source == 'PRIMITIVE':
+            b.prop(fl, "prim_type")
+            b.prop(fl, "prim_size")
+            b.prop(fl, "prim_loc")
+            if fl.prim_type != 'SPHERE':
+                b.prop(fl, "prim_rot")
+            b.prop(fl, "prim_scale")
+            b.operator("arcflow.fm_prim_to_object", icon='MESH_DATA')
+        else:
+            b.prop(fl, "shape")
+            if fl.shape is not None and fl.shape.type == 'CURVE':
+                b.prop(fl.shape.arc_flow_fm, "channel_radius")
+            if fl.shape is not None and fl.shape.particle_systems:
+                b.prop_search(fl, "psys_name", fl.shape, "particle_systems", text="Particles")
+        if fl.shape_source == 'PRIMITIVE' or fl.shape is not None:
+            r = b.row(align=True)
+            r.prop(fl, "spawn_mode", text="")
+            r.prop(fl, "spawn_density", text="Density")
+            if fl.d_spawn:
+                b.label(text=fl.d_spawn, icon='PARTICLES')
         b.prop(fl, "no_container")
         if not fl.no_container:
             b.prop(fl, "container")
-            if fl.shape is None and fl.volume <= 0:
+            if fl.container is not None and fl.container.type == 'CURVE':
+                b.prop(fl.container.arc_flow_fm, "channel_radius")
+            if fl.shape is None and fl.shape_source != 'PRIMITIVE' and fl.volume <= 0:
                 b.prop(fl, "fill")
         if fl.kind == 'GAS':
             b.prop(fl, "count")
@@ -195,7 +218,7 @@ class AF_PT_fm_object(_FMBase, Panel):
         l.prop(p, "heat_on")
         if p.heat_on:
             l.prop(p, "heat_power"); l.prop(p, "heat_radius")
-        if o.type == 'MESH':
+        if o.type in {'MESH', 'CURVE', 'SURFACE', 'META', 'FONT'}:
             l.prop(p, "collider")
             if p.collider:
                 l.prop(p, "friction")

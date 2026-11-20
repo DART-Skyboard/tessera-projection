@@ -12,6 +12,7 @@ from bpy.types import Operator
 
 from . import fluidmode_gn as FGN
 from . import gn, runtime, shading
+from . import spawn as SP
 from .core import atmosphere as ATM
 from .core import fluidmode as FM
 
@@ -92,6 +93,31 @@ def _rules_kw(fm):
     return dict(species=d.get('species', []), rules=d.get('rules', []))
 
 
+def _spawn_shapes(fm, defs, geoms, radii, modes, dens, bodies, spacing):
+    """Turn each fluid's geometry into the solver's shape (volume mesh, or generated points by the Spawn mode and Density).  Returns the spacing to
+    build with: the user's, or (when points were generated) the automatic one so the generated points and the solver lattice agree."""
+    rng = np.random.default_rng(fm.seed + 17)
+    gen = any(g is not None and SP.needs_dx(g, m, de) for g, m, de in zip(geoms, modes, dens))
+    dx = spacing
+    if dx is None and gen:
+        dx = SP.estimate_dx(defs, geoms, radii, modes, dens, bodies, fm.max_particles)
+    for _try in range(3):
+        n_liq = 0
+        for d, g, r, m, de, fl in zip(defs, geoms, radii, modes, dens, fm.fluids):
+            if g is None:
+                d['shape'] = None
+                fl.d_spawn = ""
+                continue
+            d['shape'], note = SP.spawn(g, m, de, dx or 0.01, r, rng)
+            fl.d_spawn = note
+            if d['shape'] is not None and d['shape']['kind'] == 'POINTS' and d['kind'] != 'GAS':
+                n_liq += len(d['shape']['pts'])
+        if not gen or spacing is not None or n_liq <= 1.15 * fm.max_particles:
+            break
+        dx *= (n_liq / fm.max_particles) ** (1.0 / 3.0)     # too many generated points: coarser spacing, regenerate
+    return dx if gen else spacing
+
+
 def build_solver(scene):
     fm = scene.arc_flow_fm
     deps = bpy.context.evaluated_depsgraph_get()
@@ -99,6 +125,7 @@ def build_solver(scene):
         deps.update()
     bodies, body_objs, cont_idx = [], [], {}
     defs = []
+    geoms, radii, modes, dens = [], [], [], []
     z_low = []
     for fl in fm.fluids:
         preset = fl.preset if fl.preset in FM.PRESETS else 'CUSTOM'
@@ -106,15 +133,16 @@ def build_solver(scene):
                          temperature=fl.temperature, velocity=tuple(fl.velocity), visc=fl.visc, cp=fl.cp, k=fl.k, beta=fl.beta,
                          cohesion=fl.cohesion, miscible=fl.miscible, cool=fl.cool, drag=None if fl.drag < 0 else fl.drag,
                          count=fl.count, fill=fl.fill / 100.0, color=tuple(fl.color), mix_rate=fl.mix_rate, priority=fl.priority)
-        if fl.shape is not None:
-            d['shape'] = _shape_of(fl.shape, deps)
-            if d['shape'] is not None:
-                pts = d['shape']['verts'] if d['shape']['kind'] == 'MESH' else d['shape']['pts']
-                z_low.append(float(np.min(pts[:, 2])))
+        geom, rad = SP.fluid_geometry(fl, deps)
+        geoms.append(geom); radii.append(rad); modes.append(fl.spawn_mode); dens.append(fl.spawn_density)
+        if geom is not None:
+            pts0 = geom['V'] if len(geom['V']) else (geom['psys'] if geom['psys'] is not None else np.zeros((0, 3)))
+            if len(pts0):
+                z_low.append(float(np.min(pts0[:, 2])))
         if not fl.no_container and fl.container is not None:
             o = fl.container
             if o.name not in cont_idx:
-                fld, _v, _t = runtime._field(o, deps)
+                fld, _v, _t = SP.container_field(o, deps)
                 bodies.append(FM.Body(fld, np.array(o.matrix_world), 'CONTAINER', [], 0.2, o.name))
                 bodies[-1].open = bool(len(_t)) and not FM.is_closed(np.asarray(_t))
                 body_objs.append(o)
@@ -124,8 +152,8 @@ def build_solver(scene):
             bodies[d['body']].fluids.append(len(defs))
         defs.append(d)
     for o in scene.objects:
-        if o.type == 'MESH' and o.arc_flow_fm.collider and o.name not in cont_idx:
-            fld, _v, _t = runtime._field(o, deps)
+        if o.type in SP.CONTAINER_TYPES and o.arc_flow_fm.collider and o.name not in cont_idx:
+            fld, _v, _t = SP.container_field(o, deps)
             bodies.append(FM.Body(fld, np.array(o.matrix_world), 'COLLIDER', None, o.arc_flow_fm.friction, o.name))
             body_objs.append(o)
     for b, o in zip(bodies, body_objs):
@@ -134,6 +162,7 @@ def build_solver(scene):
             b.fluids = None
     env = environment(scene, min(z_low) if z_low else 0.0)
     spacing = fm.spacing if fm.spacing > 0 else None
+    spacing = _spawn_shapes(fm, defs, geoms, radii, modes, dens, bodies, spacing)
     S = FM.FluidSolver.build(defs, bodies, env, dx=spacing, max_particles=fm.max_particles, seed=fm.seed, thermal_speedup=fm.speedup,
                              iterations=fm.iterations, max_substeps=fm.max_substeps, lotbcbp=fm.lotbcbp,
                              fill_seed='POUR' if fm.fill_mode == 'POUR' else 'LEVEL', **_rules_kw(fm))
@@ -581,7 +610,8 @@ def stop(scene, why="Stopped"):
 
 
 # ----------------------------------------------------------------------------- operators
-def add_fluid(scene, preset='WATER', name=None):
+def add_fluid(scene, preset='WATER', name=None, primitive=False):
+    """primitive=True (the Add Fluid operator): the new fluid is a sphere of points at the 3D cursor that the user edits or replaces."""
     from .fluidmode_props import apply_preset
     fm = scene.arc_flow_fm
     fl = fm.fluids.add()
@@ -595,6 +625,11 @@ def add_fluid(scene, preset='WATER', name=None):
     apply_preset(fl, preset)
     if fl.kind == 'LIQUID':
         fl.render_mode = 'SURFACE'              # liquids render as one smooth, merged surface by default (gases stay particles / volume)
+    if primitive:
+        fl.shape_source, fl.prim_type, fl.spawn_mode = 'PRIMITIVE', 'SPHERE', 'VOLUME'
+        fl.prim_loc = tuple(scene.cursor.location)
+        if fl.kind == 'GAS':
+            fl.prim_size = 0.15
     fm.index = len(fm.fluids) - 1
     mark_dirty()
     return fl
@@ -607,7 +642,7 @@ class AF_OT_fm_add_fluid(Operator):
     preset: EnumProperty(name="Preset", items=FM.PRESET_ITEMS, default='WATER')
 
     def execute(self, ctx):
-        add_fluid(ctx.scene, self.preset)
+        add_fluid(ctx.scene, self.preset, primitive=True)
         return {'FINISHED'}
 
 
@@ -642,16 +677,40 @@ class AF_OT_fm_assign(Operator):
     def execute(self, ctx):
         n = 0
         for o in ctx.selected_objects:
-            if o.type not in {'MESH', 'CURVE', 'SURFACE', 'META', 'FONT', 'POINTCLOUD'}:
+            if o.type not in SP.SHAPE_TYPES and not o.particle_systems:
                 continue
             fl = add_fluid(ctx.scene, self.preset, name=o.name)
             fl.shape = o
+            fl.shape_source = 'OBJECT'
             fl.no_container = True
             n += 1
         if not n:
             self.report({'WARNING'}, "Select one or more geometry objects")
             return {'CANCELLED'}
         self.report({'INFO'}, "%d fluid(s) added. Untick No container and pick a Container to hold them." % n)
+        return {'FINISHED'}
+
+
+class AF_OT_fm_prim_to_object(Operator):
+    bl_idname = "arcflow.fm_prim_to_object"
+    bl_label = "Make Editable Object"
+    bl_description = "Turn the fluid's primitive into a real mesh object (edit it in the viewport) and use that object as the Shape"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, ctx):
+        fm = ctx.scene.arc_flow_fm
+        if not (0 <= fm.index < len(fm.fluids)):
+            return {'CANCELLED'}
+        fl = fm.fluids[fm.index]
+        V, T = SP.primitive_mesh(fl.prim_type, fl.prim_size)
+        me = bpy.data.meshes.new("%s %s" % (fl.name, fl.prim_type.title()))
+        me.from_pydata(V.tolist(), [], T.tolist())
+        me.update()
+        o = bpy.data.objects.new(me.name, me)
+        ctx.scene.collection.objects.link(o)
+        o.location, o.rotation_euler, o.scale = tuple(fl.prim_loc), tuple(fl.prim_rot), tuple(fl.prim_scale)
+        fl.shape, fl.shape_source = o, 'OBJECT'
+        mark_dirty()
         return {'FINISHED'}
 
 
@@ -1031,7 +1090,7 @@ class AF_OT_fm_demo(Operator):
         return {'FINISHED'}
 
 
-CLASSES = (AF_OT_fm_add_fluid, AF_OT_fm_remove_fluid, AF_OT_fm_assign, AF_OT_fm_heat, AF_OT_fm_collider, AF_OT_fm_build, AF_OT_fm_stop,
+CLASSES = (AF_OT_fm_add_fluid, AF_OT_fm_remove_fluid, AF_OT_fm_assign, AF_OT_fm_prim_to_object, AF_OT_fm_heat, AF_OT_fm_collider, AF_OT_fm_build, AF_OT_fm_stop,
            AF_OT_fm_reset, AF_OT_fm_fill, AF_OT_fm_bake, AF_OT_fm_demo)
 
 

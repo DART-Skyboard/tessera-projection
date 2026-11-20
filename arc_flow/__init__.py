@@ -8,6 +8,7 @@ from . import retopo_ops, retopo_panel  # Quad Remesh (LOTBCBP)
 from . import systems_ops  # Systems, crossfeed demos (Tessera Projection)
 from . import fluidmode_ops, fluidmode_panel, fluidmode_props  # Fluid mode (Tessera Projection)
 from . import thermal, windtunnel  # thermal readback, wind tunnel builder
+from . import assets_demo, spawn_gn  # three independent assets example, spawn controls as Geometry Nodes
 from . import tessera_nodes  # reusable Tessera node groups, Add menu entry
 from . import surfaces_ops, surfaces_panel, surfaces_props  # surface sources, fluid volumes, Examples panel
 from . import shader_ops  # realistic shader presets (water, glass, lava, smoke ...)
@@ -24,7 +25,7 @@ def register():
     fluidmode_props.register(); fluidmode_ops.register(); fluidmode_panel.register()
     surfaces_props.register(); surfaces_ops.register(); surfaces_panel.register()
     tessera_nodes.register()
-    thermal.register(); windtunnel.register()
+    thermal.register(); windtunnel.register(); assets_demo.register(); spawn_gn.register()
     shader_ops.register()
 
 
