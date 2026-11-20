@@ -312,7 +312,7 @@ def _liquid(c, color, dens, ior, rough, scatter=0.02, aniso=0.0, coat=0.0, sss=0
     if c.particle:
         surf = c.particle_surface(col, rg, 1.33 if ior < 1.4 else ior)
     else:
-        base = c.mixc((1.0, 1.0, 1.0, 1.0), col, dye)
+        base = c.mixc((1.0, 1.0, 1.0, 1.0), col, c.p('Surface tint', dye))
         opt = {'Transmission Dispersion Scale': dispersion} if dispersion else {}
         pr = c.prin({'Base Color': base, 'Roughness': rg, 'IOR': ior_s, 'Transmission Weight': 1.0, 'Specular IOR Level': 0.5,
                      'Coat Weight': coat, 'Coat Roughness': 0.0, 'Subsurface Weight': sss}, opt)
@@ -788,7 +788,7 @@ def fluid_material(fl, preview=False, surface=None):
     """Material of a fluid (for its points object, or its surface mesh when ``surface``): preset by fluid, fm_color / temperature / density on."""
     key = shader_for_fluid(fl)
     particle = (not surface) and PRESETS[key][2] == 'SURFACE' and is_refractive(key)
-    name = "%s%s [%s]" % (material_name(key, preview, particle), "", fl.name)
+    name = "%s%s [%s]" % (material_name(key, preview, particle), " surface" if surface else "", fl.name)
     base = material_name(key, preview, particle)
     mat = bpy.data.materials.get(name)
     if mat is None or mat.get('ts_preset') != key:
@@ -804,10 +804,18 @@ def fluid_material(fl, preview=False, surface=None):
             set_params(mat, Subsurface=0.0)           # random-walk subsurface inside millimetre spheres is pure noise: diffuse + coat instead
         n = mat.node_tree.nodes.get('TS_Subsurface scale')
         dx = _solver_dx()
+        an = mat.node_tree.nodes.get('TS_Absorption density')
+        if an is not None and dx and is_refractive(key):   # densities are per metre: a 10 cm vessel needs ~10x more than a 1 m tank
+            an.outputs[0].default_value = an.outputs[0].default_value / min(1.0, 20.0 * dx)
+        if surface and mat.get('ts_mode') == 'refractive':
+            # attributes are not defined inside a volume: the per-vertex colour tints the surface, the absorption stays a mild depth cue
+            set_params(mat, Surface_tint=0.75)
+            if an is not None:
+                an.outputs[0].default_value *= 0.35
         if n is not None and dx:
             n.outputs[0].default_value = min(n.outputs[0].default_value, n.outputs[0].default_value * 20.0 * dx)
     # fm_color is only meaningful when the fluids mix (otherwise the attribute is a white placeholder): switch the colour input with it
-    mixing = 1.0 if _solver_mixing() else 0.0
+    mixing = 1.0 if (surface or _solver_mixing()) else 0.0   # surface meshes always carry their vertex colours
     set_params(mat, Use_fluid_colour=mixing, **{'Use fluid colour (absorption)': mixing, 'Use fluid colour (emission)': mixing})
     return mat
 
@@ -852,7 +860,23 @@ def apply_fluid_shaders(scene, preview=None):
             so.data.materials.clear()
             so.data.materials.append(m)
             n += 1
+    n += apply_merged_surface(scene, preview)
     return n
+
+
+def apply_merged_surface(scene, preview=False):
+    """The merged liquid surface (AFFMS_Liquids) takes the shader of the first liquid that renders as a surface (per vertex colours come from fm_color)."""
+    so = bpy.data.objects.get("AFFMS_Liquids")
+    fm = getattr(scene, 'arc_flow_fm', None)
+    if so is None or so.data is None or fm is None:
+        return 0
+    for fl in fm.fluids:
+        if fl.render_mode == 'SURFACE' and getattr(fl, 'shader', 'AUTO') != 'OFF':
+            m = fluid_material(fl, preview, surface=True)
+            so.data.materials.clear()
+            so.data.materials.append(m)
+            return 1
+    return 0
 
 
 def surface_material(fl, scene=None):

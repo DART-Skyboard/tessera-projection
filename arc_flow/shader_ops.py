@@ -195,6 +195,15 @@ def _hook_fluid_mode():
         except Exception as ex:
             FO.RT.msg = "shaders: %s" % ex
         return r
+    orig_merged = getattr(FO, '_update_merged_surface', None)
+
+    def update_merged(scene, *a, **k):
+        r = orig_merged(scene, *a, **k)
+        try:
+            SP.apply_merged_surface(scene, bool(scene.arc_flow_sh.preview))
+        except Exception as ex:
+            FO.RT.msg = "shaders: %s" % ex
+        return r
     orig_glass = getattr(FO, '_glass_material', None)
 
     def glass_material(name="TesseraGlass"):       # the Examples' vessels: a real thin-walled glass shader
@@ -207,6 +216,9 @@ def _hook_fluid_mode():
     if orig_glass is not None:
         FO._glass_material = glass_material
     FO.ensure_objects = ensure_objects
+    if orig_merged is not None:
+        update_merged._orig = orig_merged
+        FO._update_merged_surface = update_merged
     if orig_surf is not None:
         FO._update_surface = update_surface
 
@@ -214,6 +226,8 @@ def _hook_fluid_mode():
 def _unhook_fluid_mode():
     from . import fluidmode_ops as FO
     if getattr(FO.ensure_objects, '_ts_shader', False):
+        if hasattr(FO._update_merged_surface, '_orig'):
+            FO._update_merged_surface = FO._update_merged_surface._orig
         if hasattr(FO._update_surface, '_orig'):
             FO._update_surface = FO._update_surface._orig
         if FO.ensure_objects._glass is not None:

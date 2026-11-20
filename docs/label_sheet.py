@@ -1,7 +1,7 @@
 """Draw preset names under the spheres of docs/render_shaders.py output (system python with Pillow):  python3 docs/label_sheet.py in.png [out.png]"""
 import sys
 from PIL import Image, ImageDraw, ImageFont
-NAMES = ["Water", "Sea water", "Glass", "Oil", "Honey", "Syrup", "Milk / cream", "Wax", "Lava / magma", "Mercury", "Molten metal", "Slime / goo", "Blood", "Ice",
+NAMES = ["Water", "Sea water", "Glass", "Glass (thin)", "Oil", "Honey", "Syrup", "Milk / cream", "Wax", "Lava / magma", "Mercury", "Molten metal", "Slime / goo", "Blood", "Ice",
          "Crystal", "Smoke", "Steam", "Soot", "Flame", "Plasma", "Gas cloud"]
 cols, sp = 7, 1.15
 im = Image.open(sys.argv[1]).convert("RGB")
