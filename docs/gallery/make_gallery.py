@@ -57,8 +57,20 @@ if IN_BLENDER:
         for a in win().screen.areas:
             a.tag_redraw()
 
-    def shot(name, hold=1.0, keep=True):
+    def shotg(name, away=True):
+        """Generator version: moves the pointer away and lets Blender process it (tooltips close) before the grab."""
+        if away:
+            mouse(600, 900)
+            yield 0.4
+            mouse(610, 905)
+            yield 1.5
+        shot(name, away=False)
+
+    def shot(name, hold=1.0, keep=True, away=True):
         """Grab the whole X screen (the real Blender window).  name 'x' -> work/x.png ; frames go to frames/<seq>_NNNN.png with a hold time."""
+        if away:
+            mouse(600, 900)
+            time.sleep(0.5)
         subprocess.run(['import', '-window', 'root', os.path.join(WORK, name + '.png')], check=True)
         print("SHOT", name, flush=True)
 
@@ -187,8 +199,8 @@ if IN_BLENDER:
         for o in list(bpy.data.objects):
             bpy.data.objects.remove(o, do_unlink=True)
 
-    def boot():
-        """Wait for the window, close the splash, open the Tessera sidebar tab and widen the sidebar."""
+    def boot(open_ids=None, widen=True):
+        """Wait for the window, close the splash, set which Tessera panels start open, switch the sidebar to the Tessera tab, widen it."""
         yield 4.0
         mouse(900, 500)
         yield 1.0
@@ -199,10 +211,13 @@ if IN_BLENDER:
         sp = area('VIEW_3D').spaces[0]
         sp.show_region_ui = True
         sp.shading.type = 'SOLID'
+        if open_ids is not None:
+            panel_states(open_ids)     # before the Tessera tab is first drawn, so the panels start in this state
         yield 2.0
         yield from scroll(1562, 300, 4, ctrl=True)
         yield 1.0
-        yield from drag(1285, 200, 1130, 200)
+        if widen:
+            yield from drag(1285, 200, 1130, 200)
         yield 1.0
 
     def suzanne_tris():
@@ -230,27 +245,104 @@ if IN_BLENDER:
         while not cond() and time.time() - t0 < timeout:
             yield every
 
+    def material_view():
+        sp = area('VIEW_3D').spaces[0]
+        sp.shading.type = 'MATERIAL'
+        sp.overlay.show_wireframes = False
+
+    def solid_color(color_type='OBJECT'):
+        sp = area('VIEW_3D').spaces[0]
+        sp.shading.type = 'SOLID'
+        sp.shading.color_type = color_type
+        sp.shading.show_xray = False
+        sp.overlay.show_wireframes = False
+
+    def tessera_panels():
+        """All Tessera sidebar panel classes of the 3D viewport, in registration order (parents before children)."""
+        out = []
+        def walk(c):
+            for k in c.__subclasses__():
+                walk(k)
+                out.append(k)
+        walk(bpy.types.Panel)
+        res = [c for c in out if getattr(c, 'bl_category', '') == 'Tessera' and getattr(c, 'bl_space_type', '') == 'VIEW_3D']
+        return res
+
+    def panel_states(open_ids):
+        """Open exactly the sidebar panels in open_ids (others start collapsed): the panels are re-registered with DEFAULT_CLOSED set
+        accordingly, which is what the add-on's own bl_options do on a fresh start."""
+        cls = tessera_panels()
+        for c in reversed(cls):
+            try:
+                bpy.utils.unregister_class(c)
+            except Exception as ex:
+                print("unreg", c, ex)
+        for c in cls:
+            opts = set(getattr(c, 'bl_options', ())) - {'DEFAULT_CLOSED'}
+            if c.bl_idname not in open_ids:
+                opts.add('DEFAULT_CLOSED')
+            c.bl_options = opts
+            bpy.utils.register_class(c)
+        print("PANELS", [c.bl_idname for c in cls], flush=True)
+
+    def poke_sidebar():
+        """Force the sidebar to rebuild its panel list (mode switches change which panels exist)."""
+        sp = area('VIEW_3D').spaces[0]
+        sp.show_region_ui = False
+        sp.show_region_ui = True
+        redraw()
+        mouse(1400, 600)
+        yield 1.0
+        mouse(1410, 610)
+        yield 1.5
+
+    def fit_view(pitch=70.0, yaw=25.0, factor=2.4):
+        """Frame every visible mesh object (left of the sidebar)."""
+        pts = [o.matrix_world @ Vector(c) for o in bpy.data.objects if o.type == 'MESH' and not o.hide_get() for c in o.bound_box]
+        lo = Vector((min(p.x for p in pts), min(p.y for p in pts), min(p.z for p in pts)))
+        hi = Vector((max(p.x for p in pts), max(p.y for p in pts), max(p.z for p in pts)))
+        view((lo + hi) / 2, max((hi - lo).length * factor * 0.5, 0.2), yaw=yaw, pitch=pitch)
+
+    def op(fn, *a, **k):
+        """Call a bpy operator with the 3D viewport as context (what a button in its sidebar does)."""
+        with override():
+            return fn(*a, **k)
+
+    def run_until_frame(n, timeout=300):
+        yield from wait_for(lambda: bpy.context.scene.frame_current >= n, timeout, 1.0)
+        yield 1.0
+
+    def stop_play():
+        try:
+            if bpy.context.screen.is_animation_playing:
+                bpy.ops.screen.animation_play()
+        except Exception:
+            pass
+
+    def fm_stop():
+        op(bpy.ops.arcflow.fm_stop)
+        stop_play()
+
+    # ------------------------------------------------------------------ scenes
     def step_remesh():
-        yield from boot()
+        yield from boot({'AF_PT_retopo'})
         clear_scene()
         src = suzanne_tris()
+        for v in src.data.vertices:            # a slightly asymmetric scan-like mesh, so Symmetrize has something to fix
+            if v.co.x > 0.2:
+                v.co.y += 0.012 * math.sin(7 * v.co.z)
         src.select_set(False)
         solid_wire()
         view((0, 0, 0.1), 6.0, yaw=18, pitch=82)
-        yield from click(1212, 97)        # collapse the main panel
-        yield from click(1212, 125)       # open Projection Remesh
+        yield 3.0
+        yield from shotg('01_remesh_before')
+        op(bpy.ops.arcflow.quad_analyse)
         yield 2.5
-        shot('01_remesh_before')
-        yield from click(1158, 465)       # Symmetry on
-        yield 1.5
-        yield from click(1253, 159)       # Analyse Topology
-        yield 2.0
-        shot('01_remesh_analyse')
+        yield from shotg('01_remesh_analyse')
         before = set(bpy.data.objects)
-        yield from click(1448, 159)       # Projection Remesh
-        yield from wait_for(lambda: set(bpy.data.objects) - before, 90)
+        op(bpy.ops.arcflow.quad_remesh)
+        yield from wait_for(lambda: set(bpy.data.objects) - before, 120)
         new = list(set(bpy.data.objects) - before)
-        print("NEW OBJECTS", [o.name for o in new], flush=True)
         yield 2.0
         if new:
             new[0].select_set(False)
@@ -258,163 +350,180 @@ if IN_BLENDER:
             new[0].location.x = 1.35
         view((0, 0, 0.1), 7.2, yaw=10, pitch=84)
         yield 4.0
-        shot('01_projection_remesh')
+        yield from shotg('01_projection_remesh')
 
-    def material_view():
-        sp = area('VIEW_3D').spaces[0]
-        sp.shading.type = 'MATERIAL'
-        sp.overlay.show_wireframes = False
-
-    def collapse_extra():
-        """Tessera main panel at boot: Part and Fluids sub-panels open; close them (bottom first, so positions do not shift)."""
-        yield from click(1377, 356)
-        yield from click(1380, 293)
-        yield 1.5
-
-    def run_until_frame(n, timeout=240):
-        yield from wait_for(lambda: bpy.context.scene.frame_current >= n, timeout, 1.0)
-        yield 1.0
+    def engine_scene(loader, open_ids, dist, center):
+        yield from boot(open_ids)
+        clear_scene()
+        loader()
+        material_view()
+        view(center, dist)
+        yield 3.0
 
     def step_single():
-        yield from boot()
-        clear_scene()
-        yield from collapse_extra()
-        yield from click(1350, 532)       # Load Demo: Single Engine
-        material_view()
-        view((3.0, 0, 1.0), 22)
-        yield 2.0
-        yield from click(1253, 579)       # Re-detect
-        yield 2.0
-        yield from click(1220, 132)       # Build
+        yield from engine_scene(lambda: op(bpy.ops.arcflow.demo), {'AF_PT_main', 'AF_PT_systems'}, 22, (3.0, 0, 1.0))
+        op(bpy.ops.arcflow.systems_detect)
+        op(bpy.ops.arcflow.build)
         yield from run_until_frame(14)
-        shot('02_single_engine')
-        yield from click(1220, 132)       # Stop
-        yield 1.5
+        yield from shotg('02_single_engine')
+        op(bpy.ops.arcflow.stop)
+        stop_play()
+        yield 1.0
 
     def step_twin():
-        yield from boot()
-        clear_scene()
-        yield from collapse_extra()
-        yield from click(1350, 552)       # Load Demo: Twin Engines + Crossfeed
-        material_view()
-        view((5.5, 0, 1.0), 26)
-        yield 3.0
-        yield from click(1220, 132)       # Build
-        yield from run_until_frame(18)
-        shot('03_twin_enhanced')
-        yield from click(1220, 132)       # Stop
+        yield from engine_scene(lambda: op(bpy.ops.arcflow.demo_twin), {'AF_PT_main', 'AF_PT_systems'}, 26, (5.5, 0, 1.0))
+        op(bpy.ops.arcflow.build)
+        yield from run_until_frame(22)
+        yield from shotg('03_twin_enhanced')
+        op(bpy.ops.arcflow.stop)
+        stop_play()
         yield 2.0
-        bpy.context.scene.arc_flow.sys_variant = 'BAD'     # crossfeed variant: engine A's hot chamber into engine B's fuel tank
+        bpy.context.scene.frame_set(1)
+        bpy.context.scene.arc_flow.sys_variant = 'BAD'      # crossfeed variant: engine A's hot chamber into engine B's fuel tank
         yield 2.0
-        yield from click(1220, 132)       # Build again
-        yield from run_until_frame(18)
-        shot('03_twin_failure')
-        yield from click(1220, 132)
-        yield 1.5
+        op(bpy.ops.arcflow.build)
+        yield from run_until_frame(22)
+        yield from shotg('03_twin_failure')
+        op(bpy.ops.arcflow.stop)
+        stop_play()
+        yield 1.0
 
     def step_env():
-        yield from boot()
-        clear_scene()
-        bpy.ops.arcflow.demo()
-        material_view()
-        view((3.0, 0, 1.0), 22)
-        yield from collapse_extra()
-        yield from click(1254, 501)       # close Systems
-        yield from click(1210, 397)       # open Environment
-        yield 2.0
+        yield from engine_scene(lambda: op(bpy.ops.arcflow.demo), {'AF_PT_main', 'AF_PT_env'}, 22, (3.0, 0, 1.0))
         bpy.context.scene.arc_flow.env.preset = 'MARS'
+        yield 6.0
+        yield from shotg('04_environment')
+        yield from click(1330, 551)       # open the planet preset menu
         yield 2.0
-        yield from click(1330, 488)       # open the planet preset menu
-        yield 2.0
-        shot('04_environment_presets')
+        yield from shotg('04_environment_presets')
         _key(0xff1b, True); _key(0xff1b, False)
-        yield 1.5
-        shot('04_environment')
-
-    def fluid_demo(btn_x, name, center, dist, nframes, shot_name, yaw=25.0, pitch=78.0, maxp=None):
-        yield from boot()
-        clear_scene()
-        yield from click(1212, 97)        # collapse the main panel
-        yield 1.5
-        yield from click(1440, 187)       # Mode: Fluid
-        yield 2.0
-        if maxp:
-            from bl_ext.user_default.tessera_projection import fluidmode_ops as FO   # lighter particle count (shared 8 GB machine)
-            {'lava': FO.load_lava_lamp, 'mix': FO.load_colour_mixing}[name](bpy.context.scene, max_particles=maxp)
-        else:
-            yield from click(btn_x, 222)  # demo button
-        yield 3.0
-        sp = area('VIEW_3D').spaces[0]      # Solid + object colour: much lighter than Material Preview on this shared 8 GB machine
-        sp.shading.type = 'SOLID'
-        sp.shading.color_type = 'OBJECT'
-        sp.overlay.show_wireframes = False
-        view(center, dist, yaw=yaw, pitch=pitch)
-        yield 2.0
-        for o in bpy.data.objects:
-            if o.type == 'CAMERA' or o.name == 'AFFM_Carrier' or o.name.endswith('_Carrier'):
-                o.hide_set(True)          # viewport only: camera gizmo and the (opaque) carrier-liquid particles
-        yield from click(1204, 132)       # Build (Fill / Settle runs first)
-        yield from wait_for(lambda: bpy.context.scene.frame_current >= 2, 400)
-        for fl in bpy.context.scene.arc_flow_fm.fluids:
-            ob = bpy.data.objects.get("AFFM_" + fl.name)
-            print("FLUIDOBJ", fl.name, ob, flush=True)
-            if ob is not None and fl.name.startswith('Carrier'):
-                ob.hide_set(True)      # viewport only: the opaque carrier-liquid particles would hide the wax blobs
-            if ob is not None:
-                ob.color = (fl.color[0], fl.color[1], fl.color[2], 1.0)
-        yield from run_until_frame(nframes, 400)
-        shot(shot_name)
-        yield from click(1204, 132)       # Stop
-        yield 1.5
-
-    def step_lava():
-        yield from fluid_demo(1198, 'lava', (0, 0, 0.17), 0.9, 30, '05_fluid_lava_lamp', yaw=15, pitch=88, maxp=4000)
-
-    def step_mix():
-        yield from fluid_demo(1294, 'mix', (0, 0, 0.09), 0.55, 14, '06_colour_mixing', yaw=15, pitch=88, maxp=2500)
+        yield 1.0
 
     def step_cavity():
-        yield from boot()
-        clear_scene()
-        bpy.ops.arcflow.demo()
+        yield from engine_scene(lambda: op(bpy.ops.arcflow.demo), {'AF_PT_main', 'AF_PT_solver'}, 22, (3.0, 0, 1.0))
         solid_wire(False)
         area('VIEW_3D').spaces[0].shading.color_type = 'MATERIAL'
-        view((3.0, 0, 1.0), 22)
-        yield from collapse_extra()
-        yield from click(1254, 501)       # close Systems
-        yield from click(1224, 449)       # open Solver (LOTBCBP)
-        yield from click(1158, 645)       # Boolean projection on
-        yield from click(1340, 673)       # Build Fluid Cavity
+        bpy.context.scene.arc_flow.bool_projection = True
+        op(bpy.ops.arcflow.build_cavities)
         yield 4.0
         sp = area('VIEW_3D').spaces[0]
-        sp.shading.type = 'SOLID'
         sp.shading.show_xray = True
-        sp.shading.color_type = 'OBJECT'
         yield 3.0
-        shot('07_fluid_cavity')
+        yield from shotg('07_fluid_cavity')
+
+    FLUID_OPEN = {'AF_PT_fm_mode', 'AF_PT_fm_main', 'AF_PT_fm_fluids'}
+
+    def fluid_scene(loader, open_ids, center, dist, nframes, shot_name, yaw=15.0, pitch=88.0, hide=('Carrier',), colour=True, build=True, mode='FLUID', camera_view=False):
+        yield from boot(open_ids)
+        clear_scene()
+        loader()
+        for o in bpy.data.objects:
+            if o.type == 'CAMERA':
+                o.hide_set(True)      # camera gizmos only clutter the viewport
+        bpy.context.scene.arc_flow_fm.mode = mode
+        if colour:
+            solid_color('OBJECT')
+        if camera_view:
+            sp = area('VIEW_3D').spaces[0]
+            sp.region_3d.view_perspective = 'CAMERA'
+            sp.shading.type = 'SOLID'
+            sp.shading.color_type = 'VERTEX'
+        elif center is None:
+            fit_view(pitch=pitch)
+        else:
+            view(center, dist, yaw=yaw, pitch=pitch)
+        yield 2.0
+        yield from poke_sidebar()
+        if build:
+            op(bpy.ops.arcflow.fm_build)
+            yield from wait_for(lambda: bpy.context.scene.frame_current >= 2, 400)
+            for fl in bpy.context.scene.arc_flow_fm.fluids:
+                ob = bpy.data.objects.get("AFFM_" + fl.name)
+                if ob is not None and any(fl.name.startswith(h) for h in hide):
+                    ob.hide_set(True)      # viewport only: the opaque carrier-liquid particles would hide the wax blobs
+                if ob is not None and colour:
+                    ob.color = (fl.color[0], fl.color[1], fl.color[2], 1.0)
+            yield from run_until_frame(nframes, 500)
+        yield from shotg(shot_name)
+        if build:
+            fm_stop()
+            yield 1.0
+
+    def FOmod():
+        import importlib
+        return importlib.import_module('bl_ext.user_default.tessera_projection.fluidmode_ops')
+
+    def step_lava():
+        yield from fluid_scene(lambda: FOmod().load_lava_lamp(bpy.context.scene, max_particles=4000), FLUID_OPEN, (0, 0, 0.17), 0.9, 30, '05_fluid_lava_lamp', pitch=88)
+
+    def step_mix():
+        yield from fluid_scene(lambda: FOmod().load_colour_mixing(bpy.context.scene, max_particles=2500), FLUID_OPEN, (0, 0, 0.09), 0.55, 14, '06_colour_mixing')
+
+    def step_components():
+        yield from fluid_scene(lambda: op(bpy.ops.arcflow.srf_example, which='EMIT'), {'AF_PT_fm_mode', 'AF_PT_fm_main', 'AF_PT_srf'}, None, 0, 0,
+                               '08a_components_surfaces', colour=False, build=False, pitch=70)
+
+    def step_shader():
+        def load():
+            FOmod().load_colour_mixing(bpy.context.scene, max_particles=2500)
+            sh = bpy.context.scene.arc_flow_sh
+            sh.preset = 'GLASS'
+            op(bpy.ops.arcflow.shader_fluids_auto)
+            g = bpy.data.objects.get('TS_Glass')
+            if g is not None:
+                bpy.context.view_layer.objects.active = g
+                g.select_set(True)
+                op(bpy.ops.arcflow.shader_assign, target='ACTIVE')      # the preset's tunable parameters then show in the panel
+        yield from fluid_scene(load, {'AF_PT_shader'}, (0, 0, 0.09), 0.55, 0, '08b_shader_presets', colour=False, build=False, pitch=80, mode='COMBUSTION')
+
+    def step_examples():
+        def load():
+            op(bpy.ops.arcflow.example_load, key='WIND_TUNNEL')
+        yield from fluid_scene(load, {'AF_PT_examples'}, None, 0, 0, '08c_examples', colour=False, build=False, pitch=70, mode='COMBUSTION')
+
+    def step_windtunnel():
+        def load():
+            op(bpy.ops.arcflow.example_load, key='WIND_TUNNEL')
+            a = bpy.data.objects.get('Aircraft Airframe')
+            if a is not None:                      # active object -> the Thermal readback panel
+                bpy.context.view_layer.objects.active = a
+                a.select_set(True)
+                th = a.arc_flow_th
+                th.on = True
+                th.legend = True                   # colour bar (attached to the scene camera)
+            cam = bpy.data.objects.new("Gallery_Camera", bpy.data.cameras.new("Gallery_Camera"))
+            bpy.context.scene.collection.objects.link(cam)
+            cam.data.lens = 32
+            cam.location = (0.0, -6.2, 1.3)
+            cam.rotation_euler = (math.radians(88), 0, 0)
+            bpy.context.scene.camera = cam
+            bpy.context.scene.render.resolution_x, bpy.context.scene.render.resolution_y = 1280, 720
+        yield from fluid_scene(load, {'AF_PT_fm_mode', 'AF_PT_fm_main', 'AF_PT_thermal'}, None, 0, 14, '08d_wind_tunnel_thermal', colour=False, pitch=75,
+                               hide=('Air',), camera_view=True)
+
+    def step_crystal():
+        yield from fluid_scene(lambda: FOmod().load_crystal(bpy.context.scene, max_particles=3000), FLUID_OPEN, (0, 0, 0.05), 0.5, 24, '08e_transmutation_crystal', pitch=75)
+
+    def step_steam():
+        yield from fluid_scene(lambda: FOmod().load_steam(bpy.context.scene, max_particles=3000), FLUID_OPEN, (0, 0, 0.15), 0.9, 24, '08f_transmutation_steam', pitch=80)
 
     def step_render():
-        yield from boot()
-        clear_scene()
-        yield from collapse_extra()
-        yield from click(1350, 532)       # Load Demo: Single Engine
+        yield from engine_scene(lambda: op(bpy.ops.arcflow.demo), {'AF_PT_main', 'AF_PT_systems'}, 22, (3.0, 0, 1.0))
         solid_wire(False)
-        area('VIEW_3D').spaces[0].shading.color_type = 'MATERIAL'
-        view((3.0, 0, 1.0), 22)
-        yield 2.0
-        yield from click(1220, 132)       # Build
+        op(bpy.ops.arcflow.build)
         yield from run_until_frame(10)
-        yield from click(1220, 132)       # Stop
+        op(bpy.ops.arcflow.stop)
+        stop_play()
         yield 2.0
         stage_render()
         bpy.context.preferences.view.render_display_type = 'AREA'
-        with override():
-            bpy.ops.render.render('INVOKE_DEFAULT')
         done = []
         bpy.app.handlers.render_complete.append(lambda *a: done.append(1))
+        with override():
+            bpy.ops.render.render('INVOKE_DEFAULT')
         yield from wait_for(lambda: done, 900, 2.0)
         yield 4.0
-        shot('08_render_window')
+        yield from shotg('08_render_window')
 
     def stage_render():
         sc = bpy.context.scene
@@ -445,7 +554,70 @@ if IN_BLENDER:
             lo.location = loc
             lo.rotation_euler = (c - lo.location).to_track_quat('-Z', 'Y').to_euler()
 
-    STEPS = {'lava': step_lava, 'mix': step_mix, 'cavity': step_cavity, 'render': step_render, 'remesh': step_remesh, 'single': step_single, 'twin': step_twin, 'env': step_env}
+    def build_gn_example():
+        ng = bpy.data.node_groups.new("Tessera Fluid Example", 'GeometryNodeTree')
+        ng.interface.new_socket('Geometry', in_out='INPUT', socket_type='NodeSocketGeometry')
+        ng.interface.new_socket('Geometry', in_out='OUTPUT', socket_type='NodeSocketGeometry')
+        n = ng.nodes
+        gin, gout = n.new('NodeGroupInput'), n.new('NodeGroupOutput')
+        m2p = n.new('GeometryNodeMeshToPoints')
+        rad = n.new('GeometryNodeSetPointRadius')
+        cloud = n.new('GeometryNodeGroup')
+        import importlib
+        TN = importlib.import_module('bl_ext.user_default.tessera_projection.tessera_nodes')
+        cloud.node_tree = TN.ensure_group('Tessera Particle Cloud')
+        cloud.label = "Particle Cloud"
+        thermal = n.new('GeometryNodeGroup')
+        thermal.node_tree = TN.ensure_group('Tessera Thermal')
+        thermal.label = "Thermal"
+        for node, x in ((gin, -900), (m2p, -650), (rad, -420), (cloud, -190), (thermal, 120), (gout, 420)):
+            node.location = (x, 0)
+
+        def first(sockets, typ):
+            return next(sk for sk in sockets if sk.type == typ)
+        L = ng.links.new
+        L(gin.outputs[0], m2p.inputs['Mesh'])
+        L(m2p.outputs['Points'], rad.inputs['Points'])
+        L(rad.outputs[0], first(cloud.inputs, 'GEOMETRY'))
+        L(first(cloud.outputs, 'GEOMETRY'), first(thermal.inputs, 'GEOMETRY'))
+        L(first(thermal.outputs, 'GEOMETRY'), gout.inputs[0])
+        return ng
+
+    def step_gn():
+        yield from boot({'AF_PT_main'}, widen=False)
+        clear_scene()
+        bpy.ops.mesh.primitive_ico_sphere_add(radius=1.0, location=(0, 0, 0))
+        o = bpy.context.object
+        op(bpy.ops.arcflow.add_tessera_modifier, group='Tessera Particle Cloud')   # also creates the library groups
+        ng = build_gn_example()
+        o.modifiers[0].node_group = ng
+        bpy.context.window.workspace = bpy.data.workspaces['Geometry Nodes']
+        yield 6.0
+        for a in win().screen.areas:
+            print("AREA", a.type, a.x, a.y, a.width, a.height, flush=True)
+        def tap(sym, mods=()):
+            for m in mods:
+                _key(m, True)
+            yield 0.2
+            _key(sym, True); yield 0.15; _key(sym, False); yield 0.4
+            for m in mods:
+                _key(m, False)
+            yield 0.3
+        mouse(800, 750); yield 0.5
+        yield from tap(0x20, (0xffe3,))          # Ctrl+Space: maximise the node editor
+        yield 2.0
+        mouse(800, 500); yield 0.5
+        yield from tap(0xff50)                    # Home: view all
+        yield 1.5
+        yield from shotg('gn_wired', away=False)
+        mouse(400, 300); yield 0.5
+        yield from tap(0x41, (0xffe1,))           # Shift+A: Add menu
+        yield 1.0
+        mouse(330, 700); yield 0.3
+        mouse(335, 776); yield 1.8
+        yield from shotg('gn_add_menu', away=False)
+
+    STEPS = {k[5:]: v for k, v in list(locals().items()) if k.startswith('step_') and callable(v)}
 
     def steps():
         only = [x for x in os.environ.get('GALLERY_ONLY', '').split(',') if x] or list(STEPS)
@@ -479,10 +651,12 @@ else:
 
     def prepare():
         env = dict(os.environ, BLENDER_USER_RESOURCES=RES)
-        sh([os.path.join(ROOT, 'build.sh'), BLENDER], cwd=ROOT, stdout=subprocess.DEVNULL)
+        if not os.environ.get('GALLERY_ZIP'):
+            sh([os.path.join(ROOT, 'build.sh'), BLENDER], cwd=ROOT, stdout=subprocess.DEVNULL)
+        import glob
         subprocess.run(['rm', '-rf', RES]); os.makedirs(RES)
         import glob
-        zipf = sorted(glob.glob(os.path.join(ROOT, 'dist', 'tessera_projection-*.zip')))[-1]
+        zipf = os.environ.get('GALLERY_ZIP') or sorted(glob.glob(os.path.join(ROOT, 'dist', 'tessera_projection-*.zip')))[-1]
         sh([BLENDER, '--factory-startup', '-b', '--command', 'extension', 'install-file', '-r', 'user_default', '--enable', zipf], env=env)
         prefs = os.path.join(WORK, 'prefs.py')
         open(prefs, 'w').write(
@@ -506,10 +680,15 @@ else:
         os.makedirs(WORK, exist_ok=True)
         env = prepare()
         env['XLIB_PATH'] = need_xlib()
-        names = only or ['remesh', 'single', 'twin', 'env', 'lava', 'mix', 'cavity', 'render']
+        names = only or ['remesh', 'single', 'twin', 'env', 'lava', 'mix', 'cavity', 'components', 'shader', 'examples', 'windtunnel', 'crystal', 'steam', 'gn', 'render']
         for name in names:
             env['GALLERY_ONLY'] = name
-            run_gui(env)
+            for attempt in range(3):      # the machine is shared: a step can be OOM-killed, just run it again
+                try:
+                    run_gui(env)
+                    break
+                except subprocess.CalledProcessError as ex:
+                    print('step', name, 'failed (%s), attempt %d' % (ex.returncode, attempt + 1), flush=True)
 
     def run_gui(env):
         sh(['xvfb-run', '-a', '-s', '-screen 0 1920x1080x24', BLENDER, '--gpu-backend', 'opengl', '--window-geometry', '0', '0', '1920', '1080',
@@ -521,7 +700,12 @@ else:
         ('02_single_engine', '02_systems_single_engine'), ('03_twin_enhanced', '03_twin_crossfeed_enhanced'),
         ('03_twin_failure', '03b_twin_crossfeed_failure'), ('04_environment_presets', '04_environment_presets'),
         ('05_fluid_lava_lamp', '05_fluid_mode_lava_lamp'), ('06_colour_mixing', '06_colour_mixing'),
-        ('07_fluid_cavity', '07_boolean_fluid_cavity'), ('08_render_window', '08_cycles_render_window'),
+        ('07_fluid_cavity', '07_boolean_fluid_cavity'), ('04_environment', '04a_environment_card'),
+        ('08a_components_surfaces', '08a_components_surfaces'), ('08b_shader_presets', '08b_shader_presets'),
+        ('08c_examples', '08c_examples_dropdown'), ('08d_wind_tunnel_thermal', '08d_wind_tunnel_thermal'),
+        ('08e_transmutation_crystal', '08e_transmutation_crystal'), ('08f_transmutation_steam', '08f_transmutation_steam'),
+        ('gn_wired', '08g_geometry_nodes_wired'), ('gn_add_menu', '08h_geometry_nodes_add_tessera'),
+        ('08_render_window', '09_cycles_render_window'),
     ]
     HERO_SOURCE = '01_projection_remesh'
 
