@@ -26,7 +26,7 @@ def gas_mask(world, src, fi, idx):
     if _is_gas(world, fi):
         return np.ones(len(idx), np.float32)
     if 'kind' in src:
-        return (src['kind'][idx] > 0).astype(np.float32)
+        return ((src['kind'][idx] > 0) | (src['state'][idx] == 2)).astype(np.float32)     # free-flying liquid stays particles
     return np.zeros(len(idx), np.float32)
 
 
@@ -55,7 +55,7 @@ def update(scene, world, src):
             o.hide_viewport = o.hide_render = True
         return
     state = src['state']
-    liquid = state > 0
+    liquid = state == 1                                    # confined (in a tank or channel); liquid in free flight is drawn as particles
     if 'kind' in src:
         liquid = liquid & (src['kind'] == 0)
     xs, cs = [], []
@@ -73,7 +73,7 @@ def update(scene, world, src):
         dx = 0.1
     sb = _state['builder']
     if sb is None or _state['key'] != id(world) or abs(sb.dx - dx) > 0.15 * sb.dx:
-        sb = _state['builder'] = FSF.SurfaceBuilder(max(dx, 1e-3))
+        sb = _state['builder'] = FSF.SurfaceBuilder(max(dx, 1e-3), sigma=1.3, iso=0.25, cell=0.4)
         _state['key'] = id(world)
     if xs:
         V, T, vc = sb.update(X, np.vstack(cs), frame=scene.frame_current)

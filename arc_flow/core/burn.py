@@ -157,17 +157,21 @@ def react(w, dt):
         return
     cell = max(2.0 * float(np.median(w.rad[sel])), 1e-3)
 
-    def keys(ix):
-        c = np.floor(w.pos[ix] / cell).astype(np.int64)
-        k = (c[:, 0] * 73856093) ^ (c[:, 1] * 19349663) ^ (c[:, 2] * 83492791)
-        o = np.argsort(k, kind='stable')
-        ks = k[o]
+    def cellkey(ix):
+        c = np.floor(w.pos[ix] / cell).astype(np.int64) + (1 << 19)
+        return (c[:, 0] << 40) | (c[:, 1] << 20) | c[:, 2]          # exact cell key (no hash collisions between distant cells)
+    kf, ko = cellkey(fu), cellkey(ox)
+    _u, inv = np.unique(np.concatenate([kf, ko]), return_inverse=True)       # compact cell ids shared by both species
+
+    def keys(ix, cid):
+        o = np.argsort(cid, kind='stable')
+        ks = cid[o]
         first = np.r_[True, ks[1:] != ks[:-1]]
         start = np.maximum.accumulate(np.where(first, np.arange(len(ks)), 0))
         rank = np.arange(len(ks)) - start
-        return ix[o], ks * 4096 + np.minimum(rank, 4095)
-    fi, fk = keys(fu)
-    oi, ok = keys(ox)
+        return ix[o], ks.astype(np.int64) * 4096 + np.minimum(rank, 4095)
+    fi, fk = keys(fu, inv[:len(fu)])
+    oi, ok = keys(ox, inv[len(fu):])
     _c, a, b = np.intersect1d(fk, ok, return_indices=True)
     if len(a) == 0:
         return

@@ -69,7 +69,7 @@ ok(len(inch) > 0 and abs(w.temp[inch].mean() - 3670.0) < 50, "flame gas in the c
 ok(w.ignition > 0.5, "ignition level %.2f" % w.ignition)
 ok(P_hist[0] < 1.3 * w.env.pressure and max(P_hist) > 10 * w.env.pressure, "neck pressure builds: %.2f bar in frame 1 to %.1f bar peak" % (P_hist[0] / 1e5, max(P_hist) / 1e5))
 ok(b['choked'] and w.env.pressure / b['P_c'] < FL.critical_pressure_ratio(g), "flow is choked: ambient / chamber = %.3f below the critical ratio %.3f" % (w.env.pressure / b['P_c'], FL.critical_pressure_ratio(g)))
-T0 = max(w.chambers[0]['T'], 300.0)
+T0 = max(w.engines[0]['T'], 300.0)
 ok(abs(b['v_throat'] - math.sqrt(2 * g * R * T0 / (g + 1))) < 1e-6, "throat velocity is sonic: %.0f m/s" % b['v_throat'])
 A_t = math.pi * nz['r_t'] ** 2
 errs = [abs(BURN.mdot_out(w, P, T0) - A_t * P * math.sqrt(g / (R * T0)) * (2 / (g + 1)) ** ((g + 1) / (2 * (g - 1)))) / (A_t * P * math.sqrt(g / (R * T0))) for P in (2e6, 5e6, 8e6)]
