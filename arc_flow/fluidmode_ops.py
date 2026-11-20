@@ -2,6 +2,7 @@
 
 Scene -> solver (fluids, containers, colliders, heat sources, Environment card), frame stepping with an in-memory cache,
 particle objects (Points / mesh per particle / ray march / splat through the existing render groups), operators and examples."""
+import json
 import math
 
 import bpy
@@ -90,7 +91,7 @@ def _rules_kw(fm):
     if not fm.rules_json.strip():
         return {}
     d = json.loads(fm.rules_json)
-    return dict(species=d.get('species', []), rules=d.get('rules', []))
+    return dict(species=d.get('species', []), rules=d.get('rules', []), phase=d.get('phase', []))
 
 
 def _spawn_shapes(fm, defs, geoms, radii, modes, dens, bodies, spacing):
@@ -359,13 +360,18 @@ def _update_merged_surface(scene, S, fls, snap):
     col = _collection(scene)
     C = (snap.get('C', S.C) if snap is not None else S.C)
     X = (snap['x'] if snap is not None else S.x)
+    gasp = snap.get('gasp', S.gasp) if snap is not None else S.gasp
+    frozen = snap.get('frozen', S.frozen) if snap is not None else S.frozen
     xs, cs = [], []
     for fi, fl in fls:
         sl = slice(S.lo[fi], S.hi[fi])
         if S.hi[fi] == S.lo[fi]:
             continue
-        xs.append(X[sl])
-        cs.append(S.SS.colour(C[sl]) if getattr(S, 'mixing', False) else np.tile(np.asarray(fl.color, float), (S.hi[fi] - S.lo[fi], 1)))
+        keep = ~(gasp[sl] | frozen[sl])           # transmuted gas parcels and crystals are drawn by their own objects
+        if not keep.any():
+            continue
+        xs.append(X[sl][keep])
+        cs.append((S.SS.colour(C[sl]) if getattr(S, 'mixing', False) else np.tile(np.asarray(fl.color, float), (S.hi[fi] - S.lo[fi], 1)))[keep])
     sb = RT.surf
     if sb is None or abs(sb.dx - S.dx) > 1e-12 or RT.surf_key != id(S):
         sb = RT.surf = FSF.SurfaceBuilder(S.dx)
@@ -392,6 +398,127 @@ def _update_merged_surface(scene, S, fls, snap):
         me.polygons.foreach_set('use_smooth', np.ones(len(me.polygons), bool))
     me.materials.clear()
     me.materials.append(_composition_material())
+    me.update()
+
+
+_ICO = None
+
+
+def _icosahedron():
+    global _ICO
+    if _ICO is None:
+        t = (1.0 + 5 ** 0.5) / 2.0
+        V = np.array([(-1, t, 0), (1, t, 0), (-1, -t, 0), (1, -t, 0), (0, -1, t), (0, 1, t), (0, -1, -t), (0, 1, -t), (t, 0, -1), (t, 0, 1), (-t, 0, -1), (-t, 0, 1)], float)
+        V /= np.linalg.norm(V, axis=1)[:, None]
+        F = np.array([(0, 11, 5), (0, 5, 1), (0, 1, 7), (0, 7, 10), (0, 10, 11), (1, 5, 9), (5, 11, 4), (11, 10, 2), (10, 7, 6), (7, 1, 8),
+                      (3, 9, 4), (3, 4, 2), (3, 2, 6), (3, 6, 8), (3, 8, 9), (4, 9, 5), (2, 4, 11), (6, 2, 10), (8, 6, 7), (9, 8, 1)])
+        _ICO = (V, F)
+    return _ICO
+
+
+def _crystal_material():
+    m = bpy.data.materials.get("TesseraCrystal") or bpy.data.materials.new("TesseraCrystal")
+    m.use_nodes = True
+    nt = m.node_tree
+    nt.nodes.clear()
+    at = nt.nodes.new('ShaderNodeAttribute'); at.attribute_name = 'fm_color'; at.attribute_type = 'GEOMETRY'
+    pb = nt.nodes.new('ShaderNodeBsdfPrincipled')
+    pb.inputs['Roughness'].default_value = 0.08
+    for k, v in (('Transmission Weight', 0.85), ('Transmission', 0.85), ('IOR', 1.5), ('Specular IOR Level', 0.6)):
+        if k in pb.inputs:
+            pb.inputs[k].default_value = v
+    o = nt.nodes.new('ShaderNodeOutputMaterial')
+    nt.links.new(at.outputs['Color'], pb.inputs['Base Color'])
+    nt.links.new(pb.outputs[0], o.inputs['Surface'])
+    return m
+
+
+def _update_phase_objects(scene, S, snap):
+    """Objects for what the transmutation rules made: AFFMG_Phase (points -> soft splats) for the gas parcels that were liquid, AFFMC_Crystals (one flat-shaded,
+    randomly oriented icosahedron per frozen particle, growing with the solid fraction)."""
+    col = _collection(scene)
+    X = snap['x'] if snap is not None else S.x
+    C = snap.get('C', S.C) if snap is not None else S.C
+    gasp = snap.get('gasp', S.gasp) if snap is not None else S.gasp
+    frozen = snap.get('frozen', S.frozen) if snap is not None else S.frozen
+    Tn = snap['T'] if snap is not None else S.T
+    rad = S.parcel_radius()
+    colr = S.SS.colour(C)
+    tg = np.flatnonzero(gasp & ~S.gas[S.fid])
+    name = "AFFMG_Phase"
+    o = bpy.data.objects.get(name)
+    if len(tg):
+        if o is None:
+            me = _points_mesh(name, len(tg))
+            o = bpy.data.objects.new(name, me)
+            col.objects.link(o)
+            mr = o.modifiers.new("AF Render", 'NODES')
+            mr.node_group = gn.render_group('Splat', "FM_PhaseGas")
+            spl = shading.splat_material().copy()
+            spl.name = "TesseraPhaseGas"
+            shading.set_params(spl, AF_Color=(0.95, 0.97, 1.0), AF_TintMix=0.0, AF_Sharpness=0.5, AF_Emission=1.0)
+            gn.set_group_material(mr.node_group, spl)
+            gn.set_modifier_inputs(mr, {"Scale": 1.2})
+        elif len(o.data.vertices) != len(tg):
+            o.data = _points_mesh(name, len(tg))
+        me = o.data
+        o.hide_render = o.hide_viewport = False
+        rgba = np.concatenate([colr[tg], np.ones((len(tg), 1))], axis=1).astype(np.float32)
+        me.vertices.foreach_set('co', X[tg].astype(np.float32).ravel())
+        me.attributes['af_radius'].data.foreach_set('value', (rad[tg] * 0.3).astype(np.float32))
+        for an, av in (('af_alpha', 0.45), ('af_fmix', 1.0)):
+            if an not in me.attributes:
+                me.attributes.new(an, 'FLOAT', 'POINT')
+            me.attributes[an].data.foreach_set('value', np.full(len(tg), av, np.float32))
+        if 'af_fcol' not in me.attributes:
+            me.attributes.new('af_fcol', 'FLOAT_COLOR', 'POINT')
+        me.attributes['af_fcol'].data.foreach_set('color', rgba.ravel())
+        me.attributes['fm_color'].data.foreach_set('color', rgba.ravel())
+        me.attributes['fm_temperature'].data.foreach_set('value', Tn[tg].astype(np.float32))
+        me.update()
+        o.update_tag()
+    elif o is not None:
+        o.hide_render = o.hide_viewport = True
+    # crystals
+    name = "AFFMC_Crystals"
+    fz = np.flatnonzero(frozen)
+    o = bpy.data.objects.get(name)
+    if len(fz) == 0:
+        if o is not None:
+            o.hide_render = o.hide_viewport = True
+        return
+    V0, F0 = _icosahedron()
+    rng = np.random.default_rng(7)
+    if getattr(RT, 'cryst_az', None) is None or len(RT.cryst_az) < S.n:
+        RT.cryst_az = rng.random(S.n) * 2 * np.pi
+        RT.cryst_tilt = np.abs(rng.normal(size=S.n)) * 0.28           # shards grow mostly upward, leaning a little
+        RT.cryst_s = np.stack([0.55 + 0.25 * rng.random(S.n), 0.55 + 0.25 * rng.random(S.n), 1.5 + 0.9 * rng.random(S.n)], axis=1)
+    az, tl = RT.cryst_az[fz], RT.cryst_tilt[fz]
+    ca, sa, ct, st = np.cos(az), np.sin(az), np.cos(tl), np.sin(tl)
+    # R = Rz(az) @ Rx(tilt)
+    R = np.stack([ca, -sa * ct, sa * st, sa, ca * ct, -ca * st, np.zeros_like(ca), st, ct], axis=1).reshape(-1, 3, 3)
+    sf = np.clip((C[fz] @ S._sp_solid - 0.5) / 0.5, 0.0, 1.0)
+    r = S.dx * 0.95 * (0.5 + 0.5 * sf)
+    Vl = V0[None, :, :] * (RT.cryst_s[fz][:, None, :] * r[:, None, None])
+    Vw = np.einsum('nij,nkj->nki', R, Vl) + X[fz][:, None, :]
+    n = len(fz)
+    Vall = Vw.reshape(-1, 3)
+    Fall = (F0[None, :, :] + (np.arange(n) * 12)[:, None, None]).reshape(-1, 3)
+    cc = np.repeat(colr[fz], 12, axis=0)
+    me = bpy.data.meshes.get(name) or bpy.data.meshes.new(name)
+    if o is None:
+        o = bpy.data.objects.new(name, me)
+        col.objects.link(o)
+    o.data = me
+    o.hide_render = o.hide_viewport = False
+    me.clear_geometry()
+    me.from_pydata(Vall.tolist(), [], Fall.tolist())
+    if 'fm_color' not in me.attributes:
+        me.attributes.new('fm_color', 'FLOAT_COLOR', 'POINT')
+    me.attributes['fm_color'].data.foreach_set('color', np.concatenate([cc, np.ones((len(cc), 1))], axis=1).astype(np.float32).ravel())
+    me.polygons.foreach_set('use_smooth', np.zeros(len(me.polygons), bool))
+    me.materials.clear()
+    me.materials.append(_crystal_material())
     me.update()
 
 
@@ -450,6 +577,8 @@ def apply_state(scene, snap=None):
         me.update_tag()
     if surf_fls:
         _update_merged_surface(scene, S, surf_fls, snap)
+    if getattr(S, 'phase_rules', None):
+        _update_phase_objects(scene, S, snap)
     for b, o in zip(S.bodies, RT.body_objs):
         pass
 
@@ -886,7 +1015,7 @@ def _clear_demo(scene):
             bpy.data.objects.remove(fl.points_obj, do_unlink=True)
     fm.fluids.clear()
     for o in list(bpy.data.objects):
-        if o.name.startswith("TS_") or o.name.startswith("AFFMS_"):
+        if o.name.startswith(("TS_", "AFFMS_", "AFFMG_", "AFFMC_")):
             bpy.data.objects.remove(o, do_unlink=True)
     RT.solver = None
     mark_dirty()
@@ -1009,6 +1138,74 @@ def load_colour_mixing(scene, max_particles=6000):
     cam.rotation_euler = (math.radians(90.0), 0, 0)
     cam.data.lens = 55
     scene.camera = cam
+    mark_dirty()
+
+
+def _beaker(scene, col, r1=0.07, r2=0.085, h=0.16):
+    glass = _mesh_obj("TS_Glass", lambda bm: _cone(bm, r1, r2, h, 48), (0, 0, 0.0), col)
+    glass.display_type = 'WIRE'
+    glass.data.materials.append(_glass_material())
+    glass.arc_flow.cavity_mode = 'SHELL'
+    return glass, math.pi * h / 3.0 * (r1 ** 2 + r1 * r2 + r2 ** 2)
+
+
+def _camera(scene, col, loc, lens=55):
+    cam = bpy.data.objects.new("TS_Camera", bpy.data.cameras.new("TS_Camera"))
+    col.objects.link(cam)
+    cam.location = loc
+    cam.rotation_euler = (math.radians(90.0), 0, 0)
+    cam.data.lens = lens
+    scene.camera = cam
+
+
+def load_steam(scene, max_particles=5000):
+    """Water in a beaker over a burner: at 100 C the water turns to steam (rule table `water_steam`), the vapour carries the latent heat away and rises out of
+    the glass.  The rules are the JSON on the scene (Species rules)."""
+    from .core import phase as PH
+    col = _demo_common(scene)
+    fm = scene.arc_flow_fm
+    glass, _cav = _beaker(scene, col, 0.07, 0.085, 0.5)          # a tall glass so the steam has room to rise
+    cav = math.pi * 0.16 / 3.0 * (0.07 ** 2 + 0.07 * 0.085 + 0.085 ** 2)
+    pr = PH.preset('water_steam')
+    fm.rules_json = json.dumps(dict(species=pr['species'][1:], rules=[], phase=pr['phase']))
+    fl = add_fluid(scene, 'WATER', 'Water')
+    fl.no_container, fl.container, fl.shape = False, glass, None
+    fl.volume, fl.color, fl.temperature, fl.cohesion = 0.5 * cav, tuple(pr['species'][0]['color']), 372.0, 0.0
+    fl.render_mode = 'SURFACE'
+    fl.cool = 1e-6
+    burner = _mesh_obj("TS_Burner", lambda bm: _sphere(bm, 0.02, 12), (0, 0, 0.012), col)
+    burner.arc_flow_fm.heat_on = True
+    burner.arc_flow_fm.heat_power = 250000.0
+    burner.arc_flow_fm.heat_radius = 0.05
+    fm.max_particles = max_particles
+    fm.speedup = 1.0
+    fm.heat_start = 1
+    scene.frame_start, scene.frame_end = 1, 200
+    _camera(scene, col, (0.0, -1.5, 0.22))
+    mark_dirty()
+
+
+def load_crystal(scene, max_particles=5000):
+    """A warm salt solution cooling in a dish: nuclei appear and solid crystals grow outward from them (rule table `salt_crystal`), frozen in place and drawn as
+    faceted shards, while the rest of the liquid stays a smooth surface."""
+    from .core import phase as PH
+    col = _demo_common(scene)
+    fm = scene.arc_flow_fm
+    dish, cav = _beaker(scene, col, 0.09, 0.1, 0.05)
+    pr = PH.preset('salt_crystal')
+    pr['phase'][0].update(seeds=8, rate=0.5)
+    fm.rules_json = json.dumps(dict(species=pr['species'][1:], rules=[], phase=pr['phase']))
+    fl = add_fluid(scene, 'WATER', 'Brine')
+    fl.no_container, fl.container, fl.shape = False, dish, None
+    fl.volume, fl.color, fl.temperature, fl.cohesion = 0.8 * cav, tuple(pr['species'][0]['color']), 290.0, 0.0
+    fm.ground_temp_on = False
+    fl.render_mode = 'SURFACE'
+    fl.cool = 1e-6
+    fm.max_particles = max_particles
+    fm.speedup = 1.0
+    fm.heat_start = 1
+    scene.frame_start, scene.frame_end = 1, 200
+    _camera(scene, col, (0.0, -0.45, 0.055), lens=60)
     mark_dirty()
 
 

@@ -513,7 +513,7 @@ class FluidSolver:
     # ------------------------------------------------------------------ construction
     @staticmethod
     def build(defs, bodies=(), env=None, dx=None, max_particles=20000, seed=1, thermal_speedup=1.0, iterations=4,
-              max_substeps=4, vmax=20.0, lotbcbp=True, drift_iterations=None, fill_seed='LEVEL', species=None, rules=None):
+              max_substeps=4, vmax=20.0, lotbcbp=True, drift_iterations=None, fill_seed='LEVEL', species=None, rules=None, phase=None):
         """defs: list of fluid_def dicts.  Recognised keys: kind, density, mass, volume, weight, temperature, velocity,
         visc, cp, k, beta, cohesion, miscible, cool (1/s), drag (1/s), diffusion (m2/s), count (gas parcels), fill (fraction
         of a container's cavity when no shape is given), shape (None | dict(kind='MESH', verts, tris) | dict(kind='POINTS', pts)),
@@ -768,7 +768,7 @@ class FluidSolver:
         if auto_dx and n_liq > 1.15 * max_particles:      # the estimate was low: refine the spacing once and rebuild
             return FluidSolver.build(defs, bodies, env, dx=S.dx * (n_liq / max_particles) ** (1.0 / 3.0), max_particles=max_particles,
                                      seed=seed, thermal_speedup=thermal_speedup, iterations=iterations, max_substeps=max_substeps,
-                                     vmax=vmax, lotbcbp=lotbcbp, fill_seed=fill_seed, species=species, rules=rules)
+                                     vmax=vmax, lotbcbp=lotbcbp, fill_seed=fill_seed, species=species, rules=rules, phase=phase)
         S.n = n0
         S.x = np.concatenate(xs) if n0 else np.zeros((0, 3))
         S.v = np.concatenate(vs) if n0 else np.zeros((0, 3))
@@ -808,7 +808,7 @@ class FluidSolver:
         S.group = np.array([(d['group'] if d['group'] is not None else f) for f, d in enumerate(D)], int)
         S.T = np.concatenate([np.full(S.hi[f] - S.lo[f], D[f]['temperature']) for f in range(nf)]) if n0 else np.zeros(0)
         S.mass_ref = S.mass_p[S.fid] if n0 else np.zeros(0)
-        S._init_species(D, species, rules)
+        S._init_species(D, species, rules, phase)
         S.wall_dist = np.full(S.n, 1e9)
         S.gust_vec = np.zeros(3)
         S.lam_prev = np.zeros(S.n)
@@ -821,7 +821,7 @@ class FluidSolver:
         return S
 
     # ------------------------------------------------------------------ species / composition
-    def _init_species(self, D, species, rules):
+    def _init_species(self, D, species, rules, phase=None):
         """Per-particle composition (one-hot of the fluid's species), cluster ids and the derived per-particle properties.  Mixing / merge / reaction
         rules only run when `rules` are given or a fluid has mix_rate > 0, so existing scenes behave exactly as before."""
         from . import species as SP
@@ -838,7 +838,7 @@ class FluidSolver:
                 sp.append(SP.species_def(**s_))
         self.SS = SP.SpeciesSystem(sp, [SP.rule_def(**r) for r in (rules or [])])
         self.sp_misc = np.array([bool(D[f]['miscible']) for f in range(len(D))] + [True] * (len(sp) - len(D)), bool)
-        self.mixing = bool(rules) or any(float(d.get('mix_rate', 0.0)) > 0 for d in D)
+        self.mixing = bool(rules) or bool(phase) or any(float(d.get('mix_rate', 0.0)) > 0 for d in D)
         for r in range(len(self.SS.rules)):
             pass
         for f, d in enumerate(D):                     # per fluid mixing rate: default pair rate for its own species with others
@@ -859,6 +859,8 @@ class FluidSolver:
         self.beta_p = self.beta[self.fid].copy() if n else np.zeros(0)
         self.cp_p = self.cp[self.fid].copy() if n else np.zeros(0)
         self.mix_stats = dict(merges=0, reactions=0)
+        from . import phase as PH
+        PH.init(self, phase)
 
     def colours(self):
         """Per-particle colour derived from the composition (subtractive pigment mix)."""
@@ -878,6 +880,10 @@ class FluidSolver:
 
         def dflt(a, b):
             return SP.MISCIBLE if (sm[a] and sm[b]) else SP.IMMISCIBLE
+        fz = self.frozen[idx_l] | (self.C[idx_l] @ self._sp_solid > 0.02)
+        if fz.any():                                  # a crystal does not dissolve into its neighbours (it melts through the rule table)
+            k = ~(fz[il] | fz[jl])
+            il, jl = il[k], jl[k]
         info = SP.mix_step(self.SS, C, T, mass, cp, self.v[idx_l], self.x[idx_l], il, jl, self.h, dt, dflt)
         self.C[idx_l] = C
         self.T[idx_l] = T
@@ -898,18 +904,18 @@ class FluidSolver:
         rho_l = self.rho0_p * np.clip(1.0 - self.beta_p * (T - self.tref[f]), 0.2, 5.0)
         Pz = self.env.pressure_at(self.x[:, 2])
         rho_g = self.rho0_p * (self.tref[f] / np.maximum(T, 1.0)) * (Pz / P_ATM)
-        return np.where(self.gas[f], rho_g, rho_l)
+        return np.where(self.gasp, rho_g, rho_l)
 
     def parcel_radius(self):
         """Collision radius of every particle (gas parcels follow their own volume m / rho)."""
         f = self.fid
         rho = self.rho_particles()
-        Vg = self.mass_p[f] / np.maximum(rho, 1e-9)
+        Vg = self.mass_ref / np.maximum(rho, 1e-9)
         rg = np.cbrt(3.0 * Vg / (4.0 * np.pi))
-        return np.where(self.gas[f], np.minimum(rg, 4.0 * self.dx), 0.5 * self.dx)
+        return np.where(self.gasp, np.minimum(rg, 4.0 * self.dx), 0.5 * self.dx)
 
     def snapshot(self):
-        return dict(x=self.x.copy(), v=self.v.copy(), T=self.T.copy(), t=self.t, pressure=None if self.pressure is None else self.pressure.copy(), gust=self.gust_vec.copy(), C=self.C.copy(), cluster=self.cluster.copy(),
+        return dict(x=self.x.copy(), v=self.v.copy(), T=self.T.copy(), t=self.t, pressure=None if self.pressure is None else self.pressure.copy(), gust=self.gust_vec.copy(), C=self.C.copy(), cluster=self.cluster.copy(), gasp=self.gasp.copy(), frozen=self.frozen.copy(), nuc=self.nuc.copy(),
                     bodies=[(b.M1.copy(), b.vel.copy(), b.omega.copy(), b.travel, b.F.copy(), b.T.copy()) for b in self.bodies])
 
     def restore(self, s):
@@ -923,6 +929,8 @@ class FluidSolver:
             b.F, b.T = st[4].copy(), st[5].copy()
         if 'C' in s and len(s['C']) == self.n:
             self.C, self.cluster = s['C'].copy(), s['cluster'].copy()
+            if 'gasp' in s and len(s['gasp']) == self.n:
+                self.gasp, self.frozen, self.nuc = s['gasp'].copy(), s['frozen'].copy(), s['nuc'].copy()
             self._derive(np.arange(self.n))
 
     def totals(self):
@@ -1228,14 +1236,15 @@ class FluidSolver:
         env, f, n = self.env, self.fid, self.n
         x, v = self.x, self.v
         rho = self.rho_particles()
-        gas = self.gas[f]
+        gas = self.gasp
         if env.gust > 0:
             tau = 2.0
             self.gust_vec += -self.gust_vec * dt / tau + env.gust * math.sqrt(2.0 * dt / tau) * self.rng.standard_normal(3)
         wind = env.wind + self.gust_vec
         rho_env = env.density_at(x[:, 2])
         a = env.g[None, :] * (1.0 - rho_env / np.maximum(rho, 1e-9))[:, None]
-        a += self.drag[f][:, None] * (wind[None, :] - v)
+        dragp = np.where(self.gasp & ~self.gas[f], 0.6 * self.free[f], self.drag[f])      # a particle that turned into a gas drags like one
+        a += dragp[:, None] * (wind[None, :] - v)
         idx_l, il, jl = self._fluid_pairs(~gas)
         # ---- surface cohesion (same fluid or miscible partners), pair force
         if len(il) and (self.coh[f[idx_l]] > 0).any():
@@ -1338,7 +1347,7 @@ class FluidSolver:
         vn = v.copy()
         if len(gas_idx):
             vn[gas_idx] = ((xs - x) / dt)[gas_idx]
-        dif = self.diff[f]
+        dif = np.where(self.gasp & ~self.gas[f], 0.01, self.diff[f])
         if (dif > 0).any():
             xs += self.rng.standard_normal((n, 3)) * np.sqrt(2.0 * dif * dt)[:, None]
             self._project(xs, prad, s1)
@@ -1347,11 +1356,18 @@ class FluidSolver:
         over = sp > self.vmax
         if over.any():
             vn[over] *= (self.vmax / sp[over])[:, None]
+        fr = self.frozen
+        if fr.any():                      # crystals are pinned: position kept, velocity zero
+            xs[fr] = x[fr]
+            vn[fr] = 0.0
         self.x[:] = xs
         self.v[:] = vn
         self._heat(dt, rho, sig_last, (idx_l, il, jl))
         if self.mixing and len(idx_l) and len(il):
             self._mix(dt, idx_l, il, jl)
+        if self.phase_rules:
+            from . import phase as PH
+            PH.step(self, dt)
 
 
     # ------------------------------------------------------------------ gas pressure (ideal gas, SPH pair force)
@@ -1363,7 +1379,7 @@ class FluidSolver:
         (the reaction is applied to the gas, so the pair conserves momentum).  The dynamic pressure of a moving parcel is its rho v^2 / 2, reported
         in self.pressure (the static part drives the force)."""
         f, n = self.fid, self.n
-        gi = np.flatnonzero(self.gas[f])
+        gi = np.flatnonzero(self.gasp)
         self.pressure = self.env.pressure_at(self.x[:, 2]).astype(float)
         if len(gi) < 2:
             return
@@ -1381,7 +1397,7 @@ class FluidSolver:
         self.v[gi] = vm[fg] + u / (1.0 + kdr * dt)[:, None]
         h = float(np.clip(3.5 * float(np.median(prad[gi])), 2.0 * self.dx, 8.0 * self.dx))
         # liquid particles close to any gas parcel take part as pressure receivers
-        lq = np.flatnonzero(~self.gas[f])
+        lq = np.flatnonzero(~self.gasp)
         if len(lq):
             lo, hi = x[gi].min(0) - h, x[gi].max(0) + h
             lq = lq[np.all((x[lq] > lo) & (x[lq] < hi), axis=1)]
@@ -1585,7 +1601,7 @@ class FluidSolver:
                 # momentum the wall gave the particles, reversed: tangential drag for every particle; the normal part only for gas parcels
                 # (liquids get their wall pressure from the grid projection, counted in _pressure_force)
                 dv = vn[gi] - v_old
-                gasc = self.gas[self.fid[gi]]
+                gasc = self.gasp[gi]
                 dvn = np.einsum('ij,ij->i', dv, nrm)
                 dv_use = np.where(gasc[:, None] & (not self.gas_pressure), dv, dv - dvn[:, None] * nrm)
                 if self.gas_pressure and gasc.any() and getattr(self, '_pex', None) is not None and len(self._pex) == self.n:
@@ -1629,7 +1645,7 @@ class FluidSolver:
         pr = []
         if len(il):
             pr.append((idx_l[il], idx_l[jl], self.h))
-        gas_idx = np.flatnonzero(self.gas[f])
+        gas_idx = np.flatnonzero(self.gasp)
         if len(gas_idx) > 1:
             ig, jg = neighbor_pairs(self.x[gas_idx], 3.0 * self.dx)
             pr.append((gas_idx[ig], gas_idx[jg], 3.0 * self.dx))
@@ -1655,7 +1671,7 @@ class FluidSolver:
             sf = np.zeros(n)
             sf[idx_l] = np.clip(2.0 * (1.0 - sig / self.sig0), 0.0, 1.0)
             expo = np.maximum(expo, sf)
-        expo = np.where(self.gas[f] | self.free[f], 1.0, expo)
+        expo = np.where(self.gasp | self.free[f], 1.0, expo)
         Tenv = env.temperature
         rate = np.clip(self.cool[f] * expo * dts, 0.0, 0.95)
         T_target = np.full(n, Tenv)

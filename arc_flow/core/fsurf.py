@@ -328,6 +328,8 @@ def grow(S, f, X, V, T):
             new = np.full(k, S.beta[f])
         elif name == 'cp_p':
             new = np.full(k, S.cp[f])
+        elif name == 'gasp':
+            new = np.full(k, S.gas[f])
         else:
             new = np.zeros((k,) + a.shape[1:], a.dtype)
         setattr(S, name, np.insert(a, pos, new.astype(a.dtype, copy=False), axis=0))

@@ -18,8 +18,8 @@ import numpy as np
 IMMISCIBLE, MISCIBLE, ABSORB, REACT = 'IMMISCIBLE', 'MISCIBLE', 'ABSORB', 'REACT'
 
 
-def species_def(name, color=(0.5, 0.5, 0.5), density=1000.0, cp=4186.0, beta=2e-4, priority=0, visc=1e-3):
-    return dict(name=name, color=tuple(color), density=float(density), cp=float(cp), beta=float(beta), priority=int(priority), visc=float(visc))
+def species_def(name, color=(0.5, 0.5, 0.5), density=1000.0, cp=4186.0, beta=2e-4, priority=0, visc=1e-3, phase='liquid'):
+    return dict(name=name, color=tuple(color), density=float(density), cp=float(cp), beta=float(beta), priority=int(priority), visc=float(visc), phase=phase)
 
 
 def rule_def(a, b, outcome=MISCIBLE, **kw):

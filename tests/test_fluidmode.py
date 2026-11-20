@@ -717,6 +717,81 @@ def test_surface_coupling():
     ok(abs(fz) > 0.0 and np.isfinite(fz), "gas pressure acts on the surface faces: peak normal force %.3g N" % fz)
 
 
+def test_phase():
+    """Transmutation: phase / chemistry rules with animated blending, mass and enthalpy bookkeeping, crystals grown from nuclei."""
+    from core import phase as PH
+    env0 = FM.FEnv()
+    # --- 1. superheated water -> steam: gas parcels rise, mass conserved, enthalpy changes by q x converted mass
+    pr = PH.preset('water_steam')
+    for sp in pr['species']:
+        sp['cp'] = 4000.0                                   # equal heat capacities: the enthalpy ledger is then exact
+    P = FM.lat_pos(FM.lattice_in_box(np.array([0.0, 0.0, 1.0]), np.array([0.16, 0.16, 1.08]), 0.02), 0.02)
+    w = FM.fluid_def('WATER', name='Water', shape=dict(kind='POINTS', pts=P), temperature=900.0, cp=4000.0, cool=1e-9)
+    S = FM.FluidSolver.build([w], [], env0, dx=0.02, species=pr['species'][1:], phase=pr['phase'])
+    m0 = float(S.mass_ref.sum())
+    H0 = float((S.mass_ref * S.cp_p * S.T).sum())
+    z0 = float(S.x[:, 2].mean())
+    fr = []
+    for k in range(40):
+        S.step(1 / 24.0)
+        fr.append(float(S.C[:, 1].mean()))
+    gz = float(S.x[S.gasp, 2].mean()) if S.gasp.any() else z0
+    ok(abs(float(S.mass_ref.sum()) - m0) < 1e-12 and np.allclose(S.C.sum(1), 1.0), "mass conserved, composition sums to 1")
+    ok(S.gasp.mean() > 0.8, "liquid -> gas: %.0f %% of the particles became gas parcels" % (100 * S.gasp.mean()))
+    d = np.diff([0.0] + fr)
+    ok(d.min() > -1e-9 and d.max() < 0.35, "the steam fraction rises smoothly (largest frame step %.3f, none backwards)" % d.max())
+    H1 = float((S.mass_ref * S.cp_p * S.T).sum())
+    ok(abs((H1 - H0) - S.phase_stats['heat']) < 0.03 * abs(S.phase_stats['heat']) + 1.0, "enthalpy changes by the latent heat: dH %.3g J, q x dm %.3g J" % (H1 - H0, S.phase_stats['heat']))
+    ok(gz > z0 + 0.3, "steam rises: gas parcels +%.2f m" % (gz - z0))
+    ok(float(S.T.mean()) < 600.0, "latent heat cools the vapour (%.0f K)" % S.T.mean())
+    # --- 2. wax solidifies into frozen crystals growing outward from 3 nuclei
+    pw = PH.preset('wax')
+    V3, T3 = box((0, 0, 0), (0.2, 0.2, 0.2))
+    P = FM.lat_pos(FM.lattice_in_box(np.array([0.02, 0.02, 0.02]), np.array([0.18, 0.18, 0.12]), 0.02), 0.02)
+    wx = FM.fluid_def('LAVA_WAX', name='Wax melt', shape=dict(kind='POINTS', pts=P), temperature=300.0, cool=3.0)
+    cont = FM.Body(SDF.PartField(V3, T3, 'SHELL', resolution=24, level=2), np.eye(4), 'CONTAINER', None, 0.2)
+    S = FM.FluidSolver.build([wx], [cont], env0, dx=0.02, species=pw['species'][1:], phase=pw['phase'])
+    cnt, xs_prev, still = [], None, True
+    for k in range(48):
+        S.step(1 / 24.0)
+        cnt.append(int(S.frozen.sum()))
+        if xs_prev is not None:
+            fz = xs_prev[1] & S.frozen
+            still &= bool(np.abs(S.x[fz] - xs_prev[0][fz]).max() < 1e-12) if fz.any() else True
+        xs_prev = (S.x.copy(), S.frozen.copy())
+    ok(cnt[0] <= 6 and cnt[-1] > 0.6 * S.n, "crystal growth from nuclei: %d -> %d of %d particles frozen" % (cnt[0], cnt[-1], S.n))
+    ok(all(cnt[i + 1] >= cnt[i] for i in range(len(cnt) - 1)), "the frozen set only grows while cooling")
+    ok(still and (not S.frozen.any() or float(np.abs(S.v[S.frozen]).max()) == 0.0), "frozen crystal particles stay in place with zero velocity")
+    solid_frac = S.C[:, 1]
+    ok(((solid_frac > 0.05) & (solid_frac < 0.95)).any() or cnt[-1] == S.n, "the transition is animated (intermediate composition exists)")
+    # reheating melts it back
+    for k in range(48):
+        S.T[:] = 360.0
+        S.step(1 / 24.0)
+    ok(S.frozen.sum() < 0.2 * S.n, "heated above the melting window the crystal melts (%d frozen)" % S.frozen.sum())
+    # --- 3. rust tint: pure composition change, colour moves continuously
+    pg = PH.preset('rust')
+    wr = FM.fluid_def('CUSTOM', name='Iron', shape=dict(kind='POINTS', pts=P[:200]), temperature=300.0, color=(0.55, 0.57, 0.6), cool=1e-9)
+    S = FM.FluidSolver.build([wr], [], FM.FEnv(gravity=(0, 0, 0)), dx=0.02, species=pg['species'][1:], phase=pg['phase'])
+    c0 = S.colours().mean(0)
+    run(S, 4.0)
+    c1 = S.colours().mean(0)
+    fr_ = float(S.C[:, 1].mean())
+    ok(abs(fr_ - (1 - np.exp(-0.15 * 4.0))) < 0.05, "rust fraction follows the rate: %.3f (exp %.3f)" % (fr_, 1 - np.exp(-0.15 * 4.0)))
+    ok(c1[0] > c1[2] + 0.1 and c0[2] >= c0[0] - 0.1, "the colour moves from grey toward rust (r-b %.2f -> %.2f)" % (c0[0] - c0[2], c1[0] - c1[2]))
+    # --- 4. fuel -> flame -> smoke by temperature; JSON round trip of the rule table
+    pf = PH.preset('fuel_flame_smoke')
+    wf = FM.fluid_def('CUSTOM', name='Fuel', shape=dict(kind='POINTS', pts=P[:200]), temperature=1100.0, color=(0.9, 0.7, 0.2), cool=1e-9)
+    S = FM.FluidSolver.build([wf], [], FM.FEnv(gravity=(0, 0, 0)), dx=0.02, species=pf['species'][1:], phase=pf['phase'])
+    run(S, 2.0)
+    flame_peak = float(S.C[:, 1].max())
+    S.T[:] = 700.0
+    run(S, 3.0)
+    ok(flame_peak > 0.3 and float(S.C[:, 2].mean()) > 0.2, "fuel burns to flame (peak %.2f) which turns to smoke when it cools (%.2f)" % (flame_peak, S.C[:, 2].mean()))
+    sp_, ph_ = PH.from_json(PH.to_json('salt_crystal'))
+    ok(len(sp_) == 2 and ph_[0]['kind'] == 'CRYSTAL' and PH.rule_def(**ph_[0])['b'] == 'Salt crystal', "JSON rule table round trip")
+
+
 def test_coupling():
     """Two-way fluid-solid coupling: the fluid pushes bodies."""
     # --- 1. hydrostatics: the force of the water on a fixed tank equals its weight
@@ -812,7 +887,7 @@ if __name__ == '__main__':
     t0 = time.time()
     only = sys.argv[1:]
     for fn in (test_units, test_environment, test_boussinesq, test_stratify_and_mass, test_gas_wind, test_gas_buoyancy, test_gravity_scaling,
-               test_heat, test_moving_wall, test_solid_displaces, test_spinning_gear, test_barometric_expansion, test_cavity_fill, test_confinement, test_fill_settle, test_wax_blobs, test_species, test_surface_merge, test_surface_builder, test_gas_pressure, test_surface_coupling, test_coupling, test_speed):
+               test_heat, test_moving_wall, test_solid_displaces, test_spinning_gear, test_barometric_expansion, test_cavity_fill, test_confinement, test_fill_settle, test_wax_blobs, test_species, test_surface_merge, test_surface_builder, test_gas_pressure, test_surface_coupling, test_phase, test_coupling, test_speed):
         if only and fn.__name__ not in only:
             continue
         t = time.time()

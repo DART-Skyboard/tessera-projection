@@ -128,5 +128,26 @@ ok(n10 < nj and n10 == int(FO.RT.cache[10]['_srf']['hi'][e] - FO.RT.cache[10]['_
 sc.frame_set(24)
 ok(len(o.data.vertices) == nj, "and forward again")
 FO.stop(sc)
+
+# ---- two-way: a viscosity surface on an object that is a dynamic body drives that body
+FO.stop(sc)
+SO.load_surface_example(sc, 'EMIT')
+belt = sc.arc_flow_srf.items[0].obj
+belt.animation_data_clear()
+bp = belt.arc_flow_fm
+bp.collider, bp.two_way, bp.mass = True, True, 0.5
+bp.constraint, bp.axis = 'SLIDER', (1.0, 0.0, 0.0)
+sc.frame_start, sc.frame_end = 1, 40
+FO.start(sc, play=False)
+S = FO.RT.solver
+vcore = S.surf.viscosity[0]
+ok(vcore.body is not None and S.bodies[vcore.body].dynamic, "surface on a dynamic body is linked to it (body %s)" % vcore.body)
+for f in range(1, 36):
+    sc.frame_set(f)
+bd = S.bodies[vcore.body]
+ok(abs(bd.travel) > 1e-4 and np.isfinite(bd.travel), "the fluid's drag moves the belt object: travel %.4f m" % bd.travel)
+bpy.context.view_layer.update()
+ok(abs(belt.matrix_world.translation.x - bd.M1[0, 3]) < 0.03, "the Blender object follows the body (within a frame) (object %.4f, body %.4f)" % (belt.matrix_world.translation.x, bd.M1[0, 3]))
+FO.stop(sc)
 print("surfaces bpy: %d failure(s)" % fails[0])
 sys.exit(1 if fails[0] else 0)

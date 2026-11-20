@@ -138,8 +138,23 @@ ground plane with friction and optional heat sink) acts on every fluid.
   surface velocity v_lin + omega x r at contact, plus friction.
 
 **What is approximated** (limits to know)
-- Solid to fluid is exact (no penetration, wall velocity, a solid displaces fluid). Fluid to solid is one-way: fluid does not push solids.
-- Gas parcels do not interact with liquid.
+- Solid to fluid is exact (no penetration, wall velocity, a solid displaces fluid). Fluid to solid is two-way: the grid pressure (liquid) and the
+  gas pressure plus contact impulses give every two-way body a force and torque (about its centre of mass) each substep; a body with a mass is moved
+  (free, slider, hinge, limits, friction). The coupling is explicit with a low-pass on the force (`smooth` 0.15) and an angular clamp, so a body much
+  lighter than the displaced fluid chatters; a body released at the waterline or heavier is stable. A viscosity surface attached to a body adds its drag
+  and pressure force and torque (one frame of lag).
+- Gas pressure is an ideal-gas SPH pair force (p = P_amb x kernel density / state density, softened by `gas_stiff` = a reduced speed of sound, one-sided,
+  30 % dead band, ambient drag relative to the asset's own motion). Hot or compressed gas pushes neighbouring gas of any asset, neighbouring liquid
+  particles and the walls it touches (momentum conserving pair force). Limits: heating below about 1.3x is inside the noise floor; the wall force uses the
+  softened pressure, not the real one; liquids get their pressure from the projection (incompressible limit), not a separate weakly compressible term;
+  parcels clouds are sparse, so the density estimate is noisy near edges. Pressure (Pa) is a solver output per particle (`S.pressure`, point attribute
+  `fm_pressure_solver`).
+- Transmutation (`core/phase.py`): rules move composition between species over time (GAS, CRYSTAL, CHEM kinds, temperature / pressure / density windows,
+  latent heat q with exact enthalpy bookkeeping relative to 293.15 K, mass relabelled 1:1). Gas products become gas parcels (hysteresis 0.5 / 0.35),
+  crystals freeze in place from nuclei at the container walls and grow shell by shell. Limits: a frozen particle is pinned but still counts as liquid in the
+  grid projection (it does not form a true solid cell); the liquid surface excludes gas parcels and crystals, which are drawn by their own objects, so the
+  surface of a partly converted particle changes at the 0.5 / 0.6 switch (the composition colour and density blend before it); steam / smoke render as soft
+  splats of the parcels, not as a volume; species densities are defined at 293.15 K.
 - A grid pressure solver cannot separate fluids mixed below the cell size, so a random fine mixture does not stratify; start separated.
 - No turbulence model; viscosity and cohesion are calibrated, not measured. Pressure is weakly accurate (a few percent density error).
 - Rigid motion of a body only updates its matrix (blended across the frame); deformation triggers a rebuild of the field.
