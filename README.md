@@ -16,6 +16,11 @@
   <img alt="Version 0.5.0" src="https://img.shields.io/badge/version-0.5.0-informational">
 </p>
 
+<p align="center">
+  <a href="https://cash.app/$autumndeveloper"><img src="sponsorship/cash-app.png" width="28" height="28" alt="Cash App"></a>
+  <a href="https://cash.app/$autumndeveloper"><b>Sponsor on Cash App</b></a>
+</p>
+
 ---
 
 ## What it does
