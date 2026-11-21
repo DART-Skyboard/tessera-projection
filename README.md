@@ -16,10 +16,16 @@
   <img alt="Version 0.5.0" src="https://img.shields.io/badge/version-0.5.0-informational">
 </p>
 
-<p align="center">
-  <a href="https://cash.app/$autumndeveloper"><img src="sponsorship/cash-app.png" width="28" height="28" alt="Cash App"></a>
-  <a href="https://cash.app/$autumndeveloper"><b>Sponsor on Cash App</b></a>
-</p>
+<table align="center">
+  <tr>
+    <td valign="middle">
+      <a href="https://cash.app/$autumndeveloper"><img src="sponsorship/cash-app.png" width="24" height="24" alt="Cash App"></a>
+    </td>
+    <td valign="middle">
+      &nbsp;<a href="https://cash.app/$autumndeveloper"><b>Sponsor on Cash App</b></a>
+    </td>
+  </tr>
+</table>
 
 ---
 
