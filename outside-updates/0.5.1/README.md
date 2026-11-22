@@ -22,4 +22,5 @@ Direct raw links:
 
 Frame 42 of the three-asset example, Blender 5.2.4. The test run used 2,200 particles so it would finish. The zip itself was not changed by that test.
 - [tessera_wind_fighter.png](tessera_wind_fighter.png) — featured listing still: tailless fighter, open thermal wind, no tunnel cage
-
+- [tessera_wind_fighter_ui.png](tessera_wind_fighter_ui.png) — widescreen Blender viewport of the fighter in thermal wind
+- [tessera_wind_fighter.blend](tessera_wind_fighter.blend) — the fighter scene
