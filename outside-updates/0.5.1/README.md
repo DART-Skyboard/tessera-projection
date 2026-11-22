@@ -28,3 +28,5 @@ Frame 42 of the three-asset example, Blender 5.2.4. The test run used 2,200 part
 - [tessera_wt_real.blend](tessera_wt_real.blend) — that wind-tunnel scene
 - [tessera_combo_ui.png](tessera_combo_ui.png) — Cycles viewport, Tessera tab open, wind tunnel plus combustion on the fighter
 - [tessera_combo.blend](tessera_combo.blend) — that scene (hidden RP-1, LOX and helium tanks, chamber, nozzle, solver streaks)
+- [tessera_match_ui.png](tessera_match_ui.png) — Cycles viewport, Tessera tab, thermal readback on the fighter, solver wind
+- [tessera_match.blend](tessera_match.blend) — that scene
