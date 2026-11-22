@@ -21,3 +21,5 @@ Direct raw links:
 - https://github.com/DART-Skyboard/tessera-projection/raw/main/outside-updates/0.5.1/tessera_ui.png
 
 Frame 42 of the three-asset example, Blender 5.2.4. The test run used 2,200 particles so it would finish. The zip itself was not changed by that test.
+- [tessera_wind_fighter.png](tessera_wind_fighter.png) — featured listing still: tailless fighter, open thermal wind, no tunnel cage
+
