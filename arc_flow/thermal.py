@@ -16,12 +16,15 @@ from bpy.types import Operator, Panel, PropertyGroup
 
 from . import fluidmode_ops as FO
 from .core import thermal as TH
+from .core import friction_heat as FH
 from .nodeutil import Builder, add_socket, enable_nodes, fresh_group, inp, out
 
 ATTR = "af_temperature"
 COLOR = "af_thermal_color"
 MASK = "af_th_mask"
 MATIDX = "af_th_matidx"
+ATTR_TEMP_K = "tessera_temp_k"
+ATTR_HEAT = "tessera_friction_heat"
 MOD_NAME = "Tessera Surface Temperature"
 GROUP = {'POINT': "Tessera Thermal Surface (Point)", 'FACE': "Tessera Thermal Surface (Face)"}
 
@@ -70,6 +73,12 @@ class AF_ThermalObj(PropertyGroup):
     recovery: FloatProperty(name="Recovery factor", default=0.85, min=0.0, max=1.0, description="Fraction of the kinetic temperature rise v^2 / 2cp recovered at the wall (turbulent boundary layer 0.85)", update=_changed)
     probe: FloatProperty(name="Probe radius", default=2.2, min=1.2, max=6.0, description="Fluid sampling radius in particle spacings", update=_changed)
     speedup: FloatProperty(name="Time scale", default=1.0, min=0.0, description="Wall time scale: simulated seconds of wall heating per second of animation (1 = real time; a metal skin needs minutes to heat, so animations use 10 to 50)", update=_changed)
+    aero: BoolProperty(name="Aero friction heat", default=True, update=_changed,
+                       description="Add aerodynamic boundary-layer friction and leading-edge stagnation heating from the Environment wind (and local flow), written to tessera_temp_k / tessera_friction_heat")
+    roughness: FloatProperty(name="Surface roughness", default=0.0, min=0.0, unit='LENGTH', update=_changed,
+                             description="Equivalent sand-grain roughness ks (m) of the skin; raises skin friction and heat flux on grazed surfaces")
+    overlay: BoolProperty(name="Heat overlay shader", default=False, update=_look_changed,
+                          description="Blend a thermal blackbody / aerodynamic heat glow over the object's base material instead of replacing it")
 
 
 # ----------------------------------------------------------------------------- state
@@ -211,11 +220,35 @@ def _ensure_attrs(o, domain, create_color):
     return a
 
 
-def write_attributes(o, full, lp=None):
+def _ensure_float_attr(me, name, domain):
+    a = me.attributes.get(name)
+    if a is not None and (a.domain != domain or a.data_type not in ('FLOAT', 'FLOAT')):
+        me.attributes.remove(a)
+        a = None
+    if a is None:
+        a = me.attributes.new(name, 'FLOAT', domain)
+    return a
+
+
+def write_attributes(o, full, lp=None, q_frict=None):
     p = o.arc_flow_th
     me = o.data
     a = _ensure_attrs(o, p.domain, p.solid)
     a.data.foreach_set('value', full.astype(np.float32))
+    dom = 'POINT' if p.domain == 'POINT' else 'FACE'
+    tk = _ensure_float_attr(me, ATTR_TEMP_K, dom)
+    if len(tk.data) == len(full):
+        tk.data.foreach_set('value', full.astype(np.float32))
+    if q_frict is not None:
+        qf = np.asarray(q_frict, float)
+        if len(qf) != len(full):
+            qfull = np.zeros(len(full), float)
+            # q_frict is on the selection; caller should pass a domain-sized array
+            qfull[:min(len(qf), len(qfull))] = qf[:min(len(qf), len(qfull))]
+            qf = qfull
+        hq = _ensure_float_attr(me, ATTR_HEAT, dom)
+        if len(hq.data) == len(qf):
+            hq.data.foreach_set('value', qf.astype(np.float32))
     if p.solid:
         rgb = TH.ramp_color(TH.normalise(full, p.t_min, p.t_max), p.ramp)
         rgba = np.concatenate([rgb, np.ones((len(rgb), 1))], axis=1).astype(np.float32)
@@ -236,7 +269,7 @@ def update_object(scene, o, frame=None):
     P0, N0, area, sel, size, L = sample_geometry(o, deps, p.domain)
     st = STATE.setdefault(o.name, _State())
     sig = (p.domain, size, len(sel), round(p.wall_heat, 3), round(p.absorb, 3), round(p.recovery, 3), round(p.emissivity, 3), round(p.probe, 3), round(p.speedup, 3),
-           scene.frame_start, round(scene.arc_flow.env.temperature, 3))
+           scene.frame_start, round(scene.arc_flow.env.temperature, 3), bool(getattr(p, 'aero', True)), round(getattr(p, 'roughness', 0.0), 6))
     if st.sig != sig:
         st.sig, st.frame, st.cache, st.info = sig, None, {}, None
     ambient = float(scene.arc_flow.env.temperature)
@@ -263,15 +296,22 @@ def update_object(scene, o, frame=None):
             off = P0 + N0 * 0.5 * dx
             Ts, info = TH.surface_step(Ts, off, N0, X, V, T, cp, k, rho, mu, dt, h=h, dx=dx, ambient=ambient, L=L, C_a=p.wall_heat,
                                        recovery=p.recovery, sources=srcs, alpha=p.absorb, speedup=p.speedup, emissivity=p.emissivity,
-                                       v_inf=tuple(scene.arc_flow.env.wind))
+                                       v_inf=tuple(scene.arc_flow.env.wind), aero=getattr(p, 'aero', True),
+                                       roughness=getattr(p, 'roughness', 0.0))
             st.cache[fr] = Ts
             st.info = info
+            st.q = info.get('q_frict', info.get('q_conv'))
         st.frame = frame
     st.P, st.area, st.Ts, st.sel = P0, area, Ts, sel
     st.dx = dx_last
     full = np.full(size, ambient)
     full[sel] = Ts
-    write_attributes(o, full)
+    qfull = None
+    q = getattr(st, 'q', None)
+    if q is not None:
+        qfull = np.zeros(size, float)
+        qfull[sel] = q
+    write_attributes(o, full, q_frict=qfull)
     return Ts
 
 
@@ -601,7 +641,203 @@ def ensure_legend(o, scene=None):
     return plane
 
 
+
+def _paint_color(o):
+    """Base colour of the object's original (pre-thermal) material, or a cool metal default."""
+    raw = o.get('af_th_slots')
+    names = []
+    if raw:
+        try:
+            names = json.loads(raw)
+        except Exception:
+            names = []
+    for nm in names:
+        m = bpy.data.materials.get(nm) if nm else None
+        if m is None:
+            continue
+        if m.use_nodes and m.node_tree:
+            b = next((n for n in m.node_tree.nodes if n.bl_idname == 'ShaderNodeBsdfPrincipled'), None)
+            if b is not None and 'Base Color' in b.inputs:
+                c = b.inputs['Base Color'].default_value
+                return tuple(c[i] for i in range(3))
+        return tuple(m.diffuse_color[i] for i in range(3))
+    if o.data.materials:
+        m = o.data.materials[0]
+        if m is not None:
+            return tuple(m.diffuse_color[i] for i in range(3))
+    return (0.55, 0.60, 0.68)
+
+
+def _build_overlay_shader(o):
+    """Base material + thermal blackbody / aerodynamic heat glow driven by tessera_temp_k and tessera_friction_heat."""
+    p = o.arc_flow_th
+    name = "Tessera Aero Heat %s" % o.name
+    m = bpy.data.materials.get(name) or bpy.data.materials.new(name)
+    nt = enable_nodes(m)
+    nt.nodes.clear()
+    b = Builder(nt)
+    at = b.node('ShaderNodeAttribute', label="Temperature", y=200)
+    at.attribute_type = 'GEOMETRY'
+    at.attribute_name = ATTR_TEMP_K
+    aq = b.node('ShaderNodeAttribute', label="Friction heat", y=-40)
+    aq.attribute_type = 'GEOMETRY'
+    aq.attribute_name = ATTR_HEAT
+    mr = b.node('ShaderNodeMapRange', label="Range (K)", y=200)
+    mr.clamp = True
+    inp(mr, 'From Min').default_value = p.t_min
+    inp(mr, 'From Max').default_value = p.t_max
+    cr = b.node('ShaderNodeValToRGB', label="Heat ramp", y=200)
+    st = TH.RAMPS.get(p.ramp, TH.RAMPS['THERMAL'])
+    ramp = cr.color_ramp
+    while len(ramp.elements) > 2:
+        ramp.elements.remove(ramp.elements[-1])
+    ramp.elements[0].position, ramp.elements[0].color = st[0][0], (*st[0][1], 1.0)
+    ramp.elements[1].position, ramp.elements[1].color = st[-1][0], (*st[-1][1], 1.0)
+    for pos, col in st[1:-1]:
+        e = ramp.elements.new(pos)
+        e.color = (*col, 1.0)
+    bb = b.node('ShaderNodeBlackbody', label="Blackbody", y=40)
+    # map temperature onto a visible incandescent range so modest aero heating still reads, while high T goes white
+    mb = b.node('ShaderNodeMapRange', label="Blackbody K", y=40)
+    mb.clamp = True
+    inp(mb, 'From Min').default_value = p.t_min
+    inp(mb, 'From Max').default_value = max(p.t_max, p.t_min + 1.0)
+    inp(mb, 'To Min').default_value = 800.0
+    inp(mb, 'To Max').default_value = 3500.0
+    mq = b.node('ShaderNodeMapRange', label="Glow", y=-40)
+    mq.clamp = True
+    inp(mq, 'From Min').default_value = 0.0
+    inp(mq, 'From Max').default_value = 20000.0
+    inp(mq, 'To Min').default_value = 0.0
+    inp(mq, 'To Max').default_value = max(float(p.emission), 0.15) * 8.0
+    mx = b.node('ShaderNodeMixRGB', label="Paint + heat", y=120) if hasattr(__import__('bpy').types, 'ShaderNodeMixRGB') else None
+    # Blender 4.2+ uses ShaderNodeMix with data_type
+    if mx is None:
+        mx = b.node('ShaderNodeMix', label="Paint + heat", y=120)
+        try:
+            mx.data_type = 'RGBA'
+            mx.clamp_factor = True
+        except Exception:
+            pass
+        fac_sk, col_a, col_b, col_out = 'Factor', 'A', 'B', 'Result'
+        # socket names vary; resolved below
+    else:
+        fac_sk, col_a, col_b, col_out = 'Fac', 'Color1', 'Color2', 'Color'
+    base = _paint_color(o)
+    # set the paint colour on the mix input A
+    def _mix_sockets(node):
+        names = {s.name: s for s in node.inputs}
+        outs = {s.name: s for s in node.outputs}
+        fac = names.get('Factor') or names.get('Fac')
+        # RGBA mix in 4.x: A / B are colors when data_type is RGBA
+        A = names.get('A') or names.get('Color1') or names.get('Color A')
+        B = names.get('B') or names.get('Color2') or names.get('Color B')
+        R = outs.get('Result') or outs.get('Color')
+        return fac, A, B, R
+    fac, A, B, R = _mix_sockets(mx)
+    if A is not None:
+        try:
+            A.default_value = (*base, 1.0)
+        except Exception:
+            pass
+    bs = b.node('ShaderNodeBsdfPrincipled', y=80)
+    bs.inputs['Roughness'].default_value = 0.32
+    if 'Metallic' in bs.inputs:
+        bs.inputs['Metallic'].default_value = 0.55
+    em = bs.inputs.get('Emission Color') or bs.inputs.get('Emission')
+    if em is not None and 'Emission Strength' in bs.inputs:
+        bs.inputs['Emission Strength'].default_value = 0.0
+    o_ = b.node('ShaderNodeOutputMaterial', y=80)
+    b.link(out(at, 'Fac'), inp(mr, 'Value'))
+    b.link(out(mr, 'Result'), inp(cr, 'Fac'))
+    b.link(out(at, 'Fac'), inp(mb, 'Value'))
+    b.link(out(mb, 'Result'), inp(bb, 'Temperature'))
+    b.link(out(aq, 'Fac'), inp(mq, 'Value'))
+    # factor: heat colour mixes over paint as temperature climbs
+    if fac is not None:
+        # use the mapped temperature as the mix factor (softened)
+        b.link(out(mr, 'Result'), fac)
+    if B is not None:
+        nt.links.new(cr.outputs['Color'], B)
+    # base colour of principled
+    if R is not None:
+        nt.links.new(R, bs.inputs['Base Color'])
+    else:
+        b.link(out(cr, 'Color'), inp(bs, 'Base Color'))
+    if em is not None:
+        b.link(out(bb, 'Color'), em)
+        b.link(out(mq, 'Result'), inp(bs, 'Emission Strength'))
+    b.link(out(bs, 'BSDF'), inp(o_, 'Surface'))
+    m.diffuse_color = (0.85, 0.45, 0.12, 1.0)
+    return m
+
+
+def _apply_overlay_material(o):
+    """Assign the aero-heat overlay material, remembering the original slots like `_apply_material`."""
+    me = o.data
+    m = _build_overlay_shader(o)
+    if not o.get('af_th_slots'):
+        o['af_th_slots'] = json.dumps([s.material.name if s.material else "" for s in o.material_slots])
+        o['af_th_matcount'] = len(o.material_slots)
+    if len(me.materials) == 0:
+        me.materials.append(m)
+    else:
+        for i in range(len(me.materials)):
+            me.materials[i] = m
+    me.update()
+
+
+def apply_aero_heat(scene, o, v_inf=None, steps=12, dt=None, speedup=None, ambient=None):
+    """Apply aerodynamic friction / stagnation heating to `o` without requiring a running fluid solver.
+
+    Writes `af_temperature`, `tessera_temp_k` and `tessera_friction_heat`, and refreshes the shader.
+    Used by the wind-tunnel fighter path and by tests.  Returns the sample temperatures.
+    """
+    p = o.arc_flow_th
+    p.on = True
+    p.aero = True
+    deps = bpy.context.evaluated_depsgraph_get()
+    P0, N0, area, sel, size, L = sample_geometry(o, deps, p.domain)
+    ambient = float(scene.arc_flow.env.temperature if ambient is None else ambient)
+    vi = tuple(v_inf) if v_inf is not None else tuple(scene.arc_flow.env.wind)
+    dt = (1.0 / _fps(scene)) if dt is None else float(dt)
+    sp = float(p.speedup if speedup is None else speedup)
+    # atmosphere from the Environment card (ideal-air fallback)
+    T_inf = ambient
+    try:
+        from . import windtunnel as WT
+        ap = WT.air_properties(scene)
+        rho, mu, cp, k = ap['density'], ap['visc'], ap['cp'], ap['k']
+    except Exception:
+        rho, mu, cp, k = 1.225, 1.8e-5, 1005.0, 0.0257
+    Ts = np.full(len(sel), ambient)
+    info = None
+    for _ in range(max(int(steps), 1)):
+        Ts, info = FH.surface_step(Ts, P0, N0, dt, v_inf=vi, T_inf=T_inf, rho=rho, mu=mu, cp=cp, k=k, L=L,
+                                   C_a=p.wall_heat, roughness=getattr(p, 'roughness', 0.0), recovery=p.recovery,
+                                   sources=lamps(scene), alpha=p.absorb, emissivity=p.emissivity, speedup=sp,
+                                   ambient=ambient)
+        # smooth along the surface so the glow is continuous
+        Ts = FH.smooth_field(P0, Ts, radius=max(0.04 * L, 0.02), iters=2, lam=0.35)
+    # write the available (cold-wall) aerodynamic heat flux so leading edges stay highlighted after the wall soaks
+    if info is not None:
+        q = info['h'] * (info['T_aw'] - T_inf)
+    else:
+        q = np.zeros(len(sel))
+    q = FH.smooth_field(P0, q, radius=max(0.04 * L, 0.02), iters=2, lam=0.35)
+    st = STATE.setdefault(o.name, _State())
+    st.P, st.area, st.Ts, st.sel, st.info, st.q = P0, area, Ts, sel, info, q
+    full = np.full(size, ambient)
+    full[sel] = Ts
+    qfull = np.zeros(size, float)
+    qfull[sel] = q
+    write_attributes(o, full, q_frict=qfull)
+    refresh_look(o)
+    return Ts
+
+
 def refresh_look(o):
+
     p = o.arc_flow_th
     if not p.on:
         return
@@ -613,7 +849,10 @@ def refresh_look(o):
     else:
         remove_legend(o)
     if p.shader:
-        _apply_material(o)
+        if getattr(p, 'overlay', False):
+            _apply_overlay_material(o)
+        else:
+            _apply_material(o)
     else:
         _restore_material(o)
     _sync_modifier(o)
@@ -646,16 +885,17 @@ def disable(o):
     if m is not None:
         o.modifiers.remove(m)
     me = o.data
-    for nm in (ATTR, MASK):
+    for nm in (ATTR, MASK, ATTR_TEMP_K, ATTR_HEAT):
         a = me.attributes.get(nm)
         if a is not None:
             me.attributes.remove(a)
     c = me.color_attributes.get(COLOR)
     if c is not None:
         me.color_attributes.remove(c)
-    mt = bpy.data.materials.get("Tessera Thermal %s" % o.name)
-    if mt is not None and mt.users == 0:
-        bpy.data.materials.remove(mt)
+    for nm in ("Tessera Thermal %s" % o.name, "Tessera Aero Heat %s" % o.name):
+        mt = bpy.data.materials.get(nm)
+        if mt is not None and mt.users == 0:
+            bpy.data.materials.remove(mt)
     me.update()
 
 
@@ -751,6 +991,10 @@ class AF_PT_thermal(Panel):
         box = l.box()
         box.label(text="Wall model")
         box.prop(p, "wall_heat"); box.prop(p, "absorb"); box.prop(p, "emissivity"); box.prop(p, "recovery"); box.prop(p, "probe"); box.prop(p, "speedup")
+        box.prop(p, "aero")
+        if p.aero:
+            box.prop(p, "roughness")
+            box.prop(p, "overlay")
         st = STATE.get(o.name)
         if st is not None and st.Ts is not None and len(st.Ts):
             l.label(text="Now: min %.1f  mean %.1f  max %.1f K" % (st.Ts.min(), st.Ts.mean(), st.Ts.max()), icon='INFO')

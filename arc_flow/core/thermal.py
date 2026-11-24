@@ -152,9 +152,11 @@ def radiative_flux(P, sources, alpha=0.7, n=None, d_min=0.02):
 
 
 def surface_step(Ts, P, N, X, V, T, cp, k, rho, mu, dt, *, h, dx, ambient, L, C_a=4900.0, recovery=0.85, sources=(), alpha=0.7,
-                 v_wall=None, speedup=1.0, emissivity=0.0, v_inf=None):
+                 v_wall=None, speedup=1.0, emissivity=0.0, v_inf=None, aero=False, roughness=0.0):
     """One thermal step for the sample temperatures Ts (n,), positions P (n,3) already offset off the wall, wall normals N.
-    Returns (Ts_new, info) with info = dict(coverage, T_fluid, h_conv, T_eq, q_conv W/m2, q_rad W/m2)."""
+    Returns (Ts_new, info) with info = dict(coverage, T_fluid, h_conv, T_eq, q_conv W/m2, q_rad W/m2, q_frict W/m2).
+    `aero`: also apply boundary-layer friction / leading-edge stagnation heating from core.friction_heat (free-stream
+    v_inf plus any local particle flow); q_frict is the aerodynamic heat flux into the wall."""
     pr = probe(P, X, V, T, cp, k, rho, mu, h, dx)
     vw = np.zeros((len(P), 3)) if v_wall is None else v_wall
     vrel = np.linalg.norm(pr['v'] - vw, axis=1)
@@ -168,6 +170,16 @@ def surface_step(Ts, P, N, X, V, T, cp, k, rho, mu, dt, *, h, dx, ambient, L, C_
         vi = np.asarray(v_inf, float)
         face = np.clip(-(N @ (vi / np.linalg.norm(vi))), 0.0, 1.0) ** 2
         Teq = Teq + face * recovery * float(vi @ vi) / (2.0 * np.maximum(pr['cp'], 1.0))
+    q_frict = hc * (Teq - Ts)
+    if aero and v_inf is not None and np.linalg.norm(v_inf) > 0:
+        from . import friction_heat as FH
+        rho_a = np.where(pr['rho'] > 0, pr['rho'], 1.225)
+        ae = FH.aero_evaluate(P, N, v_inf=v_inf, T_inf=ambient, rho=rho_a, mu=pr['mu'], cp=pr['cp'], k=pr['k'], L=L,
+                              roughness=roughness, recovery=recovery,
+                              T_local=np.where(pr['wsum'] > 0, pr['T'], ambient), T_wall=Ts)
+        Teq = np.maximum(Teq, ae['T_aw'])
+        hc = np.maximum(hc, ae['h'])
+        q_frict = ae['q']
     qr = radiative_flux(P, sources, alpha, N)
     dts = dt * speedup
     # the wall re-radiates: linearised  h_rad = 4 eps sigma T_m^3  toward the ambient temperature (caps the heating by close sources)
@@ -176,7 +188,7 @@ def surface_step(Ts, P, N, X, V, T, cp, k, rho, mu, dt, *, h, dx, ambient, L, C_
     T_inf = (hc * Teq + qr + hr * ambient) / np.maximum(ht, 1e-9)
     a = 1.0 - np.exp(-ht * dts / max(C_a, 1.0))
     Tnew = Ts + a * (T_inf - Ts)
-    return Tnew, dict(coverage=c, T_fluid=pr['T'], h_conv=hc, T_eq=Teq, q_conv=hc * (Teq - Ts), q_rad=qr)
+    return Tnew, dict(coverage=c, T_fluid=pr['T'], h_conv=hc, T_eq=Teq, q_conv=hc * (Teq - Ts), q_rad=qr, q_frict=q_frict)
 
 
 # ----------------------------------------------------------------------------- body -> fluid heat

@@ -237,11 +237,13 @@ def cloth_drawer(layout, context):
     seen.append(("CLOTH", context.scene.arc_flow.ui_tab))
     layout.label(text="Cloth drawer OK")
 
-# Hair solver is wired in; Cloth still uses the ready-state placeholder
+# Hair and Cloth solvers both mount their production drawers at register time
 from arc_flow import hair_panel as HP
+from arc_flow import cloth_panel as CP
 ok(any(e["fn"] is HP.draw_hair_tab for e in ui_tabs.tab_drawers("HAIR")),
    "HAIR tab already has draw_hair_tab from Tessera Projection Hair")
-ok(not ui_tabs.tab_drawers("CLOTH"), "CLOTH starts with no custom drawer")
+ok(any(e["fn"] is CP.draw_cloth_tab for e in ui_tabs.tab_drawers("CLOTH")),
+   "CLOTH tab already has draw_cloth_tab from Tessera Projection Cloth")
 ready_h = []
 ready_c = []
 
@@ -278,13 +280,15 @@ ui_tabs.draw_tab_body(ccap, ctx, "CLOTH")
 ok(any("Tessera Projection Hair" in t or "Live simulation" in t or "Empty Hair" in t for t in ready_h)
    and not any("register_tab_drawer('HAIR'" in t for t in ready_h),
    "HAIR tab draws the real Hair card, not the ready-state placeholder: %s" % ready_h[:8])
-ok(any("register_tab_drawer('CLOTH'" in t for t in ready_c),
-   "CLOTH ready-state card shown before hook")
+ok(any("Start Live" in t or "Cloth solver is idle" in t or "Garments" in t for t in ready_c)
+   and not any("register_tab_drawer('CLOTH'" in t for t in ready_c),
+   "CLOTH tab draws the real Cloth card, not the ready-state placeholder: %s" % ready_c[:8])
 ok(not any("demo" in (t or "").lower() for t in ready_h + ready_c),
    "Hair / Cloth cards do not say 'demo'")
 
 # replace=True hook still swaps the production drawer out (and we put it back after)
 hair_prod = ui_tabs.tab_drawers("HAIR")[0]["fn"]
+cloth_prod = ui_tabs.tab_drawers("CLOTH")[0]["fn"]
 ui_tabs.register_tab_drawer("HAIR", hair_drawer)
 ui_tabs.register_tab_drawer("CLOTH", cloth_drawer)
 ok(len(ui_tabs.tab_drawers("HAIR")) == 1 and ui_tabs.tab_drawers("HAIR")[0]["fn"] is hair_drawer,
@@ -318,7 +322,9 @@ ok(any("register_tab_drawer('HAIR'" in t for t in restored),
    "HAIR ready-state card returns after unregister")
 # put the production Hair drawer back so later draws (and the live add-on) stay wired
 ui_tabs.register_tab_drawer("HAIR", hair_prod)
+ui_tabs.register_tab_drawer("CLOTH", cloth_prod)
 ok(ui_tabs.tab_drawers("HAIR")[0]["fn"] is hair_prod, "production draw_hair_tab restored")
+ok(ui_tabs.tab_drawers("CLOTH")[0]["fn"] is cloth_prod, "production draw_cloth_tab restored")
 
 # appending a section onto a built-in tab does not wipe Remesh
 extra = []
