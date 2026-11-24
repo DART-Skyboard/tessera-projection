@@ -40,14 +40,21 @@ sc = bpy.context.scene
 
 # ----------------------------------------------------------------------------- registration
 ok(hasattr(sc, 'arc_flow_hair'), "Scene.arc_flow_hair registered")
-ok(hasattr(bpy.types, "AF_PT_hair") and hasattr(bpy.types, "AF_PT_hair_object"),
-   "Hair panels registered")
+ok(hasattr(bpy.types, "AF_PT_hair_object"), "Hair object Properties panel registered")
+ok(not hasattr(bpy.types, "AF_PT_hair"),
+   "no sibling VIEW_3D Hair panel (content is drawn inside the HAIR tab card)")
 ok(all(hasattr(bpy.ops.arcflow, n) for n in (
     "hair_add_empty", "hair_example", "hair_live_start", "hair_live_stop",
     "hair_step", "hair_reset", "hair_rebuild", "hair_bake",
     "hair_export_package", "hair_export_alembic", "hair_set_role",
 )), "Hair operators registered")
 ok(callable(HP.draw_hair_tab), "draw_hair_tab is exportable for the vertical-tabbed UI")
+from arc_flow import ui_tabs
+ok(any(e["fn"] is HP.draw_hair_tab for e in ui_tabs.tab_drawers("HAIR")),
+   "draw_hair_tab is registered on the HAIR tab")
+# switching to the HAIR tab draws the real card, not the ready-state placeholder
+sc.arc_flow.ui_tab = "HAIR"
+ok(sc.arc_flow.ui_tab == "HAIR", "scene.arc_flow.ui_tab can be set to HAIR")
 
 # ----------------------------------------------------------------------------- example scene
 t0 = time.time()
@@ -179,9 +186,8 @@ ok('FINISHED' in bpy.ops.arcflow.hair_reset(), "hair_reset operator")
 ok('FINISHED' in bpy.ops.arcflow.hair_step(), "hair_step operator")
 ok('FINISHED' in bpy.ops.arcflow.hair_rebuild(), "hair_rebuild operator")
 
-# ----------------------------------------------------------------------------- preview render
-preview = os.path.join(HERE, '..', 'docs', 'renders', 'hair_solver_preview.png')
-os.makedirs(os.path.dirname(preview), exist_ok=True)
+# ----------------------------------------------------------------------------- verification render (temp — do not clobber the Extensions showcase still)
+preview = os.path.join(tempfile.mkdtemp(prefix="tessera_hair_preview_"), "hair_solver_verify.png")
 # a staged pose for the still
 if pb is not None:
     bpy.context.view_layer.objects.active = arm

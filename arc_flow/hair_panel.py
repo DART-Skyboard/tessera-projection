@@ -1,14 +1,12 @@
-"""Tessera Projection Hair panel, plus `draw_hair_tab(layout, context)` so a vertical-tabbed
-N-panel can mount this category under a HAIR tab without merge friction.
+"""Tessera Projection Hair UI: `draw_hair_tab(layout, context)` is mounted on the
+vertical Tessera N-panel's HAIR tab via `ui_tabs.register_tab_drawer`.  The
+object Properties panel (`AF_PT_hair_object`) stays; there is no sibling
+VIEW_3D Hair panel, so the category does not stack outside the tab card.
 """
 import bpy
 from bpy.types import Panel
 
 from . import hair_ops as HO
-from . import panels
-
-
-_Base = panels._Base
 
 
 def _hp(ctx):
@@ -194,17 +192,6 @@ def draw_hair_tab(layout, context):
         _draw_object(col, context)
 
 
-class AF_PT_hair(_Base, Panel):
-    """Standalone Hair panel in the Tessera N-panel (also the source of `draw_hair_tab`)."""
-    bl_idname = "AF_PT_hair"
-    bl_label = "Hair  |  Tessera Projection"
-    bl_options = {'DEFAULT_CLOSED'}
-    bl_order = 40
-
-    def draw(self, ctx):
-        draw_hair_tab(self.layout, ctx)
-
-
 class AF_PT_hair_object(Panel):
     bl_idname = "AF_PT_hair_object"
     bl_label = "Tessera Hair"
@@ -222,14 +209,18 @@ class AF_PT_hair_object(Panel):
         _draw_object(self.layout, ctx)
 
 
-CLASSES = (AF_PT_hair, AF_PT_hair_object)
+CLASSES = (AF_PT_hair_object,)  # Properties editor only — VIEW_3D content lives in the HAIR tab card
 
 
 def register():
     for c in CLASSES:
         bpy.utils.register_class(c)
+    from . import ui_tabs
+    ui_tabs.register_tab_drawer('HAIR', draw_hair_tab)
 
 
 def unregister():
+    from . import ui_tabs
+    ui_tabs.unregister_tab_drawer('HAIR', draw_hair_tab)
     for c in reversed(CLASSES):
         bpy.utils.unregister_class(c)
