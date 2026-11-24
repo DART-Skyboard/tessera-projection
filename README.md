@@ -13,7 +13,7 @@
   <img alt="Blender 5.2.3+" src="https://img.shields.io/badge/Blender-5.2.3%2B-orange">
   <img alt="Tested on 5.3.0" src="https://img.shields.io/badge/tested-5.2.3%20LTS%20%7C%205.3.0-blue">
   <img alt="License GPL-3.0-or-later" src="https://img.shields.io/badge/license-GPL--3.0--or--later-green">
-  <img alt="Version 0.5.0" src="https://img.shields.io/badge/version-0.5.0-informational">
+  <img alt="Version 0.6.0" src="https://img.shields.io/badge/version-0.6.0-informational">
 </p>
 
 <p align="center">
@@ -32,6 +32,7 @@ Tessera Projection is built around one idea: **a mesh can be projected against i
 | **Boolean Projection** | Cavities that intersect become one continuous through-cavity, with optional Boolean joint cuts in the walls. |
 | **Arc Flow** | A computational fluid dynamics engine: self-initialising fluid and combustion simulation through those connected cavities: containers, channels, chambers and nozzles that start empty and only conduct, finite fills, leaks, plugs, thermal and stress colouring. Fluid mode adds liquids, gases, mixing, transmutation (steam, crystals, burning, rust), viscosity and emission surfaces, fluid volumes, a wind tunnel with thermal readback, 22 shader presets and Geometry Nodes sockets. |
 | **Hair** | Real-time physics for Blender's Empty Hair Curves: paint and style a groom with the native curves tools, then let Tessera drive collision-body physics, live armature reactivity and game-engine baking. |
+| **Cloth** | A real-time XPBD cloth solver for any garment mesh: pins and armature skinning, SDF collision, aerodynamic drag and lift from wind or a running Fluid-mode field, bake to shape keys / point cache / Alembic and export a game-engine cloth package. |
 
 <p align="center">
   <img src="docs/renders/retopo_input_tris.png" width="46%" alt="Triangulated input mesh">
@@ -141,7 +142,35 @@ Real Blender 5.3 screenshots of every feature (software OpenGL capture, so viewp
   <img src="docs/gallery/09_cycles_render_window.png" width="48%" alt="Cycles render window">
 </p>
 
-## What is new in 0.5.0
+## What is new in 0.6.0
+
+<p align="center">
+  <img src="docs/renders/showcase_hair_emma_ui.png" width="96%" alt="Blender 5.3 UI: Cycles viewport, Emma with a subsurface skin shader and Tessera Hair Curves parting around a collision glove, HAIR tab open">
+</p>
+<p align="center"><i>Real-time Hair Curves solver in the Blender 5.3 UI: 6,000-strand groom on Emma (subsurface skin), body SDF + moving collision glove, HAIR tab open, Cycles rendered viewport.</i></p>
+
+- **Vertical tabbed N-panel UI.** One *Tessera Projection* sidebar panel with a vertical tab rail (Remesh, Fluid, Combustion, Hair, Cloth, Examples). Switching tabs only changes the view; every category keeps running in the same scene.
+- **Real-time Hair Curves solver and game-engine bake.** XPBD / Verlet physics for native Empty Hair Curves: inextensible strands, curl / style memory, scalp binding, live armature reactivity, LOTBCBP SDF collision with any number of (moving) collision bodies, wind and fluid coupling, guide-to-child interpolation; bake to a point cache or Alembic and export a hair physics package for Unreal, Unity and web.
+- **Real-time fluid-backed Cloth solver and game-engine bake.** Stretch, shear and dihedral bending, pins and armature skinning, SDF collision, optional self-collision, aerodynamic drag and lift against the Environment wind or a running Fluid-mode field. Silk, Cotton, Denim, Leather and Cape presets with Real-time / Balanced / High-detail budgets; bake to shape keys, `.npz` or Alembic and export a game-engine cloth package.
+- **Solid-body fluid and combustion blending.** Liquids are splatted into a density field, relaxed with surface tension and meshed as one cohesive body that merges, necks and separates; whitewater foam is emitted where the surface breaks.
+- **Curve-sourced wispy volumetrics.** Smoke, steam and slipstreams can be emitted from curves, giving thin, wispy filaments instead of blobby puffs.
+- **Wind-tunnel aerodynamic friction heat.** A boundary-layer model adds stagnation / compression heating and skin-friction shear heating, written to the thermal readback attributes and colour ramp, with curve streamlines around the body.
+- **Blender 5.3 ready.** Geometry Nodes modifier inputs, Alembic export and render settings use the 5.3 API; the hidden category panels really hide in the GUI sidebar. Tested on Blender 5.3.0 (headless suite plus an interactive GUI session).
+
+<p align="center">
+  <img src="docs/renders/showcase_cloth_storefront_ui.png" width="96%" alt="Blender 5.3 UI: boutique storefront, silk dress on a dress form blown by a pedestal fan, Tessera CLOTH tab open">
+</p>
+<p align="center"><i>Real-time Cloth solver: a silk dress on a dress form in a boutique window, blown by a pedestal fan (oscillating sweep + gusts), CLOTH tab open, Cycles rendered viewport.</i></p>
+
+<p align="center">
+  <img src="docs/renders/showcase_fluid_ui.png" width="48%" alt="FLUID tab: cohesive solid-body water with whitewater foam on a collision rock">
+  <img src="docs/renders/showcase_windtunnel_ui.png" width="48%" alt="COMBUSTION tab: fighter in the wind tunnel with aerodynamic friction heat and wispy curve streamlines">
+</p>
+<p align="center"><i>Left: FLUID tab, cohesive solid-body water and whitewater foam. Right: COMBUSTION tab, wind tunnel with aerodynamic friction heat and curve streamlines.</i></p>
+
+Videos (30 s, real-time Cycles viewport in the full Blender UI): Emma hair + collision glove, and the storefront dress in the fan's airflow, are attached to the 0.6.0 release.
+
+## What was new in 0.5.0
 
 - **Remesh Symmetrize**: truly mirror-symmetric quads, with a before/after report.
 - **Fluid mode**: two-way gas pressure, transmutation (steam, crystals, burning, rust), a smooth merged liquid surface, soft volume gases, viscosity and emission surfaces, fluid volumes, any geometry as Container or Shape, several independent assets that mix and react.
@@ -178,12 +207,12 @@ The fluid solver is NumPy on the CPU: frame times grow with particle count and i
 - Steam and smoke are soft volumes or splats, not resolved vapour; frozen crystals still count as liquid in the grid projection.
 - The wind tunnel aircraft is a procedural stand-in, not a real model.
 - The large-mesh remesh path keeps the source triangulation's symmetry; the exact mirror is the accurate path and the reduce mode.
-- Verified headless on Blender 5.2.3 and 5.3.0 only (no interactive session, no GPU render check).
+- Verified on Blender 5.2.3 and 5.3.0: full headless test suite, plus an interactive Blender 5.3.0 GUI session (virtual display, software OpenGL, CPU Cycles viewport) for the showcase captures. No GPU render check yet.
 - Details and open items: [technical reference](docs/TECHNICAL.md).
 
 ## Install
 
-1. Download `tessera_projection-0.5.0.zip` from this repository's Releases (or, once approved, from extensions.blender.org: **Edit > Preferences > Get Extensions**, search *Tessera Projection*). Do not unzip it.
+1. Download `tessera_projection-0.6.0.zip` from this repository's Releases (or, once approved, from extensions.blender.org: **Edit > Preferences > Get Extensions**, search *Tessera Projection*). Do not unzip it.
 2. In Blender 5.2.3 or newer: **Edit > Preferences > Get Extensions > (v) menu, top right > Install from Disk**, pick the zip.
 3. Open the 3D Viewport sidebar (**N**), tab **Tessera**. Inside it, use the vertical tab rail (Remesh, Fluid, Combustion, Hair, Cloth, Examples) to switch category; other categories stay active.
 
@@ -196,7 +225,7 @@ From source: `./build.sh` validates and builds the zip into `dist/`.
 
 ## Status and roadmap
 
-Version 0.5.0 is tested headless on Blender 5.2.3 LTS and 5.3.0 (every test, also from the built extension). Interactive UI use and GPU render checks are still to do.
+Version 0.6.0 is tested on Blender 5.3.0 (every test, the built extension installed from the zip, and an interactive GUI session). GPU render checks are still to do.
 
 Coming next: curvature-aligned quad layout, exact symmetry in the large-mesh path, shape-key transfer. See [docs/ROADMAP.md](docs/ROADMAP.md) and the [changelog](CHANGELOG.md).
 

@@ -78,12 +78,12 @@ def draw_cloth_tab(layout, context):
         for k in ("density", "stretch", "shear", "bend", "damping", "drag", "lift",
                   "thickness", "margin", "friction"):
             phys.prop(g, k)
+        gb.prop(g, "self_collision")
         gb.prop(g, "override_quality")
         q = gb.column(align=True)
         q.enabled = g.override_quality
         q.prop(g, "substeps")
         q.prop(g, "iterations")
-        q.prop(g, "self_collision")
         q.prop(g, "use_dihedral")
         q.prop(g, "tessellation_edge")
         q.prop(g, "tessellation_cap")

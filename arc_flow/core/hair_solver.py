@@ -40,7 +40,7 @@ class HairParams:
         "stretch_compliance", "stretch_iterations",
         "bend_compliance", "bend_iterations",
         "rest_shape", "rest_shape_root", "rest_shape_tip",
-        "collision_radius", "collision_iterations", "collision_friction",
+        "self_collision", "collision_radius", "collision_iterations", "collision_friction",
         "sdf_resolution", "sdf_level", "sdf_refine",
         "wind_drag", "wind_tangent", "fluid_coupling",
         "guide_ratio", "child_k", "child_smooth",
@@ -59,6 +59,7 @@ class HairParams:
         self.rest_shape = 0.35
         self.rest_shape_root = 0.85
         self.rest_shape_tip = 0.12
+        self.self_collision = True
         self.collision_radius = 0.008
         self.collision_iterations = 2
         self.collision_friction = 0.3
@@ -1032,6 +1033,68 @@ class HairSolver:
                 # kill downward velocity
                 going = under & ((x[:, 2] - prev[:, 2]) < 0)
                 prev[going, 2] = x[going, 2]
+        if getattr(p, 'self_collision', True):
+            x, prev = self._self_collide(x, prev)
+        return x, prev
+
+    def _self_collide(self, x, prev):
+        """Spatial-hash push-out between points on different strands (and non-adjacent points on the same strand)."""
+        rad = float(self.params.collision_radius)
+        if rad <= 0.0 or len(x) < 2:
+            return x, prev
+        minL = 2.0 * rad
+        inv = self.inv_mass
+        cell = np.floor(x / minL).astype(np.int64)
+        buckets = {}
+        for i, c in enumerate(map(tuple, cell)):
+            if inv[i] > 0:
+                buckets.setdefault(c, []).append(i)
+        if not buckets:
+            return x, prev
+        along = np.empty(len(x), np.int32)
+        for s in range(self.n_strands):
+            a, b = int(self.offsets[s]), int(self.offsets[s + 1])
+            along[a:b] = np.arange(b - a, dtype=np.int32)
+        sid = self.strand_id
+        # visit each unordered pair once: same-cell (i<j) and a half-shell of neighbour cells
+        half = ((dx, dy, dz) for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1)
+                if (dz > 0) or (dz == 0 and dy > 0) or (dz == 0 and dy == 0 and dx > 0))
+        half = tuple(half)
+        pa, pb = [], []
+        for (cx, cy, cz), mem in buckets.items():
+            m = mem
+            for ii in range(len(m)):
+                for jj in range(ii + 1, len(m)):
+                    a, b = m[ii], m[jj]
+                    if sid[a] == sid[b] and abs(int(along[a]) - int(along[b])) <= 2:
+                        continue
+                    pa.append(a); pb.append(b)
+            for dx, dy, dz in half:
+                other = buckets.get((cx + dx, cy + dy, cz + dz))
+                if not other:
+                    continue
+                for a in m:
+                    sa, aa = sid[a], along[a]
+                    for b in other:
+                        if sa == sid[b] and abs(int(aa) - int(along[b])) <= 2:
+                            continue
+                        pa.append(a); pb.append(b)
+        if not pa:
+            return x, prev
+        a = np.asarray(pa, np.int64)
+        b = np.asarray(pb, np.int64)
+        d = x[b] - x[a]
+        L = np.linalg.norm(d, axis=1)
+        hit = (L < minL) & (L > 1e-12)
+        if not hit.any():
+            return x, prev
+        a, b, d, L = a[hit], b[hit], d[hit], L[hit]
+        nrm = d / L[:, None]
+        corr = minL - L
+        wa, wb = inv[a], inv[b]
+        ws = np.maximum(wa + wb, 1e-12)
+        x[a] = x[a] - (wa / ws)[:, None] * corr[:, None] * nrm
+        x[b] = x[b] + (wb / ws)[:, None] * corr[:, None] * nrm
         return x, prev
 
     def step(self, dt=None, root_M=None, substeps=None):
@@ -1063,6 +1126,7 @@ class HairSolver:
             self._project_bend(x, p.bend_compliance, p.bend_iterations, h)
             self._project_stretch(x, p.stretch_compliance, max(2, p.stretch_iterations // 2), h)
             x, prev = self._collide(x, prev)
+            self._project_stretch(x, p.stretch_compliance, max(2, p.stretch_iterations // 2), h)
             self._pin_roots(x, prev, h)
             prev[:, :] = x_old
             # keep pinned prev consistent with attachment velocity (already done in _pin_roots)

@@ -668,6 +668,13 @@ def _paint_color(o):
     return (0.55, 0.60, 0.68)
 
 
+# overlay look: paint + a warm tint up to OVERLAY_TINT_MAX at the top of the range, and blackbody
+# incandescence only between INCANDESCENCE_K (Draper point ~798 K; dull red to bright orange)
+OVERLAY_TINT = [(0.00, (1.00, 0.66, 0.42)), (0.50, (1.00, 0.42, 0.12)), (1.00, (1.00, 0.18, 0.04))]
+OVERLAY_TINT_MAX = 0.8
+INCANDESCENCE_K = (750.0, 1500.0)
+
+
 def _build_overlay_shader(o):
     """Base material + thermal blackbody / aerodynamic heat glow driven by tessera_temp_k and tessera_friction_heat."""
     p = o.arc_flow_th
@@ -686,8 +693,9 @@ def _build_overlay_shader(o):
     mr.clamp = True
     inp(mr, 'From Min').default_value = p.t_min
     inp(mr, 'From Max').default_value = p.t_max
-    cr = b.node('ShaderNodeValToRGB', label="Heat ramp", y=200)
-    st = TH.RAMPS.get(p.ramp, TH.RAMPS['THERMAL'])
+    cr = b.node('ShaderNodeValToRGB', label="Heat tint", y=200)
+    # the overlay keeps the paint: a warm tint (not the false-colour ramp) mixes in as the wall heats
+    st = OVERLAY_TINT
     ramp = cr.color_ramp
     while len(ramp.elements) > 2:
         ramp.elements.remove(ramp.elements[-1])
@@ -696,20 +704,19 @@ def _build_overlay_shader(o):
     for pos, col in st[1:-1]:
         e = ramp.elements.new(pos)
         e.color = (*col, 1.0)
-    bb = b.node('ShaderNodeBlackbody', label="Blackbody", y=40)
-    # map temperature onto a visible incandescent range so modest aero heating still reads, while high T goes white
-    mb = b.node('ShaderNodeMapRange', label="Blackbody K", y=40)
-    mb.clamp = True
-    inp(mb, 'From Min').default_value = p.t_min
-    inp(mb, 'From Max').default_value = max(p.t_max, p.t_min + 1.0)
-    inp(mb, 'To Min').default_value = 800.0
-    inp(mb, 'To Max').default_value = 3500.0
-    mq = b.node('ShaderNodeMapRange', label="Glow", y=-40)
+    # physical incandescence: the blackbody colour of the real wall temperature, emitting only above
+    # the Draper point (a skin at a few hundred K does not glow); Glow scales the hot end
+    bb = b.node('ShaderNodeBlackbody', label="Blackbody (wall K)", y=40)
+    mq = b.node('ShaderNodeMapRange', label="Incandescence", y=-40)
     mq.clamp = True
-    inp(mq, 'From Min').default_value = 0.0
-    inp(mq, 'From Max').default_value = 20000.0
+    inp(mq, 'From Min').default_value = INCANDESCENCE_K[0]
+    inp(mq, 'From Max').default_value = INCANDESCENCE_K[1]
     inp(mq, 'To Min').default_value = 0.0
-    inp(mq, 'To Max').default_value = max(float(p.emission), 0.15) * 8.0
+    inp(mq, 'To Max').default_value = max(float(p.emission), 0.0) * 8.0
+    mf = b.node('ShaderNodeMath', label="Tint amount", y=120)
+    mf.operation = 'MULTIPLY'
+    mf.use_clamp = True
+    mf.inputs[1].default_value = OVERLAY_TINT_MAX
     mx = b.node('ShaderNodeMixRGB', label="Paint + heat", y=120) if hasattr(__import__('bpy').types, 'ShaderNodeMixRGB') else None
     # Blender 4.2+ uses ShaderNodeMix with data_type
     if mx is None:
@@ -750,13 +757,12 @@ def _build_overlay_shader(o):
     o_ = b.node('ShaderNodeOutputMaterial', y=80)
     b.link(out(at, 'Fac'), inp(mr, 'Value'))
     b.link(out(mr, 'Result'), inp(cr, 'Fac'))
-    b.link(out(at, 'Fac'), inp(mb, 'Value'))
-    b.link(out(mb, 'Result'), inp(bb, 'Temperature'))
-    b.link(out(aq, 'Fac'), inp(mq, 'Value'))
-    # factor: heat colour mixes over paint as temperature climbs
+    b.link(out(at, 'Fac'), inp(bb, 'Temperature'))
+    b.link(out(at, 'Fac'), inp(mq, 'Value'))
+    nt.links.new(mr.outputs[0], mf.inputs[0])
+    # factor: the warm tint mixes over the paint as the wall temperature climbs through the range
     if fac is not None:
-        # use the mapped temperature as the mix factor (softened)
-        b.link(out(mr, 'Result'), fac)
+        nt.links.new(mf.outputs[0], fac)
     if B is not None:
         nt.links.new(cr.outputs['Color'], B)
     # base colour of principled

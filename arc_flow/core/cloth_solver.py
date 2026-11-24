@@ -53,7 +53,7 @@ PRESET_ITEMS = [(k, v['label'], v['label']) for k, v in PRESETS.items()]
 
 QUALITY = {
     'REALTIME': dict(label="Real-time (60 fps)", substeps=2, iterations=4,
-                     self_collision=False, use_dihedral=False, tessellation_cap=20000, tessellation_edge=0.08),
+                     self_collision=True, use_dihedral=False, tessellation_cap=20000, tessellation_edge=0.08),
     'BALANCED': dict(label="Balanced", substeps=4, iterations=8,
                      self_collision=True, use_dihedral=True, tessellation_cap=80000, tessellation_edge=0.04),
     'QUALITY': dict(label="High detail", substeps=8, iterations=12,
@@ -252,7 +252,14 @@ class ClothSolver:
                  quality='BALANCED', gravity=(0.0, 0.0, -9.81), air_density=1.225,
                  ground_z=None, **kwargs):
         verts = np.asarray(verts, dtype=np.float64).reshape(-1, 3)
-        tris = np.asarray(tris, dtype=np.int64).reshape(-1, 3)
+        tris = np.asarray(tris, dtype=np.int64)
+        if tris.ndim == 1:
+            tris = tris.reshape(-1, 3)
+        elif tris.ndim == 2 and tris.shape[1] == 4:
+            # two triangles per quad, preserving winding
+            tris = np.ascontiguousarray(np.vstack((tris[:, [0, 1, 2]], tris[:, [0, 2, 3]])))
+        elif tris.ndim != 2 or tris.shape[1] != 3:
+            raise ValueError("ClothSolver faces must be triangles or quads")
         if len(verts) < 3 or len(tris) < 1:
             raise ValueError("ClothSolver needs at least one triangle")
         self.rest = verts.copy()
@@ -279,7 +286,7 @@ class ClothSolver:
         self.damping = float(pr['damping'])
         self.substeps = int(pr.get('substeps', 4))
         self.iterations = int(pr.get('iterations', 8))
-        self.self_collision = bool(pr.get('self_collision', False))
+        self.self_collision = bool(pr.get('self_collision', True))
         self.tessellation_cap = int(pr.get('tessellation_cap', 80000))
         self.tessellation_edge = float(pr.get('tessellation_edge', 0.0))
         self.use_dihedral = bool(pr.get('use_dihedral', True))
@@ -545,6 +552,18 @@ class ClothSolver:
         # Hard pins travel with pin_vel during substeps and snap to the exact
         # target only at the end of the full step, so a moving rig imparts inertia
         # smoothly instead of teleporting on the first substep.
+        # Untangle teleports / pre-existing intersections while x_prev still
+        # holds the last accepted (or rest) pose.  Skip the extra work when
+        # motion is already within a collision margin.
+        if self.self_collision:
+            disp = float(np.max(np.linalg.norm(self.x - self.x_prev, axis=1)))
+            if disp > 2.0 * max(self.thickness, 1e-4):
+                self._untangle(ref=self.x_prev, passes=12)
+                self.x_prev = self.x.copy()
+                self.v[:] = 0.0
+                if pinned.any():
+                    self.v[pinned] = self.pin_vel[pinned]
+
         for _ in range(nsub):
             self._integrate(h, g, wind, fluid_velocity)
             for _it in range(max(1, int(self.iterations))):
@@ -560,7 +579,7 @@ class ClothSolver:
                 self._solve_soft_pins(h)
             self._collide()
             if self.self_collision:
-                self._self_collide()
+                self._self_collide(ref=self.x_prev, passes=1)
             self.v = (self.x - self.x_prev) / h
             damp = max(0.0, 1.0 - self.damping * h)
             self.v *= damp
@@ -785,8 +804,43 @@ class ClothSolver:
             self.v[idx[inward]] -= vn[inward, None] * n[inward]
             self.v[idx[inward]] *= max(0.0, 1.0 - self.friction)
 
-    def _self_collide(self):
-        """Spatial-hash vertex push-out so the cloth does not fold through itself."""
+    def _self_collide(self, ref=None, passes=1):
+        """Spatial-hash vertex and vertex-triangle push-out so the cloth does not fold through itself."""
+        for _ in range(max(1, int(passes))):
+            self._self_collide_vertices()
+            self._self_collide_point_tris(ref=ref)
+
+    def _penetrating_vertices(self, band=None):
+        """Free vertices with a negative signed distance to a non-adjacent triangle."""
+        thick = max(self.thickness if band is None else float(band), 1e-4)
+        # reuse the intersection counter's pair walk via a side channel
+        x, w, tris = self.x, self.inv_mass, self.tris
+        if len(tris) == 0:
+            return np.zeros(0, np.int64)
+        hits = self._self_intersection_hits(thick, proximity=False)
+        if len(hits) == 0:
+            return np.zeros(0, np.int64)
+        return np.unique(hits)
+
+    def _untangle(self, ref=None, passes=12):
+        """Pull teleported intersecting vertices back toward the last accepted pose, then push out."""
+        ref = self.x_prev if ref is None else ref
+        band = max(self.thickness, 1e-4)
+        for _ in range(max(1, int(passes))):
+            idx = self._penetrating_vertices(band)
+            if len(idx):
+                extra = set(map(int, idx))
+                for i in list(extra):
+                    extra.update(int(j) for j in self.neighbors[i])
+                idx = np.fromiter((i for i in extra if self.inv_mass[i] > 0), np.int64)
+                if len(idx):
+                    self.x[idx] = self.x[idx] + 0.5 * (ref[idx] - self.x[idx])
+            self._self_collide(ref=ref, passes=1)
+            if len(self._penetrating_vertices(band)) == 0:
+                break
+
+    def _self_collide_vertices(self):
+        """Keep free vertices at least 2*thickness apart (skip 1- and 2-ring neighbours)."""
         thick = max(self.thickness, 1e-4)
         h = 2.0 * thick
         x, w = self.x, self.inv_mass
@@ -797,6 +851,7 @@ class ClothSolver:
         off = (-1, 0, 1)
         seen = set()
         n = self.n
+        minL = 2.0 * thick
         for (cx, cy, cz), members in buckets.items():
             for dx in off:
                 for dy in off:
@@ -816,7 +871,6 @@ class ClothSolver:
                                 seen.add(key)
                                 d = x[b] - x[a]
                                 L = float(np.linalg.norm(d))
-                                minL = 2.0 * thick
                                 if L >= minL or L < 1e-12:
                                     continue
                                 nrm = d / L
@@ -827,6 +881,132 @@ class ClothSolver:
                                     continue
                                 x[a] = x[a] - (wa / ws) * corr * nrm
                                 x[b] = x[b] + (wb / ws) * corr * nrm
+
+    def _incident_skip(self, ia, ib, ic):
+        skip = {int(ia), int(ib), int(ic)}
+        for v in (ia, ib, ic):
+            skip.update(self.neighbors[int(v)])
+        return skip
+
+    def _self_collide_point_tris(self, ref=None):
+        """Push free vertices out of non-adjacent triangles so thin sheets cannot pass through each other."""
+        thick = max(self.thickness, 1e-4)
+        x, w, tris = self.x, self.inv_mass, self.tris
+        if len(tris) == 0:
+            return
+        A, B, C = x[tris[:, 0]], x[tris[:, 1]], x[tris[:, 2]]
+        cell = np.floor(x / thick).astype(np.int64)
+        buckets = defaultdict(list)
+        for i, c in enumerate(map(tuple, cell)):
+            if w[i] > 0:
+                buckets[c].append(i)
+        pair_i, pair_t = [], []
+        for ti, (ia, ib, ic) in enumerate(tris):
+            lo = np.minimum(np.minimum(A[ti], B[ti]), C[ti]) - thick
+            hi = np.maximum(np.maximum(A[ti], B[ti]), C[ti]) + thick
+            clo = np.floor(lo / thick).astype(np.int64)
+            chi = np.floor(hi / thick).astype(np.int64)
+            skip = self._incident_skip(ia, ib, ic)
+            for cx in range(int(clo[0]), int(chi[0]) + 1):
+                for cy in range(int(clo[1]), int(chi[1]) + 1):
+                    for cz in range(int(clo[2]), int(chi[2]) + 1):
+                        for i in buckets.get((cx, cy, cz), ()):
+                            if i not in skip:
+                                pair_i.append(i)
+                                pair_t.append(ti)
+        if not pair_i:
+            return
+        idx = np.asarray(pair_i, np.int64)
+        tid = np.asarray(pair_t, np.int64)
+        xp = self.x_prev if ref is None else ref
+        corr = np.zeros_like(x)
+        cnt = np.zeros(self.n, dtype=np.float64)
+        for a in range(0, len(idx), 4096):
+            sl = slice(a, a + 4096)
+            ii, tt = idx[sl], tid[sl]
+            cp, _reg = sdf.closest_points(x[ii], A[tt], B[tt], C[tt])
+            nrm = np.cross(B[tt] - A[tt], C[tt] - A[tt])
+            nrm = nrm / np.maximum(np.linalg.norm(nrm, axis=1), 1e-12)[:, None]
+            sd = ((x[ii] - cp) * nrm).sum(axis=1)
+            prev_sd = ((xp[ii] - cp) * nrm).sum(axis=1)
+            sign = np.sign(np.where(np.abs(prev_sd) > 1e-8, prev_sd, sd))
+            sign = np.where(sign == 0.0, 1.0, sign)
+            # keep the vertex on its previous (or last accepted) side, at least thickness out
+            hit = (sd * sign) < thick
+            if not hit.any():
+                continue
+            ii, nrm, sd, sign = ii[hit], nrm[hit], sd[hit], sign[hit]
+            np.add.at(corr, ii, nrm * (sign * thick - sd)[:, None])
+            np.add.at(cnt, ii, 1.0)
+        moved = cnt > 0
+        if moved.any():
+            x[moved] = x[moved] + corr[moved] / cnt[moved, None]
+
+    def _self_collision_pairs(self, thick):
+        """(vertex index, triangle index) pairs within ``thick`` of a non-adjacent face."""
+        x, w, tris = self.x, self.inv_mass, self.tris
+        if len(tris) == 0:
+            return np.zeros(0, np.int64), np.zeros(0, np.int64)
+        A, B, C = x[tris[:, 0]], x[tris[:, 1]], x[tris[:, 2]]
+        cell = np.floor(x / thick).astype(np.int64)
+        buckets = defaultdict(list)
+        for i, c in enumerate(map(tuple, cell)):
+            if w[i] > 0:
+                buckets[c].append(i)
+        pair_i, pair_t = [], []
+        for ti, (ia, ib, ic) in enumerate(tris):
+            lo = np.minimum(np.minimum(A[ti], B[ti]), C[ti]) - thick
+            hi = np.maximum(np.maximum(A[ti], B[ti]), C[ti]) + thick
+            clo = np.floor(lo / thick).astype(np.int64)
+            chi = np.floor(hi / thick).astype(np.int64)
+            skip = self._incident_skip(ia, ib, ic)
+            for cx in range(int(clo[0]), int(chi[0]) + 1):
+                for cy in range(int(clo[1]), int(chi[1]) + 1):
+                    for cz in range(int(clo[2]), int(chi[2]) + 1):
+                        for i in buckets.get((cx, cy, cz), ()):
+                            if i not in skip:
+                                pair_i.append(i)
+                                pair_t.append(ti)
+        if not pair_i:
+            return np.zeros(0, np.int64), np.zeros(0, np.int64)
+        return np.asarray(pair_i, np.int64), np.asarray(pair_t, np.int64)
+
+    def _self_intersection_hits(self, thick, proximity=False):
+        """Vertex indices of each self-intersection (or proximity) contact; may contain duplicates."""
+        x, tris = self.x, self.tris
+        idx, tid = self._self_collision_pairs(thick)
+        if len(idx) == 0:
+            return np.zeros(0, np.int64)
+        A, B, C = x[tris[:, 0]], x[tris[:, 1]], x[tris[:, 2]]
+        hits = []
+        for a in range(0, len(idx), 8192):
+            sl = slice(a, a + 8192)
+            ii, tt = idx[sl], tid[sl]
+            cp, _reg = sdf.closest_points(x[ii], A[tt], B[tt], C[tt])
+            d = x[ii] - cp
+            if proximity:
+                L = np.linalg.norm(d, axis=1)
+                mask = L < thick
+            else:
+                nrm = np.cross(B[tt] - A[tt], C[tt] - A[tt])
+                nrm = nrm / np.maximum(np.linalg.norm(nrm, axis=1), 1e-12)[:, None]
+                sd = (d * nrm).sum(axis=1)
+                mask = sd < -1e-6
+            if mask.any():
+                hits.append(ii[mask])
+        if not hits:
+            return np.zeros(0, np.int64)
+        return np.concatenate(hits)
+
+    def count_self_intersections(self, thickness=None, proximity=False):
+        """Self-collision diagnostics.
+
+        By default, counts *penetrations*: free vertices that have gone through a
+        non-adjacent triangle (signed distance < 0).  With ``proximity=True``,
+        counts every pair closer than ``thickness`` (used to verify the push-out).
+        """
+        thick = max(self.thickness if thickness is None else float(thickness), 1e-4)
+        return int(len(self._self_intersection_hits(thick, proximity=proximity)))
 
     def _update_tension(self):
         edges, rest = self.stretch_edges, self.stretch_rest
