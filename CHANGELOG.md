@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased
+- **Tessera Projection Hair.** A real-time XPBD / Verlet solver for Blender Empty Hair Curves (`CURVES`): inextensible strands, curl / style memory, live armature and deforming-scalp reactivity, tessellation-aware LOTBCBP SDF collision, anisotropic wind and fluid coupling, and guide-to-child interpolation for high-density grooms. Live viewport mode lets you pose or drive a rig and see the hair react; bake writes a `.npz` point cache and an optional Alembic file, plus a game-engine hair physics package (rest curves, guide weights, per-strand stiffness, collision metadata) for Unreal, Unity and web. The Hair panel exposes `draw_hair_tab(layout, context)` so a vertical-tabbed Tessera N-panel can mount it under a HAIR tab. Tests: `tests/test_hair_solver.py` (pure NumPy) and `tests/test_hair_bpy.py` (Blender 4.2.3). Preview: `docs/renders/hair_solver_preview.png`.
+
 ## 0.5.0
 Release candidate. Highlights since 0.4.1:
 - **Projection Remesh: Symmetrize.** Truly mirror-symmetric quad output (choose the trusted side and a strength), with a before/after asymmetry report; REDUCE mirrors exactly, also for planes off the origin.
