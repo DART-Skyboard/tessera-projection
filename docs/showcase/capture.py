@@ -38,6 +38,7 @@ ap.add_argument('--stable', type=float, default=1.6, help='seconds the viewport 
 ap.add_argument('--display', default=os.environ.get('DISPLAY', ':99'))
 ap.add_argument('--quit', action='store_true')
 ap.add_argument('--pixel-size', default='1')
+ap.add_argument('--scroll', type=int, default=0)
 ap.add_argument('--widen', type=int, default=120)
 ap.add_argument('--tab-dy', type=int, default=250)
 ap.add_argument('--text-dy', type=int, default=0)
@@ -123,6 +124,10 @@ def ui_tab_click():
         for k in range(1, 11):
             sh.append('xdotool mousemove %d %d; sleep 0.1' % (ex - A.widen * k // 10, ey))
         sh.append('sleep 0.3; xdotool mouseup 1; sleep 0.4')
+    if A.scroll:
+        sx, sy = ui.x - A.widen + 140, top + 400
+        sh.append('xdotool mousemove %d %d; sleep 0.4' % (sx, sy))
+        sh.extend(['xdotool click 5; sleep 0.15'] * A.scroll)
     sh.append('xdotool mousemove 960 1070')
     subprocess.Popen(['bash', '-c', '; '.join(sh)], env=dict(os.environ, DISPLAY=A.display))
 
