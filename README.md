@@ -99,7 +99,7 @@ The simulation is a simplified, documented model, not a full Navier-Stokes solve
 
 **Merging and mixing (0.4.0).** Particles carry a composition (species mass fractions). Miscible fluids exchange composition and heat by Fick diffusion (mass and enthalpy conserved), the colour is the subtractive (weighted geometric) mix, density, expansion and heat capacity follow the composition. Optional per-species priority lets a dominant fluid absorb a minority (one cluster, one colour), and a JSON reaction table (temperature, relative-velocity, density-ratio and concentration windows, heat in J/kg) transforms species. Render mode **Surface** welds blobs into one coloured mesh (two touching blobs give one surface, apart give two). Demo: *Colour Mixing*.
 
-Switch the panel from Combustion to **Fluid** and turn any mesh into a self-initialising fluid (mass, volume, density, temperature, velocity, viscosity and more, with missing values derived). Fluids with or without a container, mixing, thermal convection (lava lamp), free gas rising or sinking in the Environment (gravity, barometric pressure, ambient density, wind, ground), moving containers and colliders, and Geometry Nodes groups per fluid.
+Open the **Fluid** tab in the Tessera sidebar and turn any mesh into a self-initialising fluid (mass, volume, density, temperature, velocity, viscosity and more, with missing values derived). Fluids with or without a container, mixing, thermal convection (lava lamp), free gas rising or sinking in the Environment (gravity, barometric pressure, ambient density, wind, ground), moving containers and colliders, and Geometry Nodes groups per fluid.
 
 Assigned to a container (the lava lamp's glass cone), a fluid takes the cavity's real contoured shape: the quantity is poured in under the Environment gravity, settles into layers (densest at the bottom), and that settled state is the start frame; the lamp then heats and the blobs move. `Fill / Settle` and `Quick fill` are in the panel.
 
@@ -167,14 +167,14 @@ The fluid solver is NumPy on the CPU: frame times grow with particle count and i
 
 1. Download `tessera_projection-0.5.0.zip` from this repository's Releases (or, once approved, from extensions.blender.org: **Edit > Preferences > Get Extensions**, search *Tessera Projection*). Do not unzip it.
 2. In Blender 5.2.3 or newer: **Edit > Preferences > Get Extensions > (v) menu, top right > Install from Disk**, pick the zip.
-3. Open the 3D Viewport sidebar (**N**), tab **Tessera**.
+3. Open the 3D Viewport sidebar (**N**), tab **Tessera**. Inside it, use the vertical tab rail (Remesh, Fluid, Combustion, Hair, Cloth, Examples) to switch category; other categories stay active.
 
 From source: `./build.sh` validates and builds the zip into `dist/`.
 
 ## Quick start
 
-- **Remesh:** select a mesh, open *Tessera > Projection Remesh*, press **Analyse Topology** to see triangles and odd faces, then **Projection Remesh**.
-- **Fluids:** open *Tessera > Examples* (collapsed at the top of the Tessera tab), press **Example: Single engine** or **Example: Twin-engine crossfeed**, then **Build**.
+- **Remesh:** select a mesh, open *Tessera > Remesh*, press **Analyse Topology** to see triangles and odd faces, then **Projection Remesh**.
+- **Fluids:** open *Tessera > Examples*, press **Example: Single engine** or **Example: Twin-engine crossfeed**, then switch to the **Combustion** or **Fluid** tab and press **Build**.
 
 ## Status and roadmap
 

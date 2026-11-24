@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+- **Vertical tab rail in the Tessera N-panel.** The sidebar now has an in-panel vertical tab list (Remesh, Fluid, Combustion, Hair, Cloth, Examples) like Blender's own N-panel category tabs. Each tab shows only that category's controls in a compact card; switching tabs is a view change only and never starts, stops or resets other categories, so Remesh, Fluid, Combustion, Wind Tunnel, Hair and Cloth can all stay active in the same scene. Hair and Cloth ship a ready-state card and a `register_tab_drawer()` hook so the real-time solvers can plug in without conflicting with this UI. New test: `tests/test_ui_tabs_bpy.py`.
+
+
 ## 0.5.0
 Release candidate. Highlights since 0.4.1:
 - **Projection Remesh: Symmetrize.** Truly mirror-symmetric quad output (choose the trusted side and a strength), with a before/after asymmetry report; REDUCE mirrors exactly, also for planes off the origin.
