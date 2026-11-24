@@ -169,9 +169,13 @@ def _params(g):
         kw.update(density=g.density, stretch=g.stretch, shear=g.shear, bend=g.bend, damping=g.damping,
                   drag=g.drag, lift=g.lift, thickness=g.thickness, margin=g.margin, friction=g.friction)
     if g.override_quality:
-        kw.update(substeps=g.substeps, iterations=g.iterations, self_collision=g.self_collision,
+        kw.update(substeps=g.substeps, iterations=g.iterations,
                   use_dihedral=g.use_dihedral, tessellation_edge=g.tessellation_edge,
                   tessellation_cap=g.tessellation_cap)
+    # self-collision is a per-garment toggle (default on) and is never dropped by a quality profile
+    kw['self_collision'] = bool(getattr(g, 'self_collision', True))
+    kw.setdefault('thickness', float(g.thickness))
+    kw.setdefault('margin', float(g.margin))
     return kw
 
 
@@ -276,7 +280,7 @@ def build_solver(scene, g):
             pass
     try:
         deps = bpy.context.evaluated_depsgraph_get()
-        cv, ct, _names = _collider_mesh(scene, deps)
+        cv, ct, _names = _collider_mesh(scene, deps, exclude=obj)
         if cv is not None:
             S.set_collider_mesh(cv, ct)
             S._collider_sig = (len(cv), float(cv.sum()), float((cv * cv).sum()))
@@ -294,17 +298,33 @@ def get_solver(scene, g, rebuild=False):
     return S
 
 
-def _collider_mesh(scene, deps):
+def _collider_mesh(scene, deps, exclude=None):
+    """World-space triangle soup of every Tessera collision body except ``exclude`` (the garment itself)."""
+    from . import asset_colliders as AC
     vs, ts, off = [], [], 0
     names = []
-    for c in cloth(scene).colliders:
-        if not c.enabled or c.obj is None or c.obj.type != 'MESH':
-            continue
-        v, t = _mesh_world(c.obj, deps)
+    seen = set()
+
+    def add(obj):
+        nonlocal off
+        if obj is None or obj.type != 'MESH' or obj == exclude or id(obj) in seen:
+            return
+        seen.add(id(obj))
+        v, t = _mesh_world(obj, deps)
         if len(t) == 0:
-            continue
+            return
         vs.append(v); ts.append(t + off); off += len(v)
-        names.append(c.obj.name)
+        names.append(obj.name)
+
+    cl = cloth(scene)
+    for c in cl.colliders:
+        if c.enabled:
+            add(c.obj)
+    for g in cl.garments:
+        if g.enabled:
+            add(g.obj)
+    for o in AC.iter_collision_meshes(scene, exclude=exclude):
+        add(o)
     if not vs:
         return None, None, names
     return np.concatenate(vs), np.concatenate(ts), names
@@ -315,7 +335,6 @@ def step_scene(scene, dt, deps=None):
     cl = cloth(scene)
     if deps is None:
         deps = bpy.context.evaluated_depsgraph_get()
-    cv, ct, names = _collider_mesh(scene, deps)
     wind, grav, rho = _env_wind(scene)
     fluid = _fluid_field(scene)
     t0 = time.perf_counter()
@@ -325,7 +344,8 @@ def step_scene(scene, dt, deps=None):
             continue
         S = get_solver(scene, g)
         S.air_density = rho
-        # collider: rebuild the soup only when the collider geometry moved
+        # collider soup: every other projection body and garment, never the garment itself
+        cv, ct, names = _collider_mesh(scene, deps, exclude=g.obj)
         if cv is not None:
             sig = (len(cv), float(cv.sum()), float((cv * cv).sum()))
             if getattr(S, '_collider_sig', None) != sig:
@@ -420,6 +440,10 @@ def assign_garment(scene, obj, preset='CAPE', quality='BALANCED', pin_mode='SHOU
     cl.index = len(cl.garments) - 1
     obj.arc_flow_cloth.is_garment = True
     obj.arc_flow_cloth.garment_name = g.name
+    g.self_collision = True
+    add_collider(scene, obj)
+    from . import asset_colliders as AC
+    AC.mark_projection_collider(obj)
     CG.ensure_modifier(obj)
     return g
 
@@ -433,6 +457,8 @@ def add_collider(scene, obj):
     c.name = obj.name
     c.obj = obj
     obj.arc_flow_cloth.is_collider = True
+    from . import asset_colliders as AC
+    AC.mark_projection_collider(obj)
     cl.collider_index = len(cl.colliders) - 1
     return c
 

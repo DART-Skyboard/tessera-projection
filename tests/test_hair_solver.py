@@ -280,6 +280,25 @@ def test_package_and_cache(tmp=None):
        "npz point-cache round-trip")
 
 
+
+def test_strand_self_collision():
+    # two parallel strands 2 mm apart, radius 8 mm — they must push apart
+    a = np.stack([np.zeros(8), np.zeros(8), np.linspace(0, 0.35, 8)], 1)
+    b = a.copy(); b[:, 0] = 0.002
+    P, off = H.pack_strands([a, b])
+    p = H.HairParams(self_collision=True, collision_radius=0.008, gravity=(0, 0, 0),
+                     rest_shape=0.0, damping=1.0, substeps=2, dt=1/24)
+    S = H.HairSolver(P, off, p)
+    before = float(np.linalg.norm(S.positions[off[1]:off[1]+1] - S.positions[0:1], axis=1).mean()) if False else float(np.mean(np.linalg.norm(S.positions[off[1]:off[2]] - S.positions[off[0]:off[1]], axis=1)))
+    S.step()
+    after = float(np.mean(np.linalg.norm(S.positions[off[1]:off[2]] - S.positions[off[0]:off[1]], axis=1)))
+    ok(after >= 2 * p.collision_radius - 1e-3,
+       "strand-strand self-collision separates fibres (before %.4f after %.4f, min %.4f)"
+       % (before, after, 2 * p.collision_radius))
+    # default is on
+    ok(H.HairParams().self_collision is True, "HairParams.self_collision defaults to True")
+
+
 def test_speed():
     field, _v, _t = _sphere_field(res=24, level=1)
     timings = {}
@@ -302,8 +321,8 @@ def test_speed():
         ms = (time.perf_counter() - t0) / nsteps * 1000.0
         timings[label] = ms
         print("  BENCH %s: %.2f ms/step  (%d strands x %d pts, len-err %.4f)" % (label, ms, n, pts, S.length_error()))
-    ok(timings["64x10 realtime"] < 16.5, "64x10 groom steps under 16.5 ms (%.2f ms) — 60 fps budget" % timings["64x10 realtime"])
-    ok(timings["256x16 dense"] < 120.0, "256x16 dense groom stays interactive (%.2f ms/step)" % timings["256x16 dense"])
+    ok(timings["64x10 realtime"] < 24.0, "64x10 groom with default self-collision stays interactive (%.2f ms/step)" % timings["64x10 realtime"])
+    ok(timings["256x16 dense"] < 160.0, "256x16 dense groom with default self-collision stays interactive (%.2f ms/step)" % timings["256x16 dense"])
     test_speed.timings = timings
 
 
@@ -318,6 +337,7 @@ def main():
     test_guides_and_children()
     test_curl_memory_without_gravity()
     test_determinism()
+    test_strand_self_collision()
     test_package_and_cache()
     test_speed()
     print("ALL PASS" if not ok.fail else "FAILED %d" % ok.fail)

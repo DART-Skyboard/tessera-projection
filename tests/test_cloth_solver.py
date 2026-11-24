@@ -294,6 +294,37 @@ def test_realtime_step_speed():
     test_realtime_step_speed.balanced_ms = bal
 
 
+
+def test_quality_profiles_default_self_collision():
+    v, t, _q = CS.grid_mesh(4, 4, 0.2, 0.2, axis='xz')
+    for q in ('REALTIME', 'BALANCED', 'QUALITY'):
+        S = CS.ClothSolver(v, t, quality=q)
+        ok(S.self_collision is True, "quality %s enables self-collision by default" % q)
+
+
+def test_sheet_self_intersection_count():
+    """Two overlapping sheets: report contact count before and after self-collision resolve."""
+    v1, t1, _ = CS.grid_mesh(8, 8, 0.4, 0.4, axis='xy')
+    v2, t2, _ = CS.grid_mesh(8, 8, 0.4, 0.4, axis='xy')
+    v2[:, 2] += 0.002          # 2 mm above, well inside 2*thickness
+    v2[:, 0] += 0.05
+    off = len(v1)
+    v = np.vstack([v1, v2])
+    t = np.vstack([t1, t2 + off])
+    S = CS.ClothSolver(v, t, preset='SILK', quality='BALANCED',
+                       self_collision=True, thickness=0.01, gravity=(0, 0, 0),
+                       use_dihedral=False)
+    before = S.count_self_intersections(proximity=True)
+    ok(before > 0, "overlapping sheets start with self-contacts (%d)" % before)
+    for _ in range(8):
+        S._self_collide()
+    after = S.count_self_intersections(proximity=True)
+    ok(after <= max(2, before // 20),
+       "self-collision clears overlapping sheets (before %d, after %d)" % (before, after))
+    test_sheet_self_intersection_count.before = before
+    test_sheet_self_intersection_count.after = after
+
+
 def test_collider_tessellation():
     v, t, _q = CS.grid_mesh(6, 6, 0.4, 0.4, axis='xz')
     S = CS.ClothSolver(v, t, quality='QUALITY', tessellation_edge=0.15, tessellation_cap=5000)
@@ -314,6 +345,8 @@ if __name__ == '__main__':
     test_moving_rig_inertia()
     test_skin_weights()
     test_self_collision_pushout()
+    test_quality_profiles_default_self_collision()
+    test_sheet_self_intersection_count()
     test_package_and_snapshot()
     test_collider_tessellation()
     print("ALL PASS" if ok.fail == 0 else "FAILED %d" % ok.fail)

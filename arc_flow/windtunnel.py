@@ -348,6 +348,8 @@ def mark_body(o, plain=False, thermal=False, heat=None):
     """Make `o` a collision body of the tunnel.  plain: responds only.  thermal: thermal readback on its surface."""
     o.arc_flow_wt.body = True
     o.arc_flow_fm.collider = True
+    from . import asset_colliders as AC
+    AC.mark_projection_collider(o)
     if plain:
         o.arc_flow_wt.plain = True
     elif thermal and getattr(o, 'arc_flow_th', None) is not None:

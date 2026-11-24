@@ -66,7 +66,8 @@ class AF_ClothGarment(PropertyGroup):
     thickness: FloatProperty(name="Thickness", default=0.003, min=0.0001, unit='LENGTH')
     margin: FloatProperty(name="Collision margin", default=0.006, min=0.0, unit='LENGTH')
     friction: FloatProperty(name="Friction", default=0.20, min=0.0, max=1.0, subtype='FACTOR')
-    self_collision: BoolProperty(name="Self-collision", default=True)
+    self_collision: BoolProperty(name="Self-collision", default=True,
+                                 description="The garment is a collision body that cannot pass through itself (vertex and triangle, spatial hash, thickness). On by default")
     use_dihedral: BoolProperty(name="Dihedral bend", default=True)
     substeps: IntProperty(name="Substeps", default=4, min=1, max=32)
     iterations: IntProperty(name="Iterations", default=8, min=1, max=64)

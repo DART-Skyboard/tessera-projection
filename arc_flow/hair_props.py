@@ -80,8 +80,10 @@ class AF_HairScene(PropertyGroup):
                                description="How many points at the root of each strand stay glued to the scalp")
 
     # collision / tessellation
+    self_collision: BoolProperty(name="Self-collision", default=True,
+                                 description="Strands collide with each other (spatial hash, collision radius). On by default")
     collision_radius: FloatProperty(name="Collision radius", default=0.008, min=0.0, unit='LENGTH',
-                                    description="Keep strand points this far outside the collision body")
+                                    description="Keep strand points this far outside the collision body and each other")
     collision_iterations: IntProperty(name="Collision iterations", default=2, min=1, max=8)
     collision_friction: FloatProperty(name="Collision friction", default=0.3, min=0.0, max=1.0, subtype='FACTOR')
     sdf_resolution: IntProperty(name="SDF resolution", default=32, min=8, max=128,

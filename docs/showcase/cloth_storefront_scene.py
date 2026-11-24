@@ -437,11 +437,11 @@ def build():
     CO.RT.reset()
     g = CO.assign_garment(sc, dress, preset='SILK', quality='BALANCED', pin_mode='TOP')
     g.pin_group = "ClothPins"
-    # real-time budget for a 30 s capture: dihedral bending on, self-collision off
+    # real-time budget for a 30 s capture: dihedral bending on; self-collision stays on (global default)
     g.override_quality = True
     g.substeps = 3
     g.iterations = 6
-    g.self_collision = False
+    g.self_collision = True
     g.use_dihedral = True
     g.tessellation_edge = 0.05
     for o in colliders:

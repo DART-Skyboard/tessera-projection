@@ -152,8 +152,10 @@ def build_solver(scene):
             d['body'] = cont_idx[o.name]
             bodies[d['body']].fluids.append(len(defs))
         defs.append(d)
+    from . import asset_colliders as AC
     for o in scene.objects:
-        if o.type in SP.CONTAINER_TYPES and o.arc_flow_fm.collider and o.name not in cont_idx:
+        if o.type in SP.CONTAINER_TYPES and o.name not in cont_idx and (
+                o.arc_flow_fm.collider or AC.is_projection_collider(o)):
             fld, _v, _t = SP.container_field(o, deps)
             bodies.append(FM.Body(fld, np.array(o.matrix_world), 'COLLIDER', None, o.arc_flow_fm.friction, o.name))
             body_objs.append(o)
@@ -872,6 +874,9 @@ class AF_OT_fm_collider(Operator):
         if o is None or o.type != 'MESH':
             return {'CANCELLED'}
         o.arc_flow_fm.collider = not o.arc_flow_fm.collider
+        from . import asset_colliders as AC
+        if o.arc_flow_fm.collider:
+            AC.mark_projection_collider(o)
         return {'FINISHED'}
 
 
