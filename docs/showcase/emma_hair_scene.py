@@ -274,7 +274,7 @@ def breeze(frame):
     t = frame / FPS
     ramp = min(1.0, t / 1.5)
     yaw = math.radians(28) * math.sin(2 * math.pi * t / 7.3) + math.radians(8) * math.sin(2 * math.pi * t / 2.1)
-    d = Vector((-0.80, 0.55, 0.12))
+    d = Vector((-0.35, 0.92, 0.10))   # from in front of her, blowing the groom back off the face
     d = (Matrix.Rotation(yaw, 3, 'Z') @ d).normalized()
     gust = (1.9 + 0.75 * math.sin(2 * math.pi * t / 3.7) + 0.45 * math.sin(2 * math.pi * t / 1.3 + 0.8)
             + 0.20 * math.sin(2 * math.pi * t / 0.61 + 2.1))
@@ -372,9 +372,9 @@ def build(glb, strands_bin, n_strands=6000):
     # viewport skin quality: tight adaptive threshold + high-quality OIDN with accurate
     # albedo/normal prefilter, so the Random-Walk (Skin) SSS reads as skin, not a smeared mask
     cy = sc.cycles
-    for attr, val in (('preview_adaptive_threshold', 0.03), ('preview_adaptive_min_samples', 0),
+    for attr, val in (('preview_adaptive_threshold', 0.05), ('preview_adaptive_min_samples', 0),
                       ('preview_denoising_quality', 'HIGH'), ('preview_denoising_prefilter', 'ACCURATE'),
-                      ('preview_denoising_start_sample', 20), ('subsurface_samples', 4)):
+                      ('preview_denoising_start_sample', 12), ('subsurface_samples', 4)):
         try:
             setattr(cy, attr, val)
         except Exception:
@@ -389,9 +389,9 @@ def build(glb, strands_bin, n_strands=6000):
     hp.dt = 1.0 / FPS
     hp.substeps = 4
     hp.damping = 0.965
-    hp.rest_shape = 0.12
-    hp.rest_shape_root = 0.92
-    hp.rest_shape_tip = 0.02
+    hp.rest_shape = 0.20
+    hp.rest_shape_root = 0.96
+    hp.rest_shape_tip = 0.04
     hp.pinned_prefix = 2
     hp.collision_radius = 0.004
     hp.collision_iterations = 3
