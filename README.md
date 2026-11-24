@@ -31,12 +31,30 @@ Tessera Projection is built around one idea: **a mesh can be projected against i
 | **Projection Remesh** | A fast quad remesh. Dense, symmetric quads along creases, lips, wrinkles and ears; large quads on broad surfaces. Works on characters, cars, trees, CAD, and scans, at any position or rotation. |
 | **Boolean Projection** | Cavities that intersect become one continuous through-cavity, with optional Boolean joint cuts in the walls. |
 | **Arc Flow** | A computational fluid dynamics engine: self-initialising fluid and combustion simulation through those connected cavities: containers, channels, chambers and nozzles that start empty and only conduct, finite fills, leaks, plugs, thermal and stress colouring. Fluid mode adds liquids, gases, mixing, transmutation (steam, crystals, burning, rust), viscosity and emission surfaces, fluid volumes, a wind tunnel with thermal readback, 22 shader presets and Geometry Nodes sockets. |
+| **Hair** | Real-time physics for Blender's Empty Hair Curves: paint and style a groom with the native curves tools, then let Tessera drive collision-body physics, live armature reactivity and game-engine baking. |
 
 <p align="center">
   <img src="docs/renders/retopo_input_tris.png" width="46%" alt="Triangulated input mesh">
   <img src="docs/renders/retopo_quad_crease_density.png" width="46%" alt="Quad result with denser loops around eyes, mouth, brow and ears">
 </p>
 <p align="center"><i>Projection Remesh: triangulated input (left), symmetric quads with crease-driven density (right).</i></p>
+
+
+## Tessera Projection Hair
+
+Paint, sculpt and layer hair (or fur, or feathers) with Blender's native **Empty Hair Curves**, then let Tessera Projection drive the physics:
+
+- **Live simulation** reacts as you pose an armature, move a character, or drive a rig with a controller — a game-engine-style preview inside the viewport.
+- **Collision** uses the same LOTBCBP signed-distance field as the fluid solver, with tessellation / resolution controls so you can tune for 60 fps or a dense offline groom.
+- **Wind and fluid coupling** samples the Tessera Environment wind (and a running fluid field when one is active).
+- **Bake and export** to a `.npz` point cache, Alembic, and a game-engine hair physics package (rest curves, guide weights, per-strand stiffness, collision metadata) for Unreal, Unity or a web engine.
+
+The Hair category lives in its own Tessera N-panel card (`draw_hair_tab`) so it can sit on a vertical tab next to Combustion, Fluid, Remesh and Examples.
+
+<p align="center">
+  <img src="docs/renders/hair_solver_preview.png" width="70%" alt="Tessera Projection Hair: a clay studio bust with a dense auburn Principled Hair groom and a colliding hand">
+</p>
+<p align="center"><i>Hair Groom Example: a stylized clay bust with clumped auburn Empty Hair Curves, rich Principled Hair BSDF highlights, and elastic collision parting around a hand.</i></p>
 
 ## Projection Remesh
 
