@@ -347,6 +347,20 @@ class AF_Scene(PropertyGroup):
     physics_cards: CollectionProperty(type=AF_PhysicsCard)
     math_cards: CollectionProperty(type=AF_MathCard)
     env: PointerProperty(type=AF_Env)
+    # N-panel category (view switch only: never starts, stops or resets other categories)
+    ui_tab: EnumProperty(
+        name="N-panel tab",
+        items=[
+            ('REMESH', "Remesh", "Projection Remesh, topology analysis, symmetrize, crease density and Boolean projection"),
+            ('FLUID', "Fluid", "Fluid mode, volumes, viscosity and emission surfaces, solver, meshing and shaders"),
+            ('COMBUSTION', "Combustion", "Combustion, systems, chambers, wind tunnel, thermal, environment and atmosphere"),
+            ('HAIR', "Hair", "Real-time hair curves solver"),
+            ('CLOTH', "Cloth", "Real-time cloth solver"),
+            ('EXAMPLES', "Examples", "Loadable examples and Tessera Geometry Nodes"),
+        ],
+        default='REMESH',
+        description="Which Tessera category is shown in the sidebar. Switching tabs never starts, stops or resets other categories",
+    )
     # modes
     continuous: BoolProperty(name="Continuous flow", default=True, description="On: containers refill as they are used.  Off: containers deplete until empty", update=_update_sync)
     chemistry: BoolProperty(name="Burn propellants", default=True, description="Fuel and oxidiser particles that meet in a chamber react into flame gas (flame model of the web app), the chamber builds pressure, the nozzle chokes and expands the gas, the flame cools into smoke", update=_update_sync)

@@ -39,6 +39,7 @@ else:
 SP = importlib.import_module(pkg + '.surfaces_panel')
 FO = importlib.import_module(pkg + '.fluidmode_ops')
 runtime = importlib.import_module(pkg + '.runtime')
+ui_tabs = importlib.import_module(pkg + '.ui_tabs')
 
 print("Blender", bpy.app.version_string, flush=True)
 ICONS = {e.identifier for e in bpy.types.UILayout.bl_rna.functions['label'].parameters['icon'].enum_items}
@@ -270,7 +271,7 @@ ok('DEFAULT_CLOSED' in ex.bl_options, "Examples panel collapsed by default")
 others = [getattr(bpy.types, n) for n in names if n.startswith('AF_PT_') and n != 'AF_PT_examples' and getattr(getattr(bpy.types, n), 'bl_category', '') == 'Tessera']
 closed = [c.__name__ for c in others if 'DEFAULT_CLOSED' in getattr(c, 'bl_options', ())]
 ok(not closed, "all other Tessera panels expanded by default %s" % closed)
-for want in ('AF_PT_shader', 'AF_PT_thermal', 'AF_PT_windtunnel', 'AF_PT_systems', 'AF_PT_retopo', 'AF_PT_srf', 'AF_PT_fm_main', 'AF_PT_fm_fluids', 'AF_PT_main', 'AF_PT_fluids'):
+for want in ('AF_PT_shader', 'AF_PT_thermal', 'AF_PT_windtunnel', 'AF_PT_systems', 'AF_PT_retopo', 'AF_PT_srf', 'AF_PT_fm_main', 'AF_PT_fm_fluids', 'AF_PT_main', 'AF_PT_fluids', 'AF_PT_tabs'):
     ok(hasattr(bpy.types, want), "panel %s registered" % want)
 
 sc = bpy.context.scene
@@ -287,9 +288,12 @@ for mode in ('FLUID', 'COMBUSTION'):
         pass
 modes = [e.identifier for e in sc.arc_flow_fm.bl_rna.properties['mode'].enum_items]
 print("modes:", modes, flush=True)
+tabs = list(ui_tabs.TAB_IDS)
 for m in modes:
     sc.arc_flow_fm.mode = m
-    draw_all("empty/" + m)
+    for tab in tabs:
+        sc.arc_flow.ui_tab = tab
+        draw_all("empty/%s/%s" % (m, tab))
 
 # ---- draw with objects selected (a cube, a curve, a light, a camera, a text)
 for kind, add in (('cube', lambda: bpy.ops.mesh.primitive_cube_add()), ('curve', lambda: bpy.ops.curve.primitive_bezier_curve_add()),
@@ -299,7 +303,9 @@ for kind, add in (('cube', lambda: bpy.ops.mesh.primitive_cube_add()), ('curve',
     add()
     for m in modes:
         sc.arc_flow_fm.mode = m
-        draw_all("sel_%s/%s" % (kind, m))
+        for tab in tabs:
+            sc.arc_flow.ui_tab = tab
+            draw_all("sel_%s/%s/%s" % (kind, m, tab))
 
 # ---- every Example: loads without error, then draw both modes
 items = []
@@ -323,7 +329,9 @@ for group, label, idname, props in items:
     ok(loaded, "Example loads: %s / %s" % (group, label))
     for m in modes:
         sc.arc_flow_fm.mode = m
-        draw_all("ex[%s]/%s" % (label, m))
+        for tab in tabs:
+            sc.arc_flow.ui_tab = tab
+            draw_all("ex[%s]/%s/%s" % (label, m, tab))
     # select the first mesh and draw again (object properties, surface faces, thermal)
     meshes = [o for o in sc.objects if o.type == 'MESH']
     if meshes:
@@ -333,7 +341,9 @@ for group, label, idname, props in items:
         bpy.context.view_layer.objects.active = meshes[0]
         for m in modes:
             sc.arc_flow_fm.mode = m
-            draw_all("ex[%s]+sel/%s" % (label, m))
+            for tab in tabs:
+                sc.arc_flow.ui_tab = tab
+                draw_all("ex[%s]+sel/%s/%s" % (label, m, tab))
 
 # ---- UI text: no 'demo'
 txt = []

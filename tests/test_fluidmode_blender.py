@@ -25,15 +25,20 @@ def ok(c, msg):
 print("Blender", bpy.app.version_string, flush=True)
 sc = bpy.context.scene
 fm = sc.arc_flow_fm
-ok(all(hasattr(bpy.types, n) for n in ("AF_PT_fm_mode", "AF_PT_fm_main", "AF_PT_fm_fluids", "AF_PT_fm_solver", "AF_PT_fm_object", "AF_UL_fm_fluids")), "Fluid mode panels registered")
+ok(all(hasattr(bpy.types, n) for n in ("AF_PT_fm_mode", "AF_PT_fm_main", "AF_PT_fm_fluids", "AF_PT_fm_solver", "AF_PT_fm_object", "AF_UL_fm_fluids", "AF_PT_tabs")), "Fluid mode panels registered")
 
-# mode switch: combustion panels hide in Fluid mode, the Environment card stays
-class _Ctx:
-    scene = sc
+# vertical tabs host category panels inside the tab card (they no longer stack / hide by fm.mode)
+from arc_flow import ui_tabs as UT
+ok(hasattr(sc.arc_flow, "ui_tab") and hasattr(bpy.types, "AF_PT_tabs"), "vertical tab rail registered")
+ok(not bpy.types.AF_PT_main.poll(bpy.context) and not FP.AF_PT_fm_main.poll(bpy.context),
+   "hosted combustion and fluid panels do not stack in the N-panel")
 fm.mode = 'COMBUSTION'
-ok(bool(bpy.types.AF_PT_main.poll(_Ctx)) and not FP.AF_PT_fm_main.poll(_Ctx), "Combustion mode: combustion panels shown, fluid panels hidden")
+sc.arc_flow.ui_tab = 'FLUID'
+ok(fm.mode == 'COMBUSTION' and sc.arc_flow.ui_tab == 'FLUID',
+   "opening the Fluid tab does not change fm.mode (categories stay active together)")
 fm.mode = 'FLUID'
-ok(not bpy.types.AF_PT_main.poll(_Ctx) and bool(FP.AF_PT_fm_main.poll(_Ctx)) and bool(bpy.types.AF_PT_fm_env.poll(_Ctx)), "Fluid mode: fluid panels shown, combustion hidden, Environment card kept")
+sc.arc_flow.ui_tab = 'COMBUSTION'
+ok(fm.mode == 'FLUID', "opening the Combustion tab does not change fm.mode")
 
 # demo
 t0 = time.time()
