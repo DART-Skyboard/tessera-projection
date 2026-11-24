@@ -2,14 +2,15 @@
 
 Liquid propellant particles (not yet reacted: kind 0) of every fluid in Smooth surface mode go through one density field (core/fluidsurface.SurfaceBuilder, the same
 builder as Fluid mode): fuel and oxidiser that touch join with a neck, colours blend across the seam, the mesh changes continuously from frame to frame.  The mesh
-`AFCS_Liquids` carries the colour attribute `fm_color` and a shader preset material (Water by default; Auto picks Oil for fuels).  Flame gas and smoke are drawn as soft
-volumes (Points to Volume + shader preset volumes Flame / Smoke / Soot, objects `AFCP_core|flame|smoke|soot`); `scene.arc_flow["plume_volume"] = 0` goes back to
+`AFCS_Liquids` carries the colour attribute `fm_color` and a shader preset material (Water by default; Auto picks Oil for fuels).  Flame gas and smoke are drawn as soft, smoothly blended
+volumes (Wendland splat -> dense points -> Points to Volume + shader preset volumes Flame / Smoke / Soot, objects `AFCP_core|flame|smoke|soot`); `scene.arc_flow["plume_volume"] = 0` goes back to
 Gaussian splats."""
 import bpy
 import numpy as np
 
 from . import runtime as RT0
 from .core import fluidsurface as FSF
+from .core import fluid_blend as FB
 
 NAME = "AFCS_Liquids"
 _state = dict(builder=None, key=None)
@@ -83,7 +84,7 @@ def update(scene, world, src):
         dx = 0.1
     sb = _state['builder']
     if sb is None or _state['key'] != id(world) or abs(sb.dx - dx) > 0.15 * sb.dx:
-        sb = _state['builder'] = FSF.SurfaceBuilder(max(dx, 1e-3), sigma=1.3, iso=0.25, cell=0.4)
+        sb = _state['builder'] = FB.SolidSurfaceBuilder(max(dx, 1e-3), radius=2.3, iso=0.28, cell=0.45, tension=0.35, smooth=4)
         _state['key'] = id(world)
     if xs:
         V, T, vc = sb.update(X, np.vstack(cs), frame=scene.frame_current)
@@ -200,13 +201,22 @@ def update_plume(scene, world, src):
             if o is not None:
                 o.hide_viewport = o.hide_render = True
             continue
-        o, me = _plume_obj(scene, cls, len(ii))
+        # blend the sparse flame / smoke parcels; curve / thin-surface sources keep a tight kernel
+        # so wispy tendrils stay sharp with far fewer particles than a filled-volume emitter
+        dx_p = float(np.median(src['rad'][ii])) / 1.2 if len(ii) else 0.02
+        P, dens, Tbl, _ = FB.blend_plume(src['pos'][ii], src['temp'][ii], dx=max(dx_p, 1e-4),
+                                         fade=fd, source='auto', iso=0.04)
+        if len(P) < 8:
+            P, dens = src['pos'][ii], np.clip(fd, 0.05, 1.0)
+            rad = src['rad'][ii].astype(np.float32) * np.clip(fd, 0.05, 1.0).astype(np.float32)
+        else:
+            rad = (np.full(len(P), max(dx_p * 0.85, 1e-4)) * np.clip(0.6 + 0.9 * dens / max(float(dens.max()), 1e-6), 0.5, 2.0)).astype(np.float32)
+        o, me = _plume_obj(scene, cls, len(P))
         o.hide_viewport = o.hide_render = False
-        me.vertices.foreach_set('co', src['pos'][ii].astype(np.float32).ravel())
-        rad = src['rad'][ii].astype(np.float32) * np.clip(fd, 0.05, 1.0).astype(np.float32)
+        me.vertices.foreach_set('co', P.astype(np.float32).ravel())
         me.attributes['af_radius'].data.foreach_set('value', rad)
         me.update()
         mr = o.modifiers.get("AF Render")
         from . import gn
-        r_med = float(np.median(src['rad'][ii]))
-        gn.set_modifier_inputs(mr, {"Density": 1.0, "Voxel Size": max(r_med * 0.7, 1e-3), "Radius Scale": float(o.get('af_rs', 1.5))})
+        r_med = float(np.median(rad)) if len(rad) else 0.01
+        gn.set_modifier_inputs(mr, {"Density": 1.15, "Voxel Size": max(r_med * 0.65, 1e-3), "Radius Scale": float(o.get('af_rs', 1.6))})

@@ -24,7 +24,7 @@ COLLECTION = "WindTunnel"
 TUNNEL, AIRVOL, EMITTER = "Wind Tunnel", "Tunnel Air Volume", "Wind Emitter"
 AIR_NAME = "Tunnel Air"
 R_GAS = 8.314462618
-MAX_WIND = 40.0          # the solver's speed clamp (default 20 m/s) is raised to follow the wind: see _widen_clamp
+MAX_WIND = 1200.0        # high-speed / transonic tunnel (m/s); the particle clamp follows 1.5 x wind, see build_solver_wide
 
 ATMOSPHERES = [('EARTH', "Earth", "1 atm, 288 K, 1 g, nitrogen / oxygen"), ('MARS', "Mars", "610 Pa carbon dioxide"),
                ('VENUS', "Venus", "92 bar, 737 K carbon dioxide"), ('TITAN', "Titan", "1.45 bar, 94 K nitrogen / methane"),
@@ -52,10 +52,14 @@ class AF_WTScene(PropertyGroup):
     height: FloatProperty(name="Height", default=1.5, min=0.3, unit='LENGTH')
     wall: FloatProperty(name="Wall thickness", default=0.06, min=0.005, unit='LENGTH', description="Real thickness of the tunnel shell")
     open_ends: BoolProperty(name="Open inlet and outlet", default=True, description="Off: a closed box")
-    wind: FloatProperty(name="Wind speed", default=14.0, min=0.0, max=MAX_WIND, description="m/s along +X. The particle speed clamp follows the wind (1.5 x); more substeps are needed above about 20 m/s")
+    wind: FloatProperty(name="Wind speed", default=14.0, min=0.0, max=MAX_WIND, description="m/s along +X. The particle speed clamp follows the wind (1.5 x). High speeds (hundreds of m/s) show aerodynamic friction heating on leading edges")
     count: IntProperty(name="Air parcels", default=9000, min=500, max=60000)
     emit: BoolProperty(name="Continuous wind", default=True, description="The Wind Emitter (an Emission surface at the inlet) keeps feeding fresh air into the tunnel")
     emit_cap: FloatProperty(name="Emission cap", default=1500.0, min=0.0, description="Most parcels per second the wind emitter adds (keeps the run time in check)")
+    blend_airflow: BoolProperty(name="Blend airflow volume", default=True,
+                                description="Draw the tunnel air as a continuous volumetric slipstream / heated boundary layer around collision bodies, not as sparse streaks")
+    aero_heat: BoolProperty(name="Friction heating", default=True,
+                            description="Compute aerodynamic friction and stagnation heating on tunnel collision bodies (tessera_temp_k / tessera_friction_heat)")
     status: StringProperty(default="")
 
 
@@ -579,6 +583,267 @@ def load_example(scene, with_thermal=True):
     return wt.status
 
 
+
+AIRFLOW_NAME = "Tessera Airflow Volume"
+
+
+def add_fighter(scene, location=None, thermal=True, wind=None):
+    """Insert the procedural fighter airframe as a tunnel collision body, with aero friction heating on its skin."""
+    from .assets import fighter as FG
+    from . import thermal as TM
+    col = _collection(scene)
+    # remove a previous fighter if the operator is clicked twice
+    prev = bpy.data.objects.get("Fighter Airframe")
+    if prev is not None:
+        _remove("Fighter Airframe")
+    parts = FG.build()
+    wt = scene.arc_flow_wt
+    loc = tuple(location) if location is not None else (0.0, 0.0, wt.height / 2 + 0.02)
+    air = _asset_mesh("Fighter Airframe", parts, col)
+    _paint(air, (0.42, 0.55, 0.68), 0.72, 0.28)
+    air.location = loc
+    air.rotation_euler = (0.0, math.radians(-1.5), 0.0)
+    mark_body(air)
+    air.arc_flow_fm.friction = 0.18
+    if thermal:
+        p = air.arc_flow_th
+        p.aero = True
+        p.overlay = True
+        p.shader = True
+        p.solid = True
+        p.couple = False
+        p.ramp = 'THERMAL'
+        p.emission = 1.2
+        p.wall_heat = 800.0
+        p.speedup = 80.0
+        p.emissivity = 0.35
+        p.roughness = 0.0
+        # tight ramp around the expected recovery temperature so the glow reads
+        ap = air_properties(scene)
+        T0 = ap['temperature']
+        v = float(wt.wind if wind is None else wind)
+        # expected stagnation rise r v^2 / 2 cp
+        dT = 0.85 * v * v / (2.0 * max(ap['cp'], 1.0))
+        p.t_min, p.t_max = T0, T0 + max(dT * 1.15, 8.0)
+        p.on = True
+        if wt.aero_heat:
+            TM.apply_aero_heat(scene, air, v_inf=(v, 0.0, 0.0), steps=24, speedup=p.speedup)
+    if wt.blend_airflow:
+        build_airflow_volume(scene, air)
+    return air
+
+
+def load_fighter_example(scene, wind=420.0, with_thermal=True):
+    """High-speed fighter wind-tunnel example: aerodynamic friction heating + blended slipstream."""
+    for n in ("Aircraft Rotor R", "Aircraft Rotor L", "Aircraft Airframe", "Engine Exhaust R", "Engine Exhaust L",
+              "Engine Nozzle R", "Engine Nozzle L", "Fighter Airframe", AIRFLOW_NAME):
+        _remove(n)
+    wt = scene.arc_flow_wt
+    wt.source, wt.atmosphere = 'PRESET', 'EARTH'
+    wt.wind = float(wind)
+    wt.blend_airflow = True
+    wt.aero_heat = True
+    wt.length, wt.width, wt.height = 5.0, 2.2, 1.8
+    fm = scene.arc_flow_fm
+    fm.mode = 'FLUID'
+    build_tunnel(scene)
+    # hide sparse air parcels when the blended volume is on
+    fl = next((f for f in fm.fluids if f.name == AIR_NAME), None)
+    if fl is not None and wt.blend_airflow:
+        fl.render_mode = 'POINTS'
+        fl.particle_scale = 0.15
+    air = add_fighter(scene, thermal=with_thermal, wind=wind)
+    fm.speedup = 1.0
+    scene.frame_start, scene.frame_end = 1, 90
+    FO.mark_dirty()
+    return wt.status
+
+
+def build_airflow_volume(scene, body, cell=0.045, delta=0.07):
+    """Continuous volumetric slipstream and heated boundary layer around a collision body."""
+    from . import thermal as TM
+    from .core import fluid_blend as FB
+    from .core import friction_heat as FH
+    deps = bpy.context.evaluated_depsgraph_get()
+    domain = body.arc_flow_th.domain if getattr(body, 'arc_flow_th', None) else 'POINT'
+    P, N, area, sel, size, L = TM.sample_geometry(body, deps, domain)
+    st = TM.STATE.get(body.name)
+    Ts = None
+    if st is not None and st.Ts is not None and len(st.Ts) == len(P):
+        Ts = st.Ts
+    elif 'tessera_temp_k' in body.data.attributes:
+        a = body.data.attributes['tessera_temp_k']
+        arr = np.empty(len(a.data), np.float32)
+        a.data.foreach_get('value', arr)
+        if len(arr) >= (sel.max() + 1 if len(sel) else 0):
+            Ts = arr[sel].astype(float)
+    wt = scene.arc_flow_wt
+    v_inf = (float(wt.wind), 0.0, 0.0)
+    T_inf = float(scene.arc_flow.env.temperature)
+    # bounds: a box around the body, padded downstream for the wake
+    if len(P) == 0:
+        return None
+    lo = P.min(0) - np.array([0.35, 0.45, 0.35])
+    hi = P.max(0) + np.array([1.8, 0.45, 0.45])
+    field = FB.airflow_field(P, N, body_T=Ts, v_inf=v_inf, T_inf=T_inf, bounds=(lo, hi), cell=cell, delta=delta)
+    o = _airflow_object(scene, field, T_inf, body.arc_flow_th.t_max if getattr(body, 'arc_flow_th', None) else T_inf + 80.0)
+    try:
+        build_airflow_wisps(scene, P, N, v_inf, (lo, hi), T_inf)
+    except Exception:
+        pass
+    return o
+
+
+
+WISP_NAME = "Tessera Airflow Wisps"
+
+
+def build_airflow_wisps(scene, body_P, body_N, v_inf, bounds, T_inf=288.15):
+    """Sharp, twisting slipstream tendrils sourced from curves (few particles, high detail)."""
+    from .core import fluid_blend as FB
+    wis = FB.wispy_streamlines(body_P, body_N, v_inf=v_inf, bounds=bounds, n_curves=32, steps=80)
+    field = dict(P=wis['P'], dens=wis['dens'], temp=np.full(len(wis['P']), float(T_inf)) if len(wis['P']) else wis.get('temp', np.zeros(0)), h=0.03)
+    if not len(field['P']):
+        return None
+    # temporarily retarget the volume object builder onto the wisp name
+    global AIRFLOW_NAME
+    prev, AIRFLOW_NAME = AIRFLOW_NAME, WISP_NAME
+    try:
+        o = _airflow_object(scene, field, T_inf, T_inf + 40.0)
+        # a slightly tighter, brighter cyan filament look
+        try:
+            from . import gn
+            mr = o.modifiers.get("AF Render")
+            if mr is not None:
+                gn.set_modifier_inputs(mr, {"Density": 1.6, "Voxel Size": 0.028, "Radius Scale": 0.85})
+        except Exception:
+            pass
+        return o
+    finally:
+        AIRFLOW_NAME = prev
+
+
+def _airflow_object(scene, field, T_inf, T_hot):
+
+    from . import gn
+    name = AIRFLOW_NAME
+    o = bpy.data.objects.get(name)
+    n = len(field['P'])
+    me = bpy.data.meshes.get(name)
+    if me is None or o is None or len(me.vertices) != n:
+        old = me
+        me = bpy.data.meshes.new(name + ".tmp")
+        if n:
+            me.vertices.add(n)
+        if o is not None:
+            o.data = me
+        if old is not None and old.users == 0:
+            bpy.data.meshes.remove(old)
+        me.name = name
+        if o is None:
+            o = bpy.data.objects.new(name, me)
+            _collection(scene).objects.link(o)
+    if n == 0:
+        o.hide_viewport = o.hide_render = True
+        return o
+    o.hide_viewport = o.hide_render = False
+    me.vertices.foreach_set('co', field['P'].astype(np.float32).ravel())
+    for nm, typ in (('af_radius', 'FLOAT'), ('af_density', 'FLOAT'), ('af_temperature', 'FLOAT'),
+                    (ATTR_TEMP if False else 'tessera_temp_k', 'FLOAT')):
+        if me.attributes.get(nm) is None:
+            try:
+                me.attributes.new(nm, typ, 'POINT')
+            except Exception:
+                pass
+    dens = np.asarray(field['dens'], float)
+    temp = np.asarray(field['temp'], float)
+    rad = np.full(n, float(field['h']) * 0.85, np.float32)
+    # slightly fatter in denser / hotter voxels so the volume closes
+    rad = rad * np.clip(0.7 + 0.6 * dens / max(float(dens.max()), 1e-6), 0.6, 1.8).astype(np.float32)
+    me.attributes['af_radius'].data.foreach_set('value', rad)
+    me.attributes['af_density'].data.foreach_set('value', dens.astype(np.float32))
+    me.attributes['af_temperature'].data.foreach_set('value', temp.astype(np.float32))
+    if me.attributes.get('tessera_temp_k') is not None:
+        me.attributes['tessera_temp_k'].data.foreach_set('value', temp.astype(np.float32))
+    me.update()
+    mr = o.modifiers.get("AF Render")
+    if mr is None:
+        mr = o.modifiers.new("AF Render", 'NODES')
+        try:
+            mr.node_group = gn.render_group('RayMarch', "AF_Airflow")
+        except Exception:
+            pass
+    mat = _airflow_material(T_inf, T_hot)
+    try:
+        gn.set_group_material(mr.node_group, mat)
+        gn.set_modifier_inputs(mr, {"Density": 1.15, "Voxel Size": max(float(field['h']) * 0.85, 1e-3), "Radius Scale": 1.35})
+    except Exception:
+        if mat.name not in [x.name if x else "" for x in me.materials]:
+            me.materials.clear()
+            me.materials.append(mat)
+    o.visible_shadow = False
+    return o
+
+
+def _airflow_material(T_inf, T_hot):
+    """Principled volume: cool cyan slipstream, orange-white heated boundary layer."""
+    from .nodeutil import Builder, enable_nodes, inp, out
+    name = "Tessera Airflow Volume"
+    m = bpy.data.materials.get(name) or bpy.data.materials.new(name)
+    nt = enable_nodes(m)
+    nt.nodes.clear()
+    b = Builder(nt)
+    at = b.node('ShaderNodeAttribute', label="Temperature", y=80)
+    at.attribute_name = 'af_temperature'
+    ad = b.node('ShaderNodeAttribute', label="Density", y=-80)
+    ad.attribute_name = 'density'
+    mr = b.node('ShaderNodeMapRange', label="Heat", y=80)
+    mr.clamp = True
+    inp(mr, 'From Min').default_value = float(T_inf)
+    inp(mr, 'From Max').default_value = float(max(T_hot, T_inf + 1.0))
+    cr = b.node('ShaderNodeValToRGB', label="Air / heat", y=80)
+    ramp = cr.color_ramp
+    while len(ramp.elements) > 2:
+        ramp.elements.remove(ramp.elements[-1])
+    ramp.elements[0].position, ramp.elements[0].color = 0.0, (0.55, 0.78, 1.0, 1.0)
+    ramp.elements[1].position, ramp.elements[1].color = 1.0, (1.0, 0.55, 0.12, 1.0)
+    e = ramp.elements.new(0.45)
+    e.color = (0.85, 0.90, 1.0, 1.0)
+    e = ramp.elements.new(0.72)
+    e.color = (1.0, 0.75, 0.25, 1.0)
+    pv = b.node('ShaderNodeVolumePrincipled', y=0)
+    if 'Color' in pv.inputs:
+        # density-gated emission so the bounding box does not glow
+        pass
+    o_ = b.node('ShaderNodeOutputMaterial', y=0)
+    mu = b.node('ShaderNodeMath', label="Density gate", y=-80)
+    mu.operation = 'MULTIPLY'
+    mu.inputs[0].default_value = 0.9
+    b.link(out(at, 'Fac'), inp(mr, 'Value'))
+    b.link(out(mr, 'Result'), inp(cr, 'Fac'))
+    if 'Color' in pv.inputs:
+        b.link(out(cr, 'Color'), inp(pv, 'Color'))
+    # density
+    dens_in = pv.inputs.get('Density')
+    if dens_in is not None:
+        b.link(out(ad, 'Fac'), dens_in)
+    # emission
+    eco = pv.inputs.get('Emission Color') or pv.inputs.get('Emission')
+    if eco is not None:
+        b.link(out(cr, 'Color'), eco)
+    est = pv.inputs.get('Emission Strength') or pv.inputs.get('Blackbody Intensity')
+    if est is not None:
+        b.link(out(ad, 'Fac'), inp(mu, 1) if False else mu.inputs[1])
+        b.link(out(mr, 'Result'), mu.inputs[0])
+        nt.links.new(mu.outputs[0], est)
+    b.link(out(pv, 'Volume'), inp(o_, 'Volume'))
+    try:
+        m.blend_method = 'BLEND'
+    except Exception:
+        pass
+    return m
+
+
 EXAMPLE = dict(id='WIND_TUNNEL', label="Example: Wind tunnel",
                description="Hollow wind tunnel with an air stream, a tilt-rotor VTOL with spinning rotors and thermal readback on its skin",
                load=load_example)
@@ -627,7 +892,21 @@ class AF_OT_wt_add_aircraft(Operator):
         return {'FINISHED'}
 
 
+
+class AF_OT_wt_add_fighter(Operator):
+    bl_idname = "arcflow.wt_add_fighter"
+    bl_label = "Add Example Fighter"
+    bl_description = "Insert the procedural fighter airframe with aerodynamic friction heating and a blended slipstream volume"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, ctx):
+        add_fighter(ctx.scene)
+        FO.mark_dirty()
+        return {'FINISHED'}
+
+
 class AF_OT_wt_apply_env(Operator):
+
     bl_idname = "arcflow.wt_apply_env"
     bl_label = "Apply Atmosphere"
     bl_description = "Write the tunnel atmosphere into the Environment card and the Air fluid"
@@ -675,13 +954,16 @@ class AF_PT_windtunnel(Panel):
         r.prop(wt, "length"); r.prop(wt, "width"); r.prop(wt, "height")
         col.prop(wt, "wall"); col.prop(wt, "open_ends"); col.prop(wt, "wind"); col.prop(wt, "count")
         col.prop(wt, "emit")
+        col.prop(wt, "blend_airflow"); col.prop(wt, "aero_heat")
         if wt.emit:
             col.prop(wt, "emit_cap")
         row = l.row(align=True)
         row.scale_y = 1.3
         row.operator("arcflow.wt_build", icon='MOD_WIREFRAME')
         row.operator("arcflow.wt_apply_env", icon='WORLD', text="Apply Atmosphere")
-        l.operator("arcflow.wt_add_aircraft", icon='OUTLINER_OB_MESH')
+        row = l.row(align=True)
+        row.operator("arcflow.wt_add_aircraft", icon='OUTLINER_OB_MESH', text="Add VTOL")
+        row.operator("arcflow.wt_add_fighter", icon='MESH_MONKEY', text="Add Fighter")
         row = l.row(align=True)
         op = row.operator("arcflow.wt_add_body", icon='MESH_CUBE', text="Add Collision Body")
         op.plain = False
@@ -699,7 +981,7 @@ class AF_PT_windtunnel(Panel):
             l.label(text=wt.status[:70], icon='INFO')
 
 
-CLASSES = (AF_WTScene, AF_WTObject, AF_OT_wt_build, AF_OT_wt_add_body, AF_OT_wt_add_aircraft, AF_OT_wt_apply_env, AF_PT_windtunnel)
+CLASSES = (AF_WTScene, AF_WTObject, AF_OT_wt_build, AF_OT_wt_add_body, AF_OT_wt_add_aircraft, AF_OT_wt_add_fighter, AF_OT_wt_apply_env, AF_PT_windtunnel)
 
 
 def register():
@@ -708,6 +990,8 @@ def register():
     try:
         from . import surfaces_panel
         surfaces_panel.register_loader("Fluid", "Wind tunnel", EXAMPLE['id'], load_example, EXAMPLE['description'])
+        surfaces_panel.register_loader("Fluid", "Fighter wind tunnel", "WIND_TUNNEL_FIGHTER", load_fighter_example,
+                                       "High-speed fighter: aerodynamic friction heating on the airframe and a blended slipstream")
     except Exception:
         pass
     bpy.types.Scene.arc_flow_wt = PointerProperty(type=AF_WTScene)

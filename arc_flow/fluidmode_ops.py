@@ -355,8 +355,9 @@ def refresh_render(scene):
 
 def _update_merged_surface(scene, S, fls, snap):
     """One smooth, frame-coherent surface for every liquid fluid in Surface mode: all their particles go through a single density field (smooth union:
-    touching blobs of different fluids join with a neck, colours blend across the seam), blended in time (core/fluidsurface.py SurfaceBuilder)."""
+    touching blobs of different fluids join with a neck, colours blend across the seam), blended in time (core/fluid_blend.py SolidSurfaceBuilder: Wendland splat, surface tension, Laplacian smooth)."""
     from .core import fluidsurface as FSF
+    from .core import fluid_blend as FB
     col = _collection(scene)
     C = (snap.get('C', S.C) if snap is not None else S.C)
     X = (snap['x'] if snap is not None else S.x)
@@ -374,7 +375,7 @@ def _update_merged_surface(scene, S, fls, snap):
         cs.append((S.SS.colour(C[sl]) if getattr(S, 'mixing', False) else np.tile(np.asarray(fl.color, float), (S.hi[fi] - S.lo[fi], 1)))[keep])
     sb = RT.surf
     if sb is None or abs(sb.dx - S.dx) > 1e-12 or RT.surf_key != id(S):
-        sb = RT.surf = FSF.SurfaceBuilder(S.dx)
+        sb = RT.surf = FB.SolidSurfaceBuilder(S.dx)
         RT.surf_key = id(S)
     if xs:
         V, T, vc = sb.update(np.vstack(xs), np.vstack(cs), frame=scene.frame_current)
