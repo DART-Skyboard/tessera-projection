@@ -31,12 +31,30 @@ Tessera Projection is built around one idea: **a mesh can be projected against i
 | **Projection Remesh** | A fast quad remesh. Dense, symmetric quads along creases, lips, wrinkles and ears; large quads on broad surfaces. Works on characters, cars, trees, CAD, and scans, at any position or rotation. |
 | **Boolean Projection** | Cavities that intersect become one continuous through-cavity, with optional Boolean joint cuts in the walls. |
 | **Arc Flow** | A computational fluid dynamics engine: self-initialising fluid and combustion simulation through those connected cavities: containers, channels, chambers and nozzles that start empty and only conduct, finite fills, leaks, plugs, thermal and stress colouring. Fluid mode adds liquids, gases, mixing, transmutation (steam, crystals, burning, rust), viscosity and emission surfaces, fluid volumes, a wind tunnel with thermal readback, 22 shader presets and Geometry Nodes sockets. |
+| **Hair** | Real-time physics for Blender's Empty Hair Curves: paint and style a groom with the native curves tools, then let Tessera drive collision-body physics, live armature reactivity and game-engine baking. |
 
 <p align="center">
   <img src="docs/renders/retopo_input_tris.png" width="46%" alt="Triangulated input mesh">
   <img src="docs/renders/retopo_quad_crease_density.png" width="46%" alt="Quad result with denser loops around eyes, mouth, brow and ears">
 </p>
 <p align="center"><i>Projection Remesh: triangulated input (left), symmetric quads with crease-driven density (right).</i></p>
+
+
+## Tessera Projection Hair
+
+Paint, sculpt and layer hair (or fur, or feathers) with Blender's native **Empty Hair Curves**, then let Tessera Projection drive the physics:
+
+- **Live simulation** reacts as you pose an armature, move a character, or drive a rig with a controller — a game-engine-style preview inside the viewport.
+- **Collision** uses the same LOTBCBP signed-distance field as the fluid solver, with tessellation / resolution controls so you can tune for 60 fps or a dense offline groom.
+- **Wind and fluid coupling** samples the Tessera Environment wind (and a running fluid field when one is active).
+- **Bake and export** to a `.npz` point cache, Alembic, and a game-engine hair physics package (rest curves, guide weights, per-strand stiffness, collision metadata) for Unreal, Unity or a web engine.
+
+The Hair category lives in its own Tessera N-panel card (`draw_hair_tab`) so it can sit on a vertical tab next to Combustion, Fluid, Remesh and Examples.
+
+<p align="center">
+  <img src="docs/renders/hair_solver_preview.png" width="70%" alt="Tessera Projection Hair: a clay studio bust with a dense auburn Principled Hair groom and a colliding hand">
+</p>
+<p align="center"><i>Hair Groom Example: a stylized clay bust with clumped auburn Empty Hair Curves, rich Principled Hair BSDF highlights, and elastic collision parting around a hand.</i></p>
 
 ## Projection Remesh
 
@@ -99,7 +117,7 @@ The simulation is a simplified, documented model, not a full Navier-Stokes solve
 
 **Merging and mixing (0.4.0).** Particles carry a composition (species mass fractions). Miscible fluids exchange composition and heat by Fick diffusion (mass and enthalpy conserved), the colour is the subtractive (weighted geometric) mix, density, expansion and heat capacity follow the composition. Optional per-species priority lets a dominant fluid absorb a minority (one cluster, one colour), and a JSON reaction table (temperature, relative-velocity, density-ratio and concentration windows, heat in J/kg) transforms species. Render mode **Surface** welds blobs into one coloured mesh (two touching blobs give one surface, apart give two). Demo: *Colour Mixing*.
 
-Switch the panel from Combustion to **Fluid** and turn any mesh into a self-initialising fluid (mass, volume, density, temperature, velocity, viscosity and more, with missing values derived). Fluids with or without a container, mixing, thermal convection (lava lamp), free gas rising or sinking in the Environment (gravity, barometric pressure, ambient density, wind, ground), moving containers and colliders, and Geometry Nodes groups per fluid.
+Open the **Fluid** tab in the Tessera sidebar and turn any mesh into a self-initialising fluid (mass, volume, density, temperature, velocity, viscosity and more, with missing values derived). Fluids with or without a container, mixing, thermal convection (lava lamp), free gas rising or sinking in the Environment (gravity, barometric pressure, ambient density, wind, ground), moving containers and colliders, and Geometry Nodes groups per fluid.
 
 Assigned to a container (the lava lamp's glass cone), a fluid takes the cavity's real contoured shape: the quantity is poured in under the Environment gravity, settles into layers (densest at the bottom), and that settled state is the start frame; the lamp then heats and the blobs move. `Fill / Settle` and `Quick fill` are in the panel.
 
@@ -167,14 +185,14 @@ The fluid solver is NumPy on the CPU: frame times grow with particle count and i
 
 1. Download `tessera_projection-0.5.0.zip` from this repository's Releases (or, once approved, from extensions.blender.org: **Edit > Preferences > Get Extensions**, search *Tessera Projection*). Do not unzip it.
 2. In Blender 5.2.3 or newer: **Edit > Preferences > Get Extensions > (v) menu, top right > Install from Disk**, pick the zip.
-3. Open the 3D Viewport sidebar (**N**), tab **Tessera**.
+3. Open the 3D Viewport sidebar (**N**), tab **Tessera**. Inside it, use the vertical tab rail (Remesh, Fluid, Combustion, Hair, Cloth, Examples) to switch category; other categories stay active.
 
 From source: `./build.sh` validates and builds the zip into `dist/`.
 
 ## Quick start
 
-- **Remesh:** select a mesh, open *Tessera > Projection Remesh*, press **Analyse Topology** to see triangles and odd faces, then **Projection Remesh**.
-- **Fluids:** open *Tessera > Examples* (collapsed at the top of the Tessera tab), press **Example: Single engine** or **Example: Twin-engine crossfeed**, then **Build**.
+- **Remesh:** select a mesh, open *Tessera > Remesh*, press **Analyse Topology** to see triangles and odd faces, then **Projection Remesh**.
+- **Fluids:** open *Tessera > Examples*, press **Example: Single engine** or **Example: Twin-engine crossfeed**, then switch to the **Combustion** or **Fluid** tab and press **Build**.
 
 ## Status and roadmap
 

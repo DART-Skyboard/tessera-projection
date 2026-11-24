@@ -373,25 +373,31 @@ class AF_PT_solver(_Base, Panel):
         col = self.layout.column(align=True)
         for k in ("lotbcbp", "net_res", "vmax", "radius_scale", "max_substeps", "seed"):
             col.prop(af, k)
-        b = self.layout.box()
-        b.label(text="Collision: Boolean projection", icon='MOD_BOOLEAN')
-        b.prop(af, "bool_projection")
-        col = b.column(align=True)
-        r = col.row(align=True)
-        r.operator("arcflow.build_cavities", icon='MOD_BOOLEAN')
-        r.operator("arcflow.clear_cavities", text="", icon='X')
-        col.prop(af, "bool_cut_joints")
-        col.prop(af, "bool_overlay")
-        col.prop(af, "bool_solver")
-        col.prop(af, "bool_detail")
-        from . import cavitybool
-        b.label(text=cavitybool.status_text(ctx.scene), icon='LINKED')
+        draw_boolean_projection(self.layout, ctx)
         w = RT.world
         if w is not None:
             ref = sum(q.field.n_refined for q in w.parts)
             self.layout.label(text="%d particles | %d refined bricks" % (w.N, ref))
             for o in w.openings:
                 self.layout.label(text="%s opening: %s" % (w.parts[o['part']].name, o['state']), icon='DOT')
+
+
+def draw_boolean_projection(l, ctx):
+    """Boolean projection (LOTBCBP) controls; shared by the solver card and the Remesh tab."""
+    af = ctx.scene.arc_flow
+    b = l.box()
+    b.label(text="Collision: Boolean projection", icon='MOD_BOOLEAN')
+    b.prop(af, "bool_projection")
+    col = b.column(align=True)
+    r = col.row(align=True)
+    r.operator("arcflow.build_cavities", icon='MOD_BOOLEAN')
+    r.operator("arcflow.clear_cavities", text="", icon='X')
+    col.prop(af, "bool_cut_joints")
+    col.prop(af, "bool_overlay")
+    col.prop(af, "bool_solver")
+    col.prop(af, "bool_detail")
+    from . import cavitybool
+    b.label(text=cavitybool.status_text(ctx.scene), icon='LINKED')
 
 
 class AF_PT_cache(_Base, Panel):
