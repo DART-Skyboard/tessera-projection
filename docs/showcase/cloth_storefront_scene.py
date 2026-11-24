@@ -97,7 +97,7 @@ def mats():
     M['walnut'] = principled("TS_Walnut", (0.16, 0.08, 0.04), rough=0.35, **{'Coat Weight': 0.5, 'Coat Roughness': 0.08})
     M['plinth'] = principled("TS_Plinth", (0.92, 0.90, 0.87), rough=0.28, **{'Coat Weight': 0.3})
     M['wall'] = principled("TS_WallBlush", (0.42, 0.28, 0.27), rough=0.8)
-    M['panel'] = principled("TS_WallPanel", (0.62, 0.55, 0.50), rough=0.6)
+    M["panel"] = principled("TS_WallPanel", (0.36, 0.30, 0.28), rough=0.6)
     M['fan'] = principled("TS_FanEnamel", (0.03, 0.16, 0.15), rough=0.25, **{'Coat Weight': 0.6})
     M['chrome'] = principled("TS_Chrome", (0.9, 0.9, 0.92), rough=0.08, metallic=1.0)
     M['frame'] = principled("TS_WindowFrame", (0.03, 0.035, 0.04), rough=0.4)
@@ -214,7 +214,7 @@ def lights():
     spot_light("TS_TrackSpot_Rim", (0.6, 1.3, 2.8), tgt, 520, (1.0, 0.92, 0.82), size_deg=34, blend=0.5, radius=0.05)
     spot_light("TS_TrackSpot_Letters", (0, 0.9, 2.85), (0, 1.7, 1.9), 220, (1.0, 0.85, 0.65), size_deg=50, blend=0.7)
     area_light("TS_WindowDaylight", (0.4, -2.2, 1.8), tgt, 2.4, 90, (0.85, 0.92, 1.0), size_y=1.6)
-    area_light("TS_CoveWash", (0, 1.2, 2.82), (0, 1.75, 0.6), 2.5, 60, (1.0, 0.8, 0.7), size_y=0.2)
+    area_light("TS_CoveWash", (0, 1.2, 2.82), (0, 1.75, 0.6), 2.5, 30, (1.0, 0.8, 0.7), size_y=0.2)
     for x in (-1.5, 1.5):
         bpy.ops.mesh.primitive_uv_sphere_add(radius=0.05, location=(x, 1.65, 1.75))
         bulb = bpy.context.object; bulb.name = "TS_Sconce"
