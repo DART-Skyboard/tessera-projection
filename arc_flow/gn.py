@@ -338,6 +338,11 @@ def _set_input(mod, ident, value):
         return True
     except Exception:
         pass
+    try:                       # Blender 5.3: mod.properties.inputs.<identifier>.value (RNA, no IDProperties)
+        getattr(mod.properties.inputs, ident).value = value
+        return True
+    except Exception:
+        pass
     try:
         mod.properties.inputs[ident] = value
         return True

@@ -663,13 +663,14 @@ def export_alembic(scene, filepath, start=None, end=None):
         hair.hide_set(False)
         hair.select_set(True)
         scene.view_layers[0].objects.active = hair
-        bpy.ops.wm.alembic_export(
-            filepath=filepath,
-            start=a, end=b,
-            selected=True,
-            visible_objects_only=False,
-            flatten=False,
-        )
+        kw = dict(filepath=filepath, start=a, end=b, selected=True, flatten=False,
+                  visible_objects_only=False, as_background_job=False)
+        try:   # keep only the keywords this Blender's exporter knows (visible_objects_only is gone in 5.3)
+            known = {p.identifier for p in bpy.ops.wm.alembic_export.get_rna_type().properties}
+            kw = {k: v for k, v in kw.items() if k in known}
+        except Exception:
+            kw.pop('visible_objects_only', None)
+        bpy.ops.wm.alembic_export(**kw)
         hp.last_alembic = filepath
         hp.status = "Alembic → %s" % filepath
         return filepath

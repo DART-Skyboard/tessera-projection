@@ -1093,8 +1093,9 @@ def render_beauty(scene, filepath, samples=64, resolution=(1920, 1080), denoise=
     sc.render.image_settings.compression = 15
     sc.render.filepath = filepath
     sc.render.film_transparent = False
-    sc.render.use_persistent_data = False
-    sc.cycles.use_persistent_data = False
+    for owner in (sc.render, getattr(sc, 'cycles', None)):   # moved / removed across 4.2 .. 5.3
+        if owner is not None and hasattr(owner, 'use_persistent_data'):
+            owner.use_persistent_data = False
     # keep Cycles cache off the tight /workspace disk
     tmp = os.environ.get('TMPDIR') or '/tmp'
     try:
