@@ -13,6 +13,8 @@ from . import tessera_nodes  # reusable Tessera node groups, Add menu entry
 from . import surfaces_ops, surfaces_panel, surfaces_props  # surface sources, fluid volumes, Examples panel
 from . import shader_ops  # realistic shader presets (water, glass, lava, smoke ...)
 from . import hair_ops, hair_panel, hair_props, hair_gn  # Tessera Projection Hair (Empty Hair Curves)
+from . import cloth_props, cloth_ops, cloth_panel  # real-time fluid-coupled cloth solver
+from .cloth_panel import draw_cloth_tab  # noqa: F401  (mounted by the vertical-tab UI)
 from . import ui_tabs  # vertical N-panel tab rail (Remesh / Fluid / Combustion / Hair / Cloth / Examples)
 
 
@@ -30,11 +32,13 @@ def register():
     thermal.register(); windtunnel.register(); assets_demo.register(); spawn_gn.register()
     shader_ops.register()
     hair_props.register(); hair_ops.register(); hair_panel.register(); hair_gn.register()
+    cloth_props.register(); cloth_ops.register(); cloth_panel.register()
     ui_tabs.register()  # last so hosted panel polls can be wrapped after every category is registered
 
 
 def unregister():
     ui_tabs.unregister()
+    cloth_panel.unregister(); cloth_ops.unregister(); cloth_props.unregister()
     hair_gn.unregister(); hair_panel.unregister(); hair_ops.unregister(); hair_props.unregister()
     shader_ops.unregister()
     windtunnel.unregister(); thermal.unregister()
