@@ -31,6 +31,8 @@ ap.add_argument('scene')
 ap.add_argument('outdir')
 ap.add_argument('--frames', type=int, default=0)
 ap.add_argument('--start', type=int, default=1)
+ap.add_argument('--skip-to', type=int, default=0, help='test spans: step the solver from --start without '
+                'rendering, then record --frames frames from this frame on')
 ap.add_argument('--hero', type=int, default=0, help='frame to grab the high-sample PNG at (0 = none)')
 ap.add_argument('--hero-samples', type=int, default=96)
 ap.add_argument('--video-samples', type=int, default=10)
@@ -232,6 +234,11 @@ def _tick():
         S['t_frame'] = time.time()
         S['state']['step'](f)
         sc.frame_current = f
+        if A.skip_to and f < A.skip_to:
+            if f % 20 == 0:
+                log('fast-forward %d / %d  %s' % (f, A.skip_to, S['state'].get('status', lambda: '')()))
+            S['frame'] = f + 1
+            return 0.01
         if not A.frames and A.hero and f < A.hero:
             # still-only run: fast-forward the solver to the hero frame without waiting on the viewport
             if f % 20 == 0:
@@ -273,12 +280,12 @@ def _tick():
             grab(p)
             log('hero', p)
         if A.frames:
-            grab(os.path.join(A.outdir, 'frames', '%05d.png' % (f - A.start + 1)))
+            grab(os.path.join(A.outdir, 'frames', '%05d.png' % (f - max(A.start, A.skip_to) + 1)))
         S['n'] += 1
         el = now - S['t_frame']
         if S['n'] % 10 == 1 or f == A.hero or A.frames <= 12:
             log('frame %d done in %.1fs  %s' % (f, el, S['state'].get('status', lambda: '')()))
-        last = A.start + max(A.frames, 1) - 1
+        last = max(A.start, A.skip_to) + max(A.frames, 1) - 1
         if A.hero:
             last = max(last, A.hero)
         if f >= last:

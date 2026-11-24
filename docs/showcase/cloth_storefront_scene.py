@@ -360,7 +360,17 @@ def pedestal_fan(M):
 
 
 # ----------------------------------------------------------------------------- wind (fan airflow)
+FAN_HEAD_Z = 1.08
+# turbulent modes of the fan jet: (wavelength m, frequency Hz, phase, transverse direction)
+_rng = np.random.default_rng(7)
+_MODES = []
+for _lam, _hz in ((0.42, 1.7), (0.31, 2.6), (0.23, 3.4), (0.55, 1.1), (0.18, 4.3), (0.36, 2.1)):
+    _d = _rng.normal(size=3); _d /= np.linalg.norm(_d)
+    _MODES.append((2 * math.pi / _lam, 2 * math.pi * _hz, float(_rng.uniform(0, 2 * math.pi)), _d))
+
+
 def fan_wind(frame, head):
+    """Mean airflow of the oscillating fan at the dress (direction, sweep, spin-up ramp)."""
     t = frame / FPS
     sweep = math.radians(16) * math.sin(2 * math.pi * t / 9.0)   # oscillating fan head
     base = (DRESS_C - Vector((FAN_POS.x, FAN_POS.y, DRESS_C.z)))
@@ -372,6 +382,38 @@ def fan_wind(frame, head):
     gust = 1.0 + 0.32 * math.sin(2 * math.pi * t / 3.3) + 0.18 * math.sin(2 * math.pi * t / 1.15 + 1.2)
     speed = 2.6 * ramp * gust
     return base * speed, sweep, ramp
+
+
+def fan_field(frame, head):
+    """Spatially varying fan jet: a widening round jet from the fan head along the swept axis,
+    plus travelling turbulent eddies advected with the flow, so the skirt keeps fluttering
+    instead of settling into one steady billow under a uniform wind. Returns (fn(P)->V, mean)."""
+    mean, sweep, ramp = fan_wind(frame, head)
+    t = frame / FPS
+    F0 = np.array((FAN_POS.x, FAN_POS.y, FAN_HEAD_Z), float)
+    # jet axis: from the fan head at the skirt (mid-thigh of the form), swept with the head
+    aim = Matrix.Rotation(sweep, 3, 'Z') @ (DRESS_C + Vector((0.0, 0.0, -0.22)) - Vector(F0))
+    a = np.array(aim.normalized(), float)
+    u0 = 2.1 * mean.length             # jet core speed at the fan, decays with distance
+    turb = 0.75
+
+    def fn(P):
+        P = np.asarray(P, float)
+        r = P - F0
+        along = np.maximum(r @ a, 0.05)
+        perp = np.linalg.norm(r - along[:, None] * a, axis=1)
+        R = 0.24 + 0.30 * along
+        core = u0 * np.exp(-(perp / R) ** 2) / (1.0 + 0.55 * along)
+        V = core[:, None] * a[None, :]
+        s = P - a[None, :] * (1.6 * t)          # eddies ride the jet downstream
+        w = np.zeros_like(P)
+        for k, om, ph, d in _MODES:
+            kv = k * (0.6 * a + 0.4 * d)
+            w += np.sin(s @ kv - om * t + ph)[:, None] * np.cross(d, a)[None, :]
+            w += 0.5 * np.cos(s @ (k * d) + 0.7 * om * t + 2 * ph)[:, None] * d[None, :]
+        V += (turb * core / len(_MODES) * 2.2)[:, None] * w
+        return V
+    return fn, mean, sweep, ramp
 
 
 # ----------------------------------------------------------------------------- build
@@ -413,8 +455,15 @@ def build():
     CO.build_solver(sc, g)
     st = dict(CO=CO, cl=cl, g=g, dress=dress, rotor=rotor, head=fan_head, ang=0.0)
 
+    # the fan's airflow reaches the solver through the add-on's flow-field path
+    # (cloth_ops._fluid_field, the same hook a running Fluid / wind-tunnel solver uses)
+    flow = dict(fn=None)
+    orig_field = CO._fluid_field
+    CO._fluid_field = lambda scene: flow['fn'] if flow['fn'] is not None else orig_field(scene)
+
     def step(frame):
-        w, sweep, ramp = fan_wind(frame, fan_head)
+        fn, w, sweep, ramp = fan_field(frame, fan_head)
+        flow['fn'] = fn if ramp > 0 else None
         cl.wind = tuple(w)
         st['ang'] += ramp * math.radians(52)      # ~1250 rpm look at 24 fps without strobing
         rotor.rotation_euler = (0, st['ang'], 0)

@@ -268,6 +268,67 @@ def hand_matrix(frame):
     return Matrix.Translation(loc) @ qa.slerp(qb, t).to_matrix().to_4x4()
 
 
+def breeze(frame):
+    """Studio-fan breeze on the groom: a slow, gusting draught from camera-right that veers
+    a little, so the hair keeps swaying for the whole clip (not only where the glove is)."""
+    t = frame / FPS
+    ramp = min(1.0, t / 1.5)
+    yaw = math.radians(28) * math.sin(2 * math.pi * t / 7.3) + math.radians(8) * math.sin(2 * math.pi * t / 2.1)
+    d = Vector((-0.80, 0.55, 0.12))
+    d = (Matrix.Rotation(yaw, 3, 'Z') @ d).normalized()
+    gust = (1.9 + 0.75 * math.sin(2 * math.pi * t / 3.7) + 0.45 * math.sin(2 * math.pi * t / 1.3 + 0.8)
+            + 0.20 * math.sin(2 * math.pi * t / 0.61 + 2.1))
+    return d * (ramp * max(0.15, gust))
+
+
+class HandGuard:
+    """Keeps the glove's surface outside the head + shoulders collider by `clear` metres:
+    the keyed path is pushed outward from the head centre until every glove sample clears
+    the head, so the glove presses and parts the hair layer instead of passing through her."""
+    def __init__(self, head_ob, hand_ob, clear=0.014, n=500):
+        from mathutils.bvhtree import BVHTree
+        me = head_ob.data
+        Mw = head_ob.matrix_world
+        verts = [Mw @ v.co for v in me.vertices]
+        polys = [tuple(p.vertices) for p in me.polygons]
+        self.bvh = BVHTree.FromPolygons(verts, polys)
+        hv = hand_ob.data.vertices
+        step = max(1, len(hv) // n)
+        self.local = [hv[i].co.copy() for i in range(0, len(hv), step)]
+        self.clear = clear
+        self.last_push = 0.0
+
+    def probe(self, M):
+        """(signed clearance of the worst glove sample, outward surface normal there)."""
+        worst, wn = 1e9, None
+        for co in self.local:
+            p = M @ co
+            loc, nrm, _i, dist = self.bvh.find_nearest(p)
+            if loc is None:
+                continue
+            sd = dist if (p - loc).dot(nrm) >= 0 else -dist
+            if sd < worst:
+                worst, wn = sd, nrm
+        return worst, wn
+
+    def min_dist(self, M):
+        return self.probe(M)[0]
+
+    def __call__(self, M):
+        """Slide the glove out along the head / shoulder surface normal until it clears."""
+        M = M.copy()
+        push = 0.0
+        for _ in range(32):
+            d, n = self.probe(M)
+            if d >= self.clear - 1e-4 or n is None:
+                break
+            dp = (self.clear - d) + 0.001
+            push += dp
+            M.translation = M.translation + n.normalized() * dp
+        self.last_push = push
+        return M
+
+
 # ----------------------------------------------------------------------------- build
 def build(glb, strands_bin, n_strands=6000):
     pkg = addon()
@@ -308,6 +369,16 @@ def build(glb, strands_bin, n_strands=6000):
     hand.matrix_world = hand_matrix(1)
     studio()
     cycles_setup(samples=64, preview_samples=12)
+    # viewport skin quality: tight adaptive threshold + high-quality OIDN with accurate
+    # albedo/normal prefilter, so the Random-Walk (Skin) SSS reads as skin, not a smeared mask
+    cy = sc.cycles
+    for attr, val in (('preview_adaptive_threshold', 0.03), ('preview_adaptive_min_samples', 0),
+                      ('preview_denoising_quality', 'HIGH'), ('preview_denoising_prefilter', 'ACCURATE'),
+                      ('preview_denoising_start_sample', 20), ('subsurface_samples', 4)):
+        try:
+            setattr(cy, attr, val)
+        except Exception:
+            pass
 
     hp = sc.arc_flow_hair
     hp.hair = hair
@@ -317,10 +388,10 @@ def build(glb, strands_bin, n_strands=6000):
     hp.dt_mode = 'SCENE'
     hp.dt = 1.0 / FPS
     hp.substeps = 4
-    hp.damping = 0.90
-    hp.rest_shape = 0.55
-    hp.rest_shape_root = 0.9
-    hp.rest_shape_tip = 0.18
+    hp.damping = 0.965
+    hp.rest_shape = 0.12
+    hp.rest_shape_root = 0.92
+    hp.rest_shape_tip = 0.02
     hp.pinned_prefix = 2
     hp.collision_radius = 0.004
     hp.collision_iterations = 3
@@ -331,6 +402,7 @@ def build(glb, strands_bin, n_strands=6000):
     hp.guide_ratio = 0.25
     hp.child_k = 3
     hp.use_env_wind = False
+    hp.wind_drag = 1.4
     sc.arc_flow.ui_tab = 'HAIR'
     bpy.context.view_layer.update()
 
@@ -345,8 +417,12 @@ def build(glb, strands_bin, n_strands=6000):
         if len(solver.colliders) < 2:
             solver.add_collider(field_hand, matrix=np.array(hand.matrix_world, float), radius=0.010)
 
+    guard = HandGuard(collider, hand)
+    state['guard'] = guard
+
     def step(frame):
-        hand.matrix_world = hand_matrix(frame)
+        hand.matrix_world = guard(hand_matrix(frame))
+        hp.wind = tuple(breeze(frame))
         sv = HO.RT.solver or HO.build_solver(sc)
         ensure_hand(sv)
         sv.set_collider_matrix(len(sv.colliders) - 1, np.array(hand.matrix_world, float))
@@ -405,4 +481,4 @@ def ui(st, sp, r3, ctx):
     bpy.context.view_layer.objects.active = body
     body.select_set(False)
     body.active_material_index = 0
-    place_view(r3, sp, HEAD_C + Vector((0.62, -1.12, 0.05)), HEAD_C + Vector((0.0, 0.0, -0.09)), 58, shift=0.10)
+    place_view(r3, sp, HEAD_C + Vector((0.55, -1.02, 0.06)), HEAD_C + Vector((0.0, 0.0, -0.035)), 72, shift=0.07)
