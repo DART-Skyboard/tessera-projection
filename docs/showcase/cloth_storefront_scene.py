@@ -232,10 +232,24 @@ def dress_form(M):
     pole = cyl("TS_FormPole", 0.016, 0.10, 0.93, 24); give(pole, M['brass'])
     cap = cyl("TS_FormNeckCap", 0.056, 1.62, 1.65, 32); give(cap, M['walnut'])
     knob = cyl("TS_FormBase", 0.12, 0.10, 0.13, 48); bevel(knob, 0.008); give(knob, M['walnut'])
+    for o in (form, pole, knob):
+        _watertight(o)
     return [form, pole, knob]
 
 
-def dress_mesh(n=96, rows_bodice=14, rows_skirt=50, z_top=1.40, z_waist=1.08, z_hem=0.30, r_hem=0.50):
+def _watertight(ob):
+    # collision SDFs take their sign from the face normals: weld the lathe poles and
+    # make every normal point outward, or the whole skirt reads as "inside" the form
+    bm = bmesh.new()
+    bm.from_mesh(ob.data)
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=1e-5)
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    bm.to_mesh(ob.data)
+    bm.free()
+    ob.data.update()
+
+
+def dress_mesh(n=96, rows_bodice=14, rows_skirt=50, z_top=1.40, z_waist=1.08, z_hem=0.44, r_hem=0.46):
     verts = []
     zs_b = np.linspace(z_top, z_waist, rows_bodice)
     for z in zs_b:
@@ -352,11 +366,11 @@ def fan_wind(frame, head):
     base = (DRESS_C - Vector((FAN_POS.x, FAN_POS.y, DRESS_C.z)))
     base.z = 0.0
     base = base.normalized()
-    base.z = 0.16                       # a little lift under the hem
+    base.z = 0.06                       # a little lift under the hem
     base = (Matrix.Rotation(sweep, 3, 'Z') @ base).normalized()
     ramp = min(1.0, max(0.0, (t - 0.6) / 2.4))                      # fan spins up
     gust = 1.0 + 0.32 * math.sin(2 * math.pi * t / 3.3) + 0.18 * math.sin(2 * math.pi * t / 1.15 + 1.2)
-    speed = 6.5 * ramp * gust
+    speed = 2.6 * ramp * gust
     return base * speed, sweep, ramp
 
 
@@ -426,4 +440,4 @@ def ui(st, sp, r3, ctx):
     d = st['dress']
     bpy.context.view_layer.objects.active = d
     d.select_set(False)
-    place_view(r3, sp, (1.55, -2.75, 1.25), (-0.12, 0.25, 0.92), 32, shift=0.42)
+    place_view(r3, sp, (1.05, -1.95, 1.18), (-0.25, 0.30, 0.80), 30, shift=0.30)
