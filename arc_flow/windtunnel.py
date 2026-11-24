@@ -351,7 +351,45 @@ def mark_body(o, plain=False, thermal=False, heat=None):
     if plain:
         o.arc_flow_wt.plain = True
     elif thermal and getattr(o, 'arc_flow_th', None) is not None:
-        o.arc_flow_th.on = True
+        setup_thermal_body(bpy.context.scene, o)
+    return o
+
+
+def stagnation_rise(scene, wind=None):
+    """Full adiabatic stagnation temperature rise v^2 / 2cp (K) of the tunnel air at `wind` m/s."""
+    ap = air_properties(scene)
+    v = float(scene.arc_flow_wt.wind if wind is None else wind)
+    return v * v / (2.0 * max(ap['cp'], 1.0)), ap['temperature']
+
+
+def setup_thermal_body(scene, o, wind=None):
+    """Thermal feedback on a tunnel collision body, set up by the add-on itself.
+
+    The wall temperature is integrated every frame from the tunnel air (Fluid-mode parcels) plus
+    boundary-layer friction / stagnation heating of the tunnel wind, in real time (time scale 1,
+    2 mm aluminium skin).  The look keeps the object's paint and mixes in a warm tint; the range
+    tops out at twice the full stagnation rise of the tunnel air, so a fully soaked leading edge
+    lands mid-range and nothing saturates, with a 6 K floor so a slow tunnel is not amplified into
+    false colour.  Incandescence comes only from the real wall temperature (above ~750 K)."""
+    p = o.arc_flow_th
+    dT, T0 = stagnation_rise(scene, wind)
+    p.aero = True
+    p.overlay = True
+    p.shader = True
+    p.solid = True
+    p.couple = False
+    p.speedup = 1.0
+    p.wall_heat = 4900.0
+    p.emissivity = 0.3
+    p.recovery = 0.85
+    p.emission = 0.3
+    p.t_min, p.t_max = T0, T0 + max(2.0 * dT, 6.0)
+    if p.on:
+        from . import thermal as TM
+        TM.STATE.pop(o.name, None)
+        TM.refresh_look(o)
+    else:
+        p.on = True
     return o
 
 
@@ -606,28 +644,11 @@ def add_fighter(scene, location=None, thermal=True, wind=None):
     mark_body(air)
     air.arc_flow_fm.friction = 0.18
     if thermal:
-        p = air.arc_flow_th
-        p.aero = True
-        p.overlay = True
-        p.shader = True
-        p.solid = True
-        p.couple = False
-        p.ramp = 'THERMAL'
-        p.emission = 1.2
-        p.wall_heat = 800.0
-        p.speedup = 80.0
-        p.emissivity = 0.35
-        p.roughness = 0.0
-        # tight ramp around the expected recovery temperature so the glow reads
-        ap = air_properties(scene)
-        T0 = ap['temperature']
-        v = float(wt.wind if wind is None else wind)
-        # expected stagnation rise r v^2 / 2 cp
-        dT = 0.85 * v * v / (2.0 * max(ap['cp'], 1.0))
-        p.t_min, p.t_max = T0, T0 + max(dT * 1.15, 8.0)
-        p.on = True
+        setup_thermal_body(scene, air, wind=wind)
         if wt.aero_heat:
-            TM.apply_aero_heat(scene, air, v_inf=(v, 0.0, 0.0), steps=24, speedup=p.speedup)
+            # immediate readout before the tunnel air runs: one second of real-time wall heating
+            TM.apply_aero_heat(scene, air, v_inf=(float(wt.wind if wind is None else wind), 0.0, 0.0),
+                               steps=24, speedup=air.arc_flow_th.speedup)
     if wt.blend_airflow:
         build_airflow_volume(scene, air)
     return air
