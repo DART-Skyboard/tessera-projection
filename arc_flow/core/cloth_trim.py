@@ -681,7 +681,6 @@ class SeamSeal:
                 # a pair can only tear once it has actually been closed (armed)
                 sealed = (self.s >= 0.999) & self.active & ~self.torn
                 self.torn |= sealed & self.armed & (L > self.tear)
-                self.armed |= sealed & (L < max(self.weld_tol * 5.0, 0.5 * self.tear))
         s = self.effective_closure()
         live = s > 1e-4
         if not live.any():
@@ -703,7 +702,9 @@ class SeamSeal:
         S.x[b] += w[b, None] * corr
 
     def post_step(self, S, dt):
-        pass
+        if self.tear > 0 and len(self.pairs):
+            g = self.gaps(S.x)
+            self.armed |= (self.s >= 0.999) & self.active & ~self.torn & (g < max(self.weld_tol * 5.0, 0.5 * self.tear))
 
     # ---- queries
     def gaps(self, x):
