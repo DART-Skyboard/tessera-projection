@@ -10,4 +10,6 @@ Each version subfolder is a self-contained drop you can download without touchin
 - the extension zip to upload on extensions.blender.org
 - the still and the Blender UI shot from the review test
 
-Current drop: [0.5.1](0.5.1/)
+Current drop: [0.6.1](0.6.1/)
+
+Earlier drops: [0.5.1](0.5.1/)

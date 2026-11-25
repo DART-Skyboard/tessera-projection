@@ -13,7 +13,7 @@
   <img alt="Blender 5.2.3+" src="https://img.shields.io/badge/Blender-5.2.3%2B-orange">
   <img alt="Tested on 5.3.0" src="https://img.shields.io/badge/tested-5.2.3%20LTS%20%7C%205.3.0-blue">
   <img alt="License GPL-3.0-or-later" src="https://img.shields.io/badge/license-GPL--3.0--or--later-green">
-  <img alt="Version 0.5.0" src="https://img.shields.io/badge/version-0.5.0-informational">
+  <img alt="Version 0.6.1" src="https://img.shields.io/badge/version-0.6.1-informational">
 </p>
 
 <p align="center">
@@ -183,7 +183,7 @@ The fluid solver is NumPy on the CPU: frame times grow with particle count and i
 
 ## Install
 
-1. Download `tessera_projection-0.5.0.zip` from this repository's Releases (or, once approved, from extensions.blender.org: **Edit > Preferences > Get Extensions**, search *Tessera Projection*). Do not unzip it.
+1. Download `tessera_projection-0.6.1.zip` from this repository's Releases (or, once approved, from extensions.blender.org: **Edit > Preferences > Get Extensions**, search *Tessera Projection*). Do not unzip it.
 2. In Blender 5.2.3 or newer: **Edit > Preferences > Get Extensions > (v) menu, top right > Install from Disk**, pick the zip.
 3. Open the 3D Viewport sidebar (**N**), tab **Tessera**. Inside it, use the vertical tab rail (Remesh, Fluid, Combustion, Hair, Cloth, Examples) to switch category; other categories stay active.
 

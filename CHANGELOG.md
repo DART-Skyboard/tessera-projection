@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.1
+Package imported from the build served on extensions.blender.org (`outside-updates/0.6.1/`).
+- **Shared collision-body registry** (`asset_colliders.py`): Cloth garments, Hair colliders / scalps, Fluid / Combustion colliders and Wind-tunnel bodies are all Tessera collision bodies that collide with themselves in their own solver and with every other solver's bodies.
+- **Cloth:** vertex-versus-triangle self-collision with an untangle pass and self-intersection diagnostics.
+- **Hair:** strand self-collision, collider and panel updates.
+- **Wind tunnel / thermal:** stagnation-temperature rise, thermal feedback set up by the add-on on a tunnel body, paint-preserving overlay with blackbody incandescence above about 750 K.
+- **UI:** vertical tab rail updates and panel poll re-registration.
+
 ## Unreleased
 - **Vertical tab rail in the Tessera N-panel.** The sidebar now has an in-panel vertical tab list (Remesh, Fluid, Combustion, Hair, Cloth, Examples) like Blender's own N-panel category tabs. Each tab shows only that category's controls in a compact card; switching tabs is a view change only and never starts, stops or resets other categories, so Remesh, Fluid, Combustion, Wind Tunnel, Hair and Cloth can all stay active in the same scene. Hair and Cloth ship a ready-state card and a `register_tab_drawer()` hook so the real-time solvers can plug in without conflicting with this UI. New test: `tests/test_ui_tabs_bpy.py`.
 - **Tessera Projection Hair.** A real-time XPBD / Verlet solver for Blender Empty Hair Curves (`CURVES`): inextensible strands, curl / style memory, live armature and deforming-scalp reactivity, tessellation-aware LOTBCBP SDF collision, anisotropic wind and fluid coupling, and guide-to-child interpolation for high-density grooms. Live viewport mode lets you pose or drive a rig and see the hair react; bake writes a `.npz` point cache and an optional Alembic file, plus a game-engine hair physics package (rest curves, guide weights, per-strand stiffness, collision metadata) for Unreal, Unity and web. `draw_hair_tab` is registered on the HAIR tab via `ui_tabs.register_tab_drawer` (no duplicate VIEW_3D sibling panel). Tests: `tests/test_hair_solver.py` (pure NumPy) and `tests/test_hair_bpy.py` (Blender 4.2.3). Preview: `docs/renders/hair_solver_preview.png`.
