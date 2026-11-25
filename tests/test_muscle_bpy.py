@@ -203,6 +203,7 @@ if ad is not None:
 
 
 def evaluated(obj, mods=True):
+    obj.update_tag()  # Blender 5.2 does not always tag the modifier after an RNA input change
     dg = bpy.context.evaluated_depsgraph_get()
     dg.update()
     ev = obj.evaluated_get(dg)

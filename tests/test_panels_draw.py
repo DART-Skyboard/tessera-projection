@@ -345,6 +345,21 @@ for group, label, idname, props in items:
                 sc.arc_flow.ui_tab = tab
                 draw_all("ex[%s]+sel/%s/%s" % (label, m, tab))
 
+# ---- Muscle tab with a populated state (example biped, regions, solved muscles)
+reset_scene()
+try:
+    bpy.ops.arcflow.muscle_example()
+    bpy.ops.arcflow.muscle_auto_seed()
+    bpy.ops.arcflow.muscle_solve()
+    for stage in ('solved', 'jiggle'):
+        sc.arc_flow_muscle.use_jiggle = stage == 'jiggle'
+        for m in modes:
+            sc.arc_flow_fm.mode = m
+            sc.arc_flow.ui_tab = 'MUSCLE'
+            draw_all("muscle[%s]/%s/MUSCLE" % (stage, m))
+except Exception:
+    err("muscle state setup raised: %s" % traceback.format_exc().strip().splitlines()[-1])
+
 # ---- UI text: no 'demo'
 txt = []
 for n in names:
