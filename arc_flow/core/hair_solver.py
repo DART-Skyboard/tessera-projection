@@ -45,6 +45,9 @@ class HairParams:
         "wind_drag", "wind_tangent", "fluid_coupling",
         "guide_ratio", "child_k", "child_smooth",
         "pinned_prefix", "ground_z", "max_segment_budget", "max_points",
+        "gravity_scale", "bend_tip_scale", "stiffness_curve", "max_speed",
+        "hair_collision", "strand_radius", "repel_strength", "volume", "clumping",
+        "clump_range", "strand_friction", "max_pairs", "adaptive_substeps",
     )
 
     def __init__(self, **kw):
@@ -76,6 +79,21 @@ class HairParams:
         self.ground_z = None
         self.max_segment_budget = 0
         self.max_points = 0
+        # strand-scale gravity / stiffness profile
+        self.gravity_scale = 1.0       # global multiplier on gravity (per strand: set_per_strand(gravity=))
+        self.bend_tip_scale = 3.0      # bend compliance at the tip relative to the root (floppier tips)
+        self.stiffness_curve = 1.0     # exponent of the root-to-tip stiffness ramp (>1 keeps the root stiff longer)
+        self.max_speed = 30.0          # m/s clamp (stability under a hard swat)
+        # hair-hair interaction (spatial hash, vectorised)
+        self.hair_collision = True
+        self.strand_radius = 0.004     # fibre radius used for hair-hair contact (m)
+        self.repel_strength = 0.5      # 0..1 how much overlap is removed per substep
+        self.volume = 0.0              # >0 inflates the hair-hair contact radius (puffier groom)
+        self.clumping = 0.0            # >0 pulls neighbouring strands together (locks)
+        self.clump_range = 0.012       # reach of the clumping attraction beyond contact (m)
+        self.strand_friction = 0.05    # velocity sharing between touching strands
+        self.max_pairs = 600000
+        self.adaptive_substeps = True  # add substeps when a collider moves fast
         self.update(**kw)
 
     def update(self, **kw):
@@ -481,7 +499,9 @@ def project_points_sdf(P, field, matrix=None, radius=0.008, refine=True, iterati
     """Push world-space points out of a PartField's solid (sd < radius). Returns (P, n_hits, normals).
 
     `matrix` is the collider's world transform (field is in local / bind space). When `prev`
-    is given, inward velocity along the contact normal is cancelled (optional friction).
+    is given, inward velocity along the contact normal is cancelled (optional friction) and a
+    4-tuple (P, n_hits, normals, prev) is returned. Points far from the collider's bounding box
+    are skipped (cheap broad phase), so a small glove costs almost nothing for distant hair.
     """
     X = np.asarray(P, dtype=np.float64).reshape(-1, 3).copy()
     if len(X) == 0:
@@ -492,10 +512,23 @@ def project_points_sdf(P, field, matrix=None, radius=0.008, refine=True, iterati
     h = float(getattr(field, "h", 0.02) or 0.02)
     rad = float(radius)
     eye3 = np.eye(3)
+    bmin = getattr(field, "bmin", None)
+    bmax = getattr(field, "bmax", None)
+    # world-space scale of the local -> world map (broad phase margin stays in local units)
+    sc = float(np.cbrt(abs(np.linalg.det(M[:3, :3])))) or 1.0
+    pad = (rad + 3.0 * h) / max(sc, 1e-6)
     for _ in range(max(int(iterations), 1)):
-        Xl = inv_xform_points(X, M)
+        Xl_all = inv_xform_points(X, M)
+        if bmin is not None and bmax is not None:
+            near = np.all((Xl_all >= np.asarray(bmin) - pad) & (Xl_all <= np.asarray(bmax) + pad), axis=1)
+            idx_near = np.flatnonzero(near)
+            if len(idx_near) == 0:
+                break
+        else:
+            idx_near = np.arange(len(X))
+        Xl = Xl_all[idx_near]
         if refine and hasattr(field, "request_refine"):
-            band = rad + 2.5 * h
+            band = rad / max(sc, 1e-6) + 2.5 * h
             try:
                 sd0 = field.sample_sd(Xl, bricks=True)
                 cand = Xl[sd0 < band]
@@ -504,7 +537,7 @@ def project_points_sdf(P, field, matrix=None, radius=0.008, refine=True, iterati
             except Exception:
                 pass
         sd = field.sample_sd(Xl, bricks=True)
-        inside = sd < rad
+        inside = sd < rad / max(sc, 1e-6)
         if not np.any(inside):
             break
         hits = max(hits, int(inside.sum()))
@@ -517,9 +550,10 @@ def project_points_sdf(P, field, matrix=None, radius=0.008, refine=True, iterati
             e = eye3[ax] * eps
             g[:, ax] = (field.sample_sd(Psel + e, bricks=True) - field.sample_sd(Psel - e, bricks=True)) / (2.0 * eps)
         nloc = _normalize(g, fallback=np.array((0.0, 0.0, 1.0)))
-        Xl[sel] = Psel + nloc * (rad - sd[sel])[:, None]
-        X = xform_points(Xl, M)
-        n_world[sel] = _normalize(nloc @ M[:3, :3].T)
+        Xl_new = Psel + nloc * (rad / max(sc, 1e-6) - sd[sel])[:, None]
+        gsel = idx_near[sel]
+        X[gsel] = xform_points(Xl_new, M)
+        n_world[gsel] = _normalize(nloc @ M[:3, :3].T)
     if prev is not None and hits:
         prev = np.asarray(prev, dtype=np.float64).reshape(-1, 3).copy()
         vn = np.einsum("ij,ij->i", X - prev, n_world)[:, None]
@@ -533,6 +567,72 @@ def project_points_sdf(P, field, matrix=None, radius=0.008, refine=True, iterati
                 prev[inward] = prev[inward] + float(friction) * vt
         return X, hits, n_world, prev
     return X, hits, n_world
+
+
+def lerp_matrix(Ma, Mb, t):
+    """Linear blend of two 4x4 rigid frames (fine for the small per-frame motion of a collider)."""
+    Ma, Mb = _as_M44(Ma), _as_M44(Mb)
+    return Ma + (Mb - Ma) * float(t)
+
+
+def hair_hair_pairs(x, cell, strand_id, reach, max_pairs=600000):
+    """Spatial-hash broad phase. Returns (i, j, d, n) for point pairs of *different* strands closer than `reach`.
+
+    Fully vectorised (sort + searchsorted over the 14 half-space neighbour cells); `n` is the unit vector i -> j.
+    """
+    N = len(x)
+    if N < 2:
+        z = np.zeros(0, np.int64)
+        return z, z, np.zeros(0), np.zeros((0, 3))
+    cell = max(float(cell), 1e-6)
+    c = np.floor((x - x.min(axis=0)) / cell).astype(np.int64) + 1
+    dims = c.max(axis=0) + 3
+    key = (c[:, 0] * dims[1] + c[:, 1]) * dims[2] + c[:, 2]
+    order = np.argsort(key, kind="stable")
+    ks = key[order]
+    half = [(0, 0, 0)]
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            for dz in (-1, 0, 1):
+                if (dx, dy, dz) > (0, 0, 0):
+                    half.append((dx, dy, dz))
+    I, J = [], []
+    total = 0
+    for dx, dy, dz in half:
+        q = ((c[:, 0] + dx) * dims[1] + (c[:, 1] + dy)) * dims[2] + (c[:, 2] + dz)
+        lo = np.searchsorted(ks, q, side="left")
+        hi = np.searchsorted(ks, q, side="right")
+        cnt = hi - lo
+        tot = int(cnt.sum())
+        if tot == 0:
+            continue
+        if total + tot > max_pairs * 4:
+            break
+        ii = np.repeat(np.arange(N), cnt)
+        start = np.repeat(lo - (np.cumsum(cnt) - cnt), cnt)
+        jj = order[start + np.arange(tot)]
+        if (dx, dy, dz) == (0, 0, 0):
+            keep = jj > ii
+            ii, jj = ii[keep], jj[keep]
+        I.append(ii)
+        J.append(jj)
+        total += len(ii)
+    if not I:
+        z = np.zeros(0, np.int64)
+        return z, z, np.zeros(0), np.zeros((0, 3))
+    i = np.concatenate(I)
+    j = np.concatenate(J)
+    keep = strand_id[i] != strand_id[j]
+    i, j = i[keep], j[keep]
+    dv = x[j] - x[i]
+    d = np.linalg.norm(dv, axis=1)
+    keep = d < reach
+    i, j, d, dv = i[keep], j[keep], d[keep], dv[keep]
+    if len(i) > max_pairs:
+        sel = np.argsort(d)[:max_pairs]
+        i, j, d, dv = i[sel], j[sel], d[sel], dv[sel]
+    n = dv / np.maximum(d, 1e-9)[:, None]
+    return i, j, d, n
 
 
 # ----------------------------------------------------------------------------- solver
@@ -585,6 +685,10 @@ class HairSolver:
         self.child_w = None
         self._stiffness = np.ones(self.n_strands, np.float64)
         self._damping = np.ones(self.n_strands, np.float64)
+        self._gravity = np.ones(self.n_strands, np.float64)
+        self._child_fast = None
+        self.last_contacts = 0
+        self.last_pairs = 0
         self.time = 0.0
         self.frame = 0
 
@@ -657,8 +761,14 @@ class HairSolver:
             self.bend_rest = np.zeros(0, np.float64)
         # along-strand shape stiffness lerp
         t = self.param
-        self.shape_w = ((1.0 - t) * float(self.params.rest_shape_root)
-                        + t * float(self.params.rest_shape_tip))
+        tc = np.power(np.clip(t, 0.0, 1.0), max(float(self.params.stiffness_curve), 1e-3))
+        self.shape_w = ((1.0 - tc) * float(self.params.rest_shape_root)
+                        + tc * float(self.params.rest_shape_tip))
+        # bend compliance grows toward the tip: stiff root, floppy ends
+        if len(self.b_i):
+            self.bend_scale = 1.0 + (float(self.params.bend_tip_scale) - 1.0) * self.param[self.b_i]
+        else:
+            self.bend_scale = np.zeros(0, np.float64)
 
     def set_params(self, **kw):
         self.params.update(**kw)
@@ -673,7 +783,9 @@ class HairSolver:
         self._capture_rest_metrics()
         return self
 
-    def set_per_strand(self, stiffness=None, damping=None):
+    def set_per_strand(self, stiffness=None, damping=None, gravity=None):
+        if gravity is not None:
+            self._gravity = np.broadcast_to(np.asarray(gravity, dtype=np.float64).ravel(), (self.n_strands,)).copy()
         if stiffness is not None:
             self._stiffness = np.broadcast_to(np.asarray(stiffness, dtype=np.float64).ravel(), (self.n_strands,)).copy()
         if damping is not None:
@@ -768,10 +880,13 @@ class HairSolver:
             self.add_collider(it)
         return self
 
-    def add_collider(self, field, matrix=None, radius=None):
+    def add_collider(self, field, matrix=None, radius=None, friction=None, name=""):
+        """Register a collision body. `radius` (thickness) and `friction` override the global values per collider."""
         if isinstance(field, dict):
             matrix = field.get("matrix", matrix)
             radius = field.get("radius", radius)
+            friction = field.get("friction", friction)
+            name = field.get("name", name)
             field = field["field"]
         elif isinstance(field, (tuple, list)) and not hasattr(field, "sample_sd"):
             if len(field) >= 2:
@@ -779,13 +894,34 @@ class HairSolver:
             if len(field) >= 3:
                 radius = field[2]
             field = field[0]
-        self.colliders.append(dict(field=field,
-                                   matrix=np.eye(4) if matrix is None else _as_M44(matrix).copy(),
-                                   radius=None if radius is None else float(radius)))
+        M = np.eye(4) if matrix is None else _as_M44(matrix).copy()
+        self.colliders.append(dict(field=field, matrix=M, matrix_prev=M.copy(),
+                                   radius=None if radius is None else float(radius),
+                                   friction=None if friction is None else float(friction),
+                                   name=str(name), enabled=True))
         return self
 
     def set_collider_matrix(self, index, matrix):
-        self.colliders[index]["matrix"] = _as_M44(matrix).copy()
+        """Move a collider. The previous matrix is kept so the next step sweeps the motion and
+        transfers the collider's velocity to the hair it hits (a swatting hand / glove)."""
+        c = self.colliders[index]
+        M = _as_M44(matrix).copy()
+        c["matrix_prev"] = c["matrix"]
+        c["matrix"] = M
+        return self
+
+    def update_collider(self, index, field=None, matrix=None, radius=None, friction=None, enabled=None):
+        c = self.colliders[index]
+        if field is not None:
+            c["field"] = field
+        if matrix is not None:
+            self.set_collider_matrix(index, matrix)
+        if radius is not None:
+            c["radius"] = float(radius)
+        if friction is not None:
+            c["friction"] = float(friction)
+        if enabled is not None:
+            c["enabled"] = bool(enabled)
         return self
 
     def set_wind(self, velocity_or_fn):
@@ -843,6 +979,8 @@ class HairSolver:
             return x
         p = self.params
         for col in self.colliders:
+            if not col.get("enabled", True):
+                continue
             rad = p.collision_radius if col["radius"] is None else col["radius"]
             xf, _hits, _n = project_points_sdf(x[free], col["field"], matrix=col["matrix"], radius=rad,
                                                refine=False, iterations=max(int(p.collision_iterations), 1))
@@ -938,7 +1076,7 @@ class HairSolver:
     def _project_bend(self, x, compliance, iters, dt):
         if not len(self.b_i) or iters <= 0:
             return
-        alpha = float(compliance) / max(dt * dt, 1e-12)
+        alpha0 = float(compliance) / max(dt * dt, 1e-12)
         wi, wk = self.inv_mass, self.inv_mass
         rest = self.bend_rest
         for _ in range(int(iters)):
@@ -946,6 +1084,7 @@ class HairSolver:
                 m = self.b_parity == par
                 if not np.any(m):
                     continue
+                alpha = alpha0 * self.bend_scale[m]
                 i, k = self.b_i[m], self.b_k[m]
                 d = x[k] - x[i]
                 L = np.linalg.norm(d, axis=1)
@@ -956,7 +1095,7 @@ class HairSolver:
                 if not np.any(sl):
                     continue
                 dl = np.zeros_like(C)
-                dl[sl] = -C[sl] / (wsum[sl] + alpha)
+                dl[sl] = -C[sl] / (wsum[sl] + alpha[sl])
                 i_s, k_s = i[sl], k[sl]
                 x[i_s] = x[i_s] - wi[i_s, None] * dl[sl, None] * n[sl]
                 x[k_s] = x[k_s] + wk[k_s, None] * dl[sl, None] * n[sl]
@@ -1006,96 +1145,169 @@ class HairSolver:
         acc[self.inv_mass == 0] = 0.0
         return acc
 
-    def _collide(self, x, prev):
+    def _collider_pose(self, col, frac):
+        """World matrix of a collider `frac` of the way through this frame's motion (swept collision)."""
+        if frac >= 1.0:
+            return col["matrix"]
+        return lerp_matrix(col["matrix_prev"], col["matrix"], frac)
+
+    def _collide(self, x, prev, h=None, frac=1.0):
+        """Project points out of every collider. Returns (x, prev, contact) where `contact` carries the
+        per-point normal, collider velocity and friction used by `_contact_friction` after integration."""
         p = self.params
         free = self.inv_mass > 0.0
+        N = len(x)
+        cn = np.zeros((N, 3), np.float64)
+        cv = np.zeros((N, 3), np.float64)
+        cf = np.zeros(N, np.float64)
+        dt_frame = max(float(self.dt_used), 1e-8)
+        n_contact = 0
         for col in self.colliders:
-            if not np.any(free):
-                break
+            if not col.get("enabled", True) or not np.any(free):
+                continue
             rad = p.collision_radius if col["radius"] is None else col["radius"]
-            xf = x[free]
-            pf = prev[free]
-            out = project_points_sdf(xf, col["field"], matrix=col["matrix"], radius=rad,
-                                     refine=p.sdf_refine, iterations=p.collision_iterations,
-                                     friction=p.collision_friction, prev=pf)
-            if len(out) == 4:
-                xf, _hits, _n, pf = out
-                x[free] = xf
-                prev[free] = pf
+            fr = p.collision_friction if col["friction"] is None else col["friction"]
+            M = self._collider_pose(col, frac)
+            fi = np.flatnonzero(free)
+            xf = x[fi]
+            xo, hits, nw = project_points_sdf(xf, col["field"], matrix=M, radius=rad,
+                                              refine=p.sdf_refine, iterations=p.collision_iterations)
+            if not hits:
+                continue
+            hit = np.linalg.norm(nw, axis=1) > 0.5
+            gi = fi[hit]
+            x[gi] = xo[hit]
+            # velocity of the collider material point that touched the strand (exact for rigid motion)
+            Mp = col["matrix_prev"]
+            if Mp is not col["matrix"] and not np.array_equal(Mp, col["matrix"]):
+                xl = inv_xform_points(x[gi], M)
+                vc = (x[gi] - xform_points(xl, Mp)) / dt_frame if frac >= 1.0 else \
+                     (xform_points(xl, col["matrix"]) - xform_points(xl, Mp)) / dt_frame
             else:
-                xf, _hits, _n = out
-                x[free] = xf
+                vc = np.zeros((len(gi), 3))
+            # keep the strongest contact if several colliders overlap
+            take = cf[gi] <= fr
+            gi_t = gi[take]
+            cn[gi_t] = nw[hit][take]
+            cv[gi_t] = vc[take]
+            cf[gi_t] = fr
+            n_contact += int(len(gi))
+        self.last_contacts = n_contact
         if p.ground_z is not None:
             z0 = float(p.ground_z) + p.collision_radius
             under = x[:, 2] < z0
             if np.any(under):
                 x[under, 2] = z0
-                # kill downward velocity
                 going = under & ((x[:, 2] - prev[:, 2]) < 0)
                 prev[going, 2] = x[going, 2]
-        if getattr(p, 'self_collision', True):
-            x, prev = self._self_collide(x, prev)
-        return x, prev
+        return x, prev, (cn, cv, cf)
 
-    def _self_collide(self, x, prev):
-        """Spatial-hash push-out between points on different strands (and non-adjacent points on the same strand)."""
-        rad = float(self.params.collision_radius)
-        if rad <= 0.0 or len(x) < 2:
-            return x, prev
-        minL = 2.0 * rad
-        inv = self.inv_mass
-        cell = np.floor(x / minL).astype(np.int64)
-        buckets = {}
-        for i, c in enumerate(map(tuple, cell)):
-            if inv[i] > 0:
-                buckets.setdefault(c, []).append(i)
-        if not buckets:
-            return x, prev
-        along = np.empty(len(x), np.int32)
-        for s in range(self.n_strands):
-            a, b = int(self.offsets[s]), int(self.offsets[s + 1])
-            along[a:b] = np.arange(b - a, dtype=np.int32)
-        sid = self.strand_id
-        # visit each unordered pair once: same-cell (i<j) and a half-shell of neighbour cells
-        half = ((dx, dy, dz) for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1)
-                if (dz > 0) or (dz == 0 and dy > 0) or (dz == 0 and dy == 0 and dx > 0))
-        half = tuple(half)
-        pa, pb = [], []
-        for (cx, cy, cz), mem in buckets.items():
-            m = mem
-            for ii in range(len(m)):
-                for jj in range(ii + 1, len(m)):
-                    a, b = m[ii], m[jj]
-                    if sid[a] == sid[b] and abs(int(along[a]) - int(along[b])) <= 2:
-                        continue
-                    pa.append(a); pb.append(b)
-            for dx, dy, dz in half:
-                other = buckets.get((cx + dx, cy + dy, cz + dz))
-                if not other:
-                    continue
-                for a in m:
-                    sa, aa = sid[a], along[a]
-                    for b in other:
-                        if sa == sid[b] and abs(int(aa) - int(along[b])) <= 2:
-                            continue
-                        pa.append(a); pb.append(b)
-        if not pa:
-            return x, prev
-        a = np.asarray(pa, np.int64)
-        b = np.asarray(pb, np.int64)
-        d = x[b] - x[a]
-        L = np.linalg.norm(d, axis=1)
-        hit = (L < minL) & (L > 1e-12)
-        if not hit.any():
-            return x, prev
-        a, b, d, L = a[hit], b[hit], d[hit], L[hit]
-        nrm = d / L[:, None]
-        corr = minL - L
-        wa, wb = inv[a], inv[b]
-        ws = np.maximum(wa + wb, 1e-12)
-        x[a] = x[a] - (wa / ws)[:, None] * corr[:, None] * nrm
-        x[b] = x[b] + (wb / ws)[:, None] * corr[:, None] * nrm
-        return x, prev
+    def _contact_friction(self, x, prev, contact, h):
+        """Coulomb-style tangential damping against the (possibly moving) collider, applied to the Verlet velocity."""
+        cn, cv, cf = contact
+        m = cf > 0.0
+        if not np.any(m):
+            return
+        v = x[m] - prev[m]
+        vrel = v - cv[m] * h
+        n = cn[m]
+        vn = np.einsum("ij,ij->i", vrel, n)[:, None]
+        vt = vrel - n * vn
+        # stick to the surface (kills the push-out rebound) but keep what the collider gave the strand
+        vn_keep = np.maximum(vn, 0.0) * 0.5
+        v_new = cv[m] * h + vt * (1.0 - cf[m])[:, None] + n * vn_keep
+        prev[m] = x[m] - v_new
+
+    def _hair_hair(self, x, prev, h):
+        """Cheap strand-strand contact: vectorised spatial-hash repulsion (keeps volume), optional
+        clump attraction (locks) and velocity sharing (hair-hair friction). Samples points and segment midpoints."""
+        p = self.params
+        if (not p.hair_collision) or (not getattr(p, 'self_collision', True)) or self.n_strands < 2:
+            self.last_pairs = 0
+            return
+        r = max(float(p.strand_radius), 1e-5) * (1.0 + max(float(p.volume), 0.0))
+        k_rep = float(np.clip(p.repel_strength, 0.0, 1.0))
+        k_clump = max(float(p.clumping), 0.0)
+        k_fric = float(np.clip(p.strand_friction, 0.0, 1.0))
+        if k_rep <= 0.0 and k_clump <= 0.0 and k_fric <= 0.0:
+            self.last_pairs = 0
+            return
+        contact = 2.0 * r
+        reach = contact + (float(p.clump_range) if k_clump > 0.0 else 0.0)
+        # sample set: points + midpoints of every segment
+        mid = 0.5 * (x[self.e_i] + x[self.e_j])
+        S = np.concatenate([x, mid])
+        sid = np.concatenate([self.strand_id, self.strand_id[self.e_i]])
+        ownA = np.concatenate([np.arange(len(x)), self.e_i])
+        ownB = np.concatenate([np.arange(len(x)), self.e_j])
+        pin = self.inv_mass == 0.0
+        i, j, d, n = hair_hair_pairs(S, max(reach, 1e-5), sid, reach, max_pairs=int(p.max_pairs))
+        self.last_pairs = int(len(i))
+        if not len(i):
+            return
+        disp = np.zeros_like(x)
+        cnt = np.zeros(len(x), np.float64)
+        wgt = np.zeros(len(i), np.float64)
+        pen = d < contact
+        # repulsion: move the pair apart by the overlap
+        if k_rep > 0.0:
+            wgt[pen] += k_rep * (contact - d[pen]) * 0.5
+        # clump attraction in the band beyond contact, fading out at `reach`
+        if k_clump > 0.0:
+            band = ~pen
+            span = max(reach - contact, 1e-6)
+            wgt[band] -= 0.25 * min(k_clump, 4.0) * (d[band] - contact) * (1.0 - (d[band] - contact) / span)
+        act = wgt != 0.0
+        if np.any(act):
+            ii, jj, nn, ww = i[act], j[act], n[act], wgt[act]
+            dv = nn * ww[:, None]
+            for samp, sign in ((ii, -1.0), (jj, 1.0)):
+                a, b = ownA[samp], ownB[samp]
+                for own in (a, b):
+                    for c3 in range(3):
+                        disp[:, c3] += np.bincount(own, weights=sign * dv[:, c3], minlength=len(x))
+                    cnt += np.bincount(own, minlength=len(x))
+            # points that are both ends of a point sample were counted twice with the same value: average handles it
+            ok = (cnt > 0) & (~pin)
+            x[ok] += disp[ok] / cnt[ok][:, None]
+        if k_fric > 0.0:
+            vel = x - prev
+            vs = np.concatenate([vel, 0.5 * (vel[self.e_i] + vel[self.e_j])])
+            near = d < contact * 1.5
+            if np.any(near):
+                ii, jj = i[near], j[near]
+                dvv = 0.5 * k_fric * (vs[jj] - vs[ii])
+                acc = np.zeros_like(x)
+                c2 = np.zeros(len(x), np.float64)
+                for samp, sign in ((ii, 1.0), (jj, -1.0)):
+                    for own in (ownA[samp], ownB[samp]):
+                        for c3 in range(3):
+                            acc[:, c3] += np.bincount(own, weights=sign * dvv[:, c3], minlength=len(x))
+                        c2 += np.bincount(own, minlength=len(x))
+                ok = (c2 > 0) & (~pin)
+                prev[ok] -= acc[ok] / c2[ok][:, None]
+
+    def _frame_substeps(self, nsub):
+        """More substeps when a collider moves fast relative to its own size (anti-tunnelling)."""
+        p = self.params
+        if not p.adaptive_substeps or not self.colliders:
+            return nsub
+        worst = 0.0
+        for col in self.colliders:
+            if not col.get("enabled", True):
+                continue
+            Mp, Mc = col["matrix_prev"], col["matrix"]
+            if Mp is Mc:
+                continue
+            f = col["field"]
+            size = float(np.min(np.asarray(getattr(f, "bmax", np.ones(3))) - np.asarray(getattr(f, "bmin", np.zeros(3)))))
+            size = max(size, 0.02)
+            c = 0.5 * (np.asarray(getattr(f, "bmax", np.zeros(3))) + np.asarray(getattr(f, "bmin", np.zeros(3))))
+            move = float(np.linalg.norm(xform_points(c[None], Mc) - xform_points(c[None], Mp)))
+            rot = float(np.linalg.norm(Mc[:3, :3] - Mp[:3, :3])) * 0.5 * size
+            worst = max(worst, (move + rot) / (0.5 * size))
+        extra = int(np.ceil(worst))
+        return int(min(max(nsub, extra), 4 * nsub))
 
     def step(self, dt=None, root_M=None, substeps=None):
         """Advance one frame. Optional `root_M` is forwarded to `set_root_transforms`."""
@@ -1105,14 +1317,19 @@ class HairSolver:
         dt = float(p.dt if dt is None else dt)
         self.dt_used = dt
         nsub = max(int(p.substeps if substeps is None else substeps), 1)
+        if substeps is None:
+            nsub = self._frame_substeps(nsub)
         h = dt / nsub
-        g = np.asarray(p.gravity, dtype=np.float64).reshape(3)
+        g = np.asarray(p.gravity, dtype=np.float64).reshape(3) * float(p.gravity_scale)
+        gstrand = self._gravity[self.strand_id]
         x = self.positions
         prev = self.prev
         damp0 = float(np.clip(p.damping, 0.0, 1.0))
+        vmax = float(p.max_speed) * h
         for _s in range(nsub):
+            frac = (_s + 1.0) / nsub
             self._pin_roots(x, prev, h)
-            acc = np.broadcast_to(g, x.shape).copy()
+            acc = g[None, :] * gstrand[:, None]
             acc += self._aero(x, prev, h)
             acc[self.inv_mass == 0] = 0.0
             # per-strand damping scale
@@ -1124,12 +1341,18 @@ class HairSolver:
             self._apply_rest_shape(x)
             self._project_stretch(x, p.stretch_compliance, p.stretch_iterations, h)
             self._project_bend(x, p.bend_compliance, p.bend_iterations, h)
+            self._hair_hair(x, prev, h)
             self._project_stretch(x, p.stretch_compliance, max(2, p.stretch_iterations // 2), h)
-            x, prev = self._collide(x, prev)
-            self._project_stretch(x, p.stretch_compliance, max(2, p.stretch_iterations // 2), h)
+            x, prev, contact = self._collide(x, prev, h, frac)
             self._pin_roots(x, prev, h)
+            # clamp runaway displacement, then Verlet velocity = this substep's displacement
+            dx = x - x_old
+            nrm = np.linalg.norm(dx, axis=1)
+            big = nrm > vmax
+            if np.any(big):
+                x[big] = x_old[big] + dx[big] * (vmax / nrm[big])[:, None]
             prev[:, :] = x_old
-            # keep pinned prev consistent with attachment velocity (already done in _pin_roots)
+            self._contact_friction(x, prev, contact, h)
             self._pin_roots(x, prev, h)
         self.positions = x
         self.prev = prev
@@ -1137,6 +1360,8 @@ class HairSolver:
         self.frame += 1
         # the previous root frame becomes the current one after the step is consumed
         self.root_M_prev = self.root_M.copy()
+        for col in self.colliders:
+            col["matrix_prev"] = col["matrix"]
         return self
 
     # ----- metrics / cache / package
