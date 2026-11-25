@@ -374,6 +374,59 @@ def _hide_hosted_polls():
             return False
         cls.poll = classmethod(poll)
         cls._ts_tab_hosted = True
+    _reregister([n for n in _ORIG_POLLS])
+
+
+def _panel_family(names):
+    """The hosted panels plus every registered sub-panel hanging off them (children first)."""
+    fam = []
+    want = set(names)
+    grew = True
+    while grew:
+        grew = False
+        for cls in bpy.types.Panel.__subclasses__():
+            nm = getattr(cls, "bl_idname", "") or cls.__name__
+            if nm in want:
+                continue
+            if getattr(cls, "bl_parent_id", "") in want and getattr(bpy.types, nm, None) is cls:
+                want.add(nm)
+                grew = True
+    for nm in want:
+        cls = getattr(bpy.types, nm, None)
+        if cls is not None:
+            fam.append(cls)
+
+    def depth(c):
+        d, cur = 0, c
+        while getattr(cur, "bl_parent_id", ""):
+            d += 1
+            cur = getattr(bpy.types, cur.bl_parent_id, None)
+            if cur is None or d > 8:
+                break
+        return d
+    fam.sort(key=depth, reverse=True)
+    return fam
+
+
+def _reregister(names):
+    """Blender binds a panel's poll callback at registration: a class that had no poll()
+    when it was registered never gets one called later. Re-register the hosted family so
+    the replaced poll takes effect in the real UI (not only when called from Python)."""
+    if not names:
+        return
+    fam = _panel_family(names)
+    done = []
+    for cls in fam:                     # children first
+        try:
+            bpy.utils.unregister_class(cls)
+            done.append(cls)
+        except Exception:
+            pass
+    for cls in reversed(done):          # parents first
+        try:
+            bpy.utils.register_class(cls)
+        except Exception as ex:
+            print("Tessera tabs: could not re-register %s: %s" % (cls.__name__, ex))
 
 
 def _restore_hosted_polls():
@@ -389,7 +442,9 @@ def _restore_hosted_polls():
             cls.poll = classmethod(poll)
         if hasattr(cls, "_ts_tab_hosted"):
             delattr(cls, "_ts_tab_hosted")
+    names = list(_ORIG_POLLS)
     _ORIG_POLLS.clear()
+    _reregister(names)
 
 
 CLASSES = (AF_OT_set_ui_tab, AF_PT_tabs)

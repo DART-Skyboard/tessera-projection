@@ -86,16 +86,9 @@ def apply_hair_gn(obj, radius=0.004, sides=5, as_tubes=True):
     md.node_group = ng
     # modifier input identifiers are the socket identifiers
     def _set(mod, names, value):
-        keys = getattr(mod, 'keys', lambda: [])()
-        for n in names:
-            for k in list(keys) + [n]:
-                if n.lower() in str(k).lower() or k == n:
-                    try:
-                        mod[k] = value
-                        return
-                    except Exception:
-                        pass
-        # Blender 4.2: ['Input_2'] style — walk the interface
+        # resolve the interface identifier from the socket name, then use the
+        # version-aware setter (Blender 4.2 mod['Input_2'] ... 5.3 mod.properties.inputs.X.value)
+        from .gn import _set_input
         try:
             items = list(ng.interface.items_tree)
         except Exception:
@@ -104,12 +97,12 @@ def apply_hair_gn(obj, radius=0.004, sides=5, as_tubes=True):
             if getattr(item, 'in_out', '') != 'INPUT':
                 continue
             if getattr(item, 'name', '') in names:
-                ident = item.identifier
-                try:
-                    mod[ident] = value
-                    return
-                except Exception:
-                    pass
+                if _set_input(mod, item.identifier, value):
+                    return True
+        for n in names:          # very old groups keyed by display name
+            if _set_input(mod, n, value):
+                return True
+        return False
     _set(md, ('Radius',), float(radius))
     _set(md, ('Sides',), int(sides))
     _set(md, ('As Tubes', 'As_Tubes'), bool(as_tubes))

@@ -63,6 +63,7 @@ def _draw_solver(l, hp):
 
 def _draw_collision(l, hp):
     col = l.column(align=True)
+    col.prop(hp, "self_collision")
     col.prop(hp, "collision_radius")
     col.prop(hp, "collision_iterations")
     col.prop(hp, "collision_friction")

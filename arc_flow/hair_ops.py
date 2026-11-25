@@ -214,6 +214,7 @@ def params_from_scene(scene):
         rest_shape=float(hp.rest_shape),
         rest_shape_root=float(hp.rest_shape_root),
         rest_shape_tip=float(hp.rest_shape_tip),
+        self_collision=bool(getattr(hp, 'self_collision', True)),
         collision_radius=float(hp.collision_radius),
         collision_iterations=int(hp.collision_iterations),
         collision_friction=float(hp.collision_friction),
@@ -283,6 +284,33 @@ def _root_matrices(scene, solver, deps):
     return M
 
 
+
+def _add_scene_hair_colliders(scene, solver, deps, skip=None):
+    """Register every other Tessera collision body as an extra hair collider."""
+    from . import asset_colliders as AC
+    hp = _hp(scene)
+    rad = float(hp.collision_radius)
+    existing = 1 if solver.colliders else 0
+    extras = [o for o in AC.iter_collision_meshes(scene, exclude=skip) if o is not hp.collider]
+    solver.colliders[:] = solver.colliders[:existing]
+    cache = getattr(solver, '_extra_cols', {})
+    new_cache = {}
+    for o in extras:
+        V, T = _mesh_arrays(o, deps, world=False)
+        if V is None or T is None or len(T) == 0:
+            continue
+        mesh_sig = (o.name, len(V), len(T), float(V.sum()), int(hp.sdf_level))
+        prev = cache.get(o.name)
+        if prev is not None and prev['mesh_sig'] == mesh_sig:
+            field = prev['field']
+        else:
+            field = HS.make_collider(V, T, resolution=max(16, hp.sdf_resolution // 2), level=hp.sdf_level, mode='SOLID')
+        Mw = np.array(o.matrix_world, dtype=np.float64)
+        solver.add_collider(field, matrix=Mw, radius=rad)
+        new_cache[o.name] = dict(field=field, mesh_sig=mesh_sig)
+    solver._extra_cols = new_cache
+
+
 def build_solver(scene, deps=None):
     """(Re)build a HairSolver from the scene pointers. Returns the solver or None."""
     hp = _hp(scene)
@@ -344,6 +372,11 @@ def build_solver(scene, deps=None):
         solver.set_colliders([])
         solver.add_collider(field, matrix=np.array(hp.collider.matrix_world, dtype=np.float64),
                             radius=float(hp.collision_radius))
+        from . import asset_colliders as AC
+        AC.mark_projection_collider(hp.collider)
+        if hp.surface is not None:
+            AC.mark_projection_collider(hp.surface)
+        _add_scene_hair_colliders(scene, solver, deps, skip=hp.collider)
     solver.set_wind(_wind(scene, hp))
     ff = _fluid_fn(scene)
     if ff is not None:
@@ -399,13 +432,15 @@ def step_scene(scene, dt=None, write=True, deps=None):
         else:
             solver.colliders[0]["field"] = field
             solver.colliders[0]["matrix"] = np.array(hp.collider.matrix_world, dtype=np.float64)
+        _add_scene_hair_colliders(scene, solver, deps, skip=hp.collider)
     solver.set_wind(_wind(scene, hp))
     solver.params.update(gravity=_gravity(scene, hp),
                          rest_shape=float(hp.rest_shape),
                          damping=float(hp.damping),
                          wind_drag=float(hp.wind_drag),
                          fluid_coupling=float(hp.fluid_coupling),
-                         collision_radius=float(hp.collision_radius))
+                         collision_radius=float(hp.collision_radius),
+                         self_collision=bool(getattr(hp, "self_collision", True)))
     ff = _fluid_fn(scene)
     solver.set_fluid_velocity(ff)
     root_M = _root_matrices(scene, solver, deps)
@@ -663,13 +698,14 @@ def export_alembic(scene, filepath, start=None, end=None):
         hair.hide_set(False)
         hair.select_set(True)
         scene.view_layers[0].objects.active = hair
-        bpy.ops.wm.alembic_export(
-            filepath=filepath,
-            start=a, end=b,
-            selected=True,
-            visible_objects_only=False,
-            flatten=False,
-        )
+        kw = dict(filepath=filepath, start=a, end=b, selected=True, flatten=False,
+                  visible_objects_only=False, as_background_job=False)
+        try:   # keep only the keywords this Blender's exporter knows (visible_objects_only is gone in 5.3)
+            known = {p.identifier for p in bpy.ops.wm.alembic_export.get_rna_type().properties}
+            kw = {k: v for k, v in kw.items() if k in known}
+        except Exception:
+            kw.pop('visible_objects_only', None)
+        bpy.ops.wm.alembic_export(**kw)
         hp.last_alembic = filepath
         hp.status = "Alembic → %s" % filepath
         return filepath
