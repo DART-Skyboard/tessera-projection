@@ -6,7 +6,7 @@ armature.  Object.arc_flow_hair tags a curves object as a hair groom (or a
 mesh as a collider / scalp) and stores per-object stiffness overrides.
 """
 import bpy
-from bpy.props import (BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty,
+from bpy.props import (BoolProperty, CollectionProperty, EnumProperty, FloatProperty, FloatVectorProperty,
                        IntProperty, PointerProperty, StringProperty)
 from bpy.types import PropertyGroup
 
@@ -34,6 +34,20 @@ def _live_changed(self, context):
         pass
 
 
+class AF_HairCollider(PropertyGroup):
+    """One collision body of the hair solver (head, shoulders, body, a glove / hand, props)."""
+    obj: PointerProperty(name="Object", type=bpy.types.Object, poll=_mesh_poll,
+                         description="Mesh strands collide with. Moving or posed bodies are re-read every step")
+    enabled: BoolProperty(name="Enabled", default=True)
+    thickness: FloatProperty(name="Thickness", default=0.008, min=0.0, max=0.1, unit='LENGTH', precision=4,
+                             description="Keep strand points this far outside this body (a skin / padding layer)")
+    friction: FloatProperty(name="Friction", default=0.3, min=0.0, max=1.0, subtype='FACTOR',
+                            description="Tangential grip: 0 = slippery, 1 = hair sticks to this body")
+    deforming: BoolProperty(name="Deforming", default=False,
+                            description="Rebuild this body's collision field every step (posed / shape-keyed bodies). "
+                                        "Rigid movers like a glove do not need it")
+
+
 class AF_HairScene(PropertyGroup):
     hair: PointerProperty(name="Hair curves", type=bpy.types.Object, poll=_curves_poll,
                           description="The Empty Hair Curves (CURVES) object Tessera Projection Hair drives")
@@ -45,6 +59,11 @@ class AF_HairScene(PropertyGroup):
                               description="Character rig whose pose drives root motion (optional)")
     bone: StringProperty(name="Bone", default="",
                          description="Pose bone the scalp follows; leave empty to use the armature object transform")
+
+    colliders: CollectionProperty(type=AF_HairCollider)
+    collider_index: IntProperty(default=0)
+    use_scene_colliders: BoolProperty(name="Other Tessera collision bodies", default=True,
+                                      description="Also collide with every body the Cloth / Fluid / Wind-tunnel tabs marked as a collision body")
 
     live: BoolProperty(name="Live simulation", default=False, update=_live_changed,
                        description="Tick the hair solver in the viewport as you pose, play, or drive the rig")
@@ -92,6 +111,24 @@ class AF_HairScene(PropertyGroup):
                            description="Virtual tessellation / brick refinement level around contacts")
     sdf_refine: BoolProperty(name="Refine at contacts", default=True,
                              description="Request LOTBCBP bricks around hair contacts each step")
+    # hair-hair, volume and profiles
+    hair_collision: BoolProperty(name="Strand-strand contact", default=True,
+                                 description="Hair repels / drags neighbouring strands (vectorised spatial hash) so the groom keeps its volume")
+    strand_radius: FloatProperty(name="Strand radius", default=0.004, min=0.0005, max=0.05, unit='LENGTH', precision=4,
+                                 description="Fibre radius used for hair-hair contact")
+    repel_strength: FloatProperty(name="Repulsion", default=0.5, min=0.0, max=1.0, subtype='FACTOR')
+    volume: FloatProperty(name="Volume", default=0.0, min=0.0, max=4.0,
+                          description="Inflates the hair-hair contact radius: puffier, fuller hair")
+    clumping: FloatProperty(name="Clumping", default=0.0, min=0.0, max=4.0,
+                            description="Pulls neighbouring strands into locks")
+    strand_friction: FloatProperty(name="Strand friction", default=0.05, min=0.0, max=1.0, subtype='FACTOR',
+                                   description="Velocity sharing between touching strands (hair drags hair)")
+    gravity_scale: FloatProperty(name="Gravity scale", default=1.0, min=0.0, max=4.0,
+                                 description="Scales gravity for the whole groom (per-strand scale lives on the hair object)")
+    bend_tip_scale: FloatProperty(name="Tip floppiness", default=3.0, min=1.0, max=20.0,
+                                  description="Bend compliance at the tip relative to the root")
+    stiffness_curve: FloatProperty(name="Stiffness curve", default=1.0, min=0.2, max=4.0,
+                                   description="Shape of the root-to-tip stiffness ramp (above 1 keeps the root stiff longer)")
     use_ground: BoolProperty(name="Ground collision", default=False)
     ground_z: FloatProperty(name="Ground height", default=0.0, unit='LENGTH')
 
@@ -147,9 +184,13 @@ class AF_HairObject(PropertyGroup):
     is_guide_only: BoolProperty(name="Simulate every strand as a guide", default=False,
                                description="Ignore the scene guide ratio and simulate the whole groom")
     radius: FloatProperty(name="Curve radius", default=0.004, min=0.0, unit='LENGTH')
+    gravity_scale: FloatProperty(name="Gravity scale", default=1.0, min=0.0, max=4.0,
+                                 description="Per-groom gravity multiplier (multiplies the scene Gravity scale)")
+    n_guides: IntProperty(name="Guide strands", default=0, min=0,
+                          description="The first N curves are simulation guides and the rest are children (0 = pick by guide ratio)")
 
 
-CLASSES = (AF_HairScene, AF_HairObject)
+CLASSES = (AF_HairCollider, AF_HairScene, AF_HairObject)
 
 
 def register():

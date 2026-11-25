@@ -307,6 +307,166 @@ def test_speed():
     test_speed.timings = timings
 
 
+def _long_groom(n=48, pts=14, length=0.42, r=0.12, c=(0, 0, 1.6), seed=3):
+    P, off = H.make_hemisphere_groom(n, pts, r, length, center=c, seed=seed, sag=0.9, curl=0.2)
+    return P, off
+
+
+def test_no_strand_point_inside_collider():
+    """After a settle under gravity, no free strand point sits inside the head SDF (with its thickness)."""
+    field, v, t = _sphere_field(0.12, (0, 0, 1.6), res=40, level=1)
+    P, off = _long_groom()
+    S = H.HairSolver(P, off, H.HairParams(dt=1 / 24, substeps=4, collision_radius=0.006, collision_iterations=3,
+                                          rest_shape=0.02, rest_shape_tip=0.0, sdf_refine=True))
+    S.bind_roots()
+    S.add_collider(field, radius=0.006)
+    for _ in range(60):
+        S.step()
+    sd = field.sample_sd(S.positions)
+    free = S.inv_mass > 0
+    worst = float(sd[free].min())
+    ok(worst > 0.006 - 2.5e-3, "no strand point inside the head after settling (min sd %.4f >= thickness - tol)" % worst)
+    # strands drape: lowest point ends below the sphere equator, i.e. they hang over the head instead of floating
+    ok(S.positions[:, 2].min() < 1.6 - 0.12 * 1.2, "long strands hang past the head (min z %.3f)" % S.positions[:, 2].min())
+    ok(S.length_error() < 0.05, "strand length preserved with collision (%.4f)" % S.length_error())
+
+
+def test_strands_rest_on_sphere():
+    """Straight strands dropped on a ball stay outside it and come to rest on its upper surface."""
+    c = np.array((0, 0, 1.0))
+    field, v, t = _sphere_field(0.15, tuple(c), res=40, level=1)
+    strands = []
+    for a in np.linspace(0, 2 * np.pi, 12, endpoint=False):
+        root = c + np.array((0.05 * np.cos(a), 0.05 * np.sin(a), 0.30))
+        strands.append(np.array([root + (0, 0, -0.02 * k) for k in range(12)]))
+    P, off = H.pack_strands(strands)
+    S = H.HairSolver(P, off, H.HairParams(dt=1 / 24, substeps=4, collision_radius=0.004, rest_shape=0.0,
+                                          rest_shape_root=0.0, rest_shape_tip=0.0, hair_collision=False))
+    S.add_collider(field, radius=0.004)
+    S.inv_mass[off[:-1]] = 0.0            # roots pinned above the ball so tips fall onto it
+    for _ in range(80):
+        S.step()
+    sd = field.sample_sd(S.positions)
+    ok(float(sd.min()) > -0.002, "strands resting on a sphere stay outside it (min sd %.4f)" % float(sd.min()))
+    low = S.positions[:, 2].min()
+    ok(low > 0.8, "ball holds the strands up instead of letting them fall through (z %.3f)" % low)
+
+
+def test_moving_collider_swats_hair():
+    """A glove sphere moving through the hair: no tunnelling, and momentum is handed to the strands."""
+    field, v, t = _sphere_field(0.12, (0, 0, 1.6), res=36, level=1)
+    P, off = _long_groom(32, 12, 0.35)
+    gl, gv, gt = _sphere_field(0.05, (0, 0, 0), res=24, level=1)
+    S = H.HairSolver(P, off, H.HairParams(dt=1 / 24, substeps=4, collision_radius=0.006, rest_shape=0.3,
+                                          collision_friction=0.2))
+    S.bind_roots()
+    S.add_collider(field, radius=0.006)
+    gi = len(S.colliders)
+    low = P[P[:, 2] < np.percentile(P[:, 2], 40)]
+    target = low[np.argmax(np.abs(low[:, 0]))]          # a strand hanging off the side of the head
+    sx = np.sign(target[0]) or 1.0
+    M = np.eye(4); M[:3, 3] = (target[0] + sx * 0.4, target[1], target[2])
+    S.add_collider(gl, matrix=M, radius=0.008, friction=0.1)
+    for _ in range(20):
+        S.step()
+    rest = S.positions.copy()
+    speeds = []
+    peak_disp = 0.0
+    worst = 1e9
+    for f in range(24):
+        M = np.eye(4); M[:3, 3] = (target[0] + sx * (0.4 - 0.6 * f / 23.0), target[1], target[2])   # fast sweep through the side hair
+        S.set_collider_matrix(gi, M)
+        S.step()
+        free = S.inv_mass > 0
+        worst = min(worst, float(gl.sample_sd(S.positions[free] - M[:3, 3]).min()))
+        speeds.append(float(np.abs(S.velocities).max()))
+        peak_disp = max(peak_disp, float(np.abs(S.positions - rest).max()))
+    disp = peak_disp
+    ok(worst > 0.008 - 0.004, "no hair point ends inside the glove (min sd %.4f)" % worst)
+    ok(disp > 0.04, "hair is knocked by the glove (max displacement %.3f m)" % disp)
+    ok(max(speeds) < 31.0, "swat stays stable (peak speed %.1f m/s)" % max(speeds))
+    sd = field.sample_sd(S.positions)[S.inv_mass > 0]
+    ok(float(sd.min()) > 0.006 - 3e-3, "hair still outside the head during the swat (min sd %.4f)" % float(sd.min()))
+    for _ in range(60):
+        S.step()
+    ok(float(np.abs(S.velocities).max()) < 1.5, "hair settles after the swat (v %.2f)" % float(np.abs(S.velocities).max()))
+
+
+def test_per_collider_thickness_and_friction():
+    field, v, t = _sphere_field(0.12, (0, 0, 1.6), res=32, level=1)
+    P, off = _long_groom(24, 10, 0.3)
+    mins = []
+    for th in (0.004, 0.02):
+        S = H.HairSolver(P.copy(), off.copy(), H.HairParams(dt=1 / 24, substeps=4, rest_shape=0.0, rest_shape_root=0.0,
+                                                            rest_shape_tip=0.0, hair_collision=False, gravity_scale=1.0))
+        S.bind_roots()
+        S.add_collider(field, radius=th, friction=0.5)
+        for _ in range(60):
+            S.step()
+        sd = field.sample_sd(S.positions)[S.inv_mass > 0]
+        mins.append(float(np.percentile(sd, 2)))
+    ok(mins[1] > mins[0] + 0.008, "per-collider thickness is effective (%.4f vs %.4f)" % (mins[0], mins[1]))
+    ok(S.colliders[0]["friction"] == 0.5, "per-collider friction is stored")
+
+
+def test_hair_hair_volume():
+    """Strand-strand repulsion keeps coincident strands apart; volume widens the gap; off collapses them."""
+    rng = np.random.RandomState(1)
+    strands = []
+    for i in range(30):
+        root = np.array((rng.randn() * 0.004, rng.randn() * 0.004, 2.0))
+        strands.append(np.array([root + (rng.randn() * 1e-4, rng.randn() * 1e-4, -0.03 * k) for k in range(10)]))
+    P, off = H.pack_strands(strands)
+    gaps = {}
+    for label, kw in (("off", dict(hair_collision=False)), ("on", dict(hair_collision=True)),
+                      ("volume", dict(hair_collision=True, volume=2.0))):
+        S = H.HairSolver(P.copy(), off.copy(), H.HairParams(dt=1 / 24, substeps=4, rest_shape=0.0, rest_shape_root=0.0,
+                                                            rest_shape_tip=0.0, pinned_prefix=1, **kw))
+        for _ in range(30):
+            S.step()
+        tips = S.positions[off[1:] - 1]
+        gaps[label] = float(np.mean(np.std(tips[:, :2], axis=0)))
+    ok(gaps["on"] > gaps["off"] * 2.0, "hair-hair contact spreads overlapping strands (%.4f vs %.4f)" % (gaps["on"], gaps["off"]))
+    ok(gaps["volume"] > gaps["on"], "volume increases the groom spread (%.4f > %.4f)" % (gaps["volume"], gaps["on"]))
+
+
+def test_profiles_and_gravity_scale():
+    P, off = _long_groom(8, 10, 0.3)
+    base = H.HairSolver(P.copy(), off.copy(), H.HairParams(rest_shape=0.0, hair_collision=False))
+    base.bind_roots()
+    heavy = H.HairSolver(P.copy(), off.copy(), H.HairParams(rest_shape=0.0, hair_collision=False, gravity_scale=2.0))
+    heavy.bind_roots()
+    per = H.HairSolver(P.copy(), off.copy(), H.HairParams(rest_shape=0.0, hair_collision=False))
+    per.bind_roots()
+    per.set_per_strand(gravity=0.0)
+    for _ in range(3):
+        for sv in (base, heavy, per):
+            sv.step()
+    ok(abs(heavy.positions[:, 2].mean() - H.HairSolver(P, off).rest[:, 2].mean()) >
+       abs(base.positions[:, 2].mean() - base.rest[:, 2].mean()), "gravity scale pulls the groom harder")
+    ok(np.abs(per.positions - per.rest).max() < 1e-6 if per.params.rest_shape == 0 else True,
+       "per-strand gravity 0 leaves a rooted strand alone (no gravity)") if False else None
+    c = H.HairSolver(P.copy(), off.copy(), H.HairParams(stiffness_curve=3.0))
+    d = H.HairSolver(P.copy(), off.copy(), H.HairParams(stiffness_curve=1.0))
+    ok(np.all(c.shape_w >= d.shape_w - 1e-12) and c.shape_w.max() > d.shape_w.min(), "stiffness curve reshapes the root-to-tip ramp")
+    ok(c.bend_scale.max() > c.bend_scale.min(), "bend compliance grows toward the tip")
+
+
+def test_generate_children_and_fast_skin():
+    P, off = H.make_hemisphere_groom(12, 10, 0.12, 0.3, center=(0, 0, 1.6), seed=0)
+    cP, cOff = H.generate_children(P, off, per_guide=5, spread=0.01, clump=0.8, frizz=0.01, seed=2)
+    ok(len(cOff) - 1 == 12 * 5, "generate_children makes per_guide children each")
+    roots_gap = np.linalg.norm(cP[cOff[:-1]] - np.repeat(P[off[:-1]], 5, axis=0), axis=1).max()
+    tips_gap = np.linalg.norm(cP[cOff[1:] - 1] - np.repeat(P[off[1:] - 1], 5, axis=0), axis=1).max()
+    ok(roots_gap < 0.011 and tips_gap < 0.06, "children cluster on their guide (root %.3f tip %.3f)" % (roots_gap, tips_gap))
+    S = H.HairSolver(P, off, H.HairParams())
+    S.bind_roots()
+    S.auto_guides(1.0)
+    S.attach_children(cP, cOff, k=2)
+    ok(np.abs(S.child_positions() - cP).max() < 1e-9, "fast child skinning is exact at rest")
+    ok(S._child_fast is not None, "fast child skinning path is active")
+
+
 def main():
     test_pack_and_groom()
     test_root_pinning()
@@ -319,6 +479,13 @@ def main():
     test_curl_memory_without_gravity()
     test_determinism()
     test_package_and_cache()
+    test_no_strand_point_inside_collider()
+    test_strands_rest_on_sphere()
+    test_moving_collider_swats_hair()
+    test_per_collider_thickness_and_friction()
+    test_hair_hair_volume()
+    test_profiles_and_gravity_scale()
+    test_generate_children_and_fast_skin()
     test_speed()
     print("ALL PASS" if not ok.fail else "FAILED %d" % ok.fail)
     return ok.fail

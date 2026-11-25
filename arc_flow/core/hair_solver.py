@@ -297,6 +297,69 @@ def make_hemisphere_groom(n_strands=80, n_pts=10, radius=0.12, length=0.28, cent
     return pack_strands(strands)
 
 
+def strand_frames(P):
+    """Parallel-transport-ish normal / binormal for every point of one polyline (n,3) -> (N, B) each (n,3)."""
+    P = np.asarray(P, dtype=np.float64)
+    T = np.zeros_like(P)
+    T[:-1] = P[1:] - P[:-1]
+    T[-1] = T[-2] if len(P) > 1 else (0.0, 0.0, -1.0)
+    T = _normalize(T, fallback=np.array((0.0, 0.0, -1.0)))
+    ref = np.array((0.0, 1.0, 0.0)) if abs(T[0, 1]) < 0.9 else np.array((1.0, 0.0, 0.0))
+    N = np.empty_like(T)
+    B = np.empty_like(T)
+    n = np.cross(T[0], ref)
+    n = n / max(np.linalg.norm(n), _EPS)
+    for i in range(len(P)):
+        n = n - T[i] * np.dot(n, T[i])
+        nn = np.linalg.norm(n)
+        n = n / nn if nn > _EPS else np.cross(T[i], ref)
+        N[i] = n
+        B[i] = np.cross(T[i], n)
+    return N, B
+
+
+def generate_children(positions, offsets, per_guide=8, spread=0.012, clump=0.55, clump_power=1.6,
+                      frizz=0.0, frizz_freq=5.0, tip_spread=0.0, length_jitter=0.08, seed=0):
+    """Surround every guide strand with child strands (cheap grooming: root scatter, tip clumping, frizz, flyaways).
+
+    Child k of a guide starts `spread` metres around the root in the strand's normal plane; `clump`
+    (0..1) pulls the child back onto the guide toward the tip (1 = one tight lock), `tip_spread` fans the
+    tips out again, `frizz` adds a smooth random wiggle that grows toward the tip. Returns packed
+    (positions, offsets) of the *children only* (guides first in the caller's array, then these).
+    """
+    rng = np.random.RandomState(int(seed))
+    P = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
+    off = np.asarray(offsets, dtype=np.int64).ravel()
+    out = []
+    for si in range(len(off) - 1):
+        g = P[off[si]:off[si + 1]]
+        n = len(g)
+        if n < 2:
+            continue
+        N, B = strand_frames(g)
+        t = np.linspace(0.0, 1.0, n)
+        for _k in range(int(per_guide)):
+            ang = rng.rand() * 2.0 * np.pi
+            rad = spread * np.sqrt(rng.rand())
+            base = np.cos(ang) * N + np.sin(ang) * B                          # (n,3) direction per point
+            # offset profile: scatter at the root, converge (clump), then optional tip fan-out
+            prof = rad * (1.0 - clump * t ** clump_power) + tip_spread * rng.rand() * t ** 2
+            prof[0] = rad * 0.35
+            pts = g + base * prof[:, None]
+            if frizz > 0.0:
+                ph1, ph2 = rng.rand(2) * 2 * np.pi
+                f = frizz * (t ** 1.4)
+                pts += N * (np.sin(t * frizz_freq * 2 * np.pi + ph1) * f)[:, None] \
+                    + B * (np.sin(t * frizz_freq * 1.7 * 2 * np.pi + ph2) * f)[:, None]
+            if length_jitter > 0.0:
+                k = 1.0 + length_jitter * (rng.rand() * 2.0 - 1.0)
+                pts = pts[0] + (pts - pts[0]) * k
+            out.append(pts)
+    if not out:
+        return np.zeros((0, 3), np.float64), np.zeros(1, np.int64)
+    return pack_strands(out)
+
+
 def resample_strand(pts, n_pts):
     """Uniform arc-length resample of a polyline, keeping the root and tip."""
     P = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
@@ -964,7 +1027,62 @@ class HairSolver:
         self.child_idx = idx
         self.child_w = w
         self._child_guide_idx = gidx
+        self._build_child_fast(gidx)
         return self
+
+    def _build_child_fast(self, gidx):
+        """Precompute, per child point and per skin guide, the guide point pair + blend that carry the child
+        (vectorised `child_positions` afterwards; the python loop runs once here)."""
+        cOff, cP = self.child_off, self.child_rest
+        npc = len(cP)
+        k = self.child_idx.shape[1] if self.child_idx is not None and self.child_idx.ndim == 2 else 0
+        if not k or npc == 0:
+            self._child_fast = None
+            return
+        i0 = np.zeros((npc, k), np.int64)
+        fr = np.zeros((npc, k), np.float64)
+        W = np.zeros((npc, k), np.float64)
+        bind = np.zeros((npc, k, 3), np.float64)
+        garc = {}
+        for ci in range(len(cOff) - 1):
+            a, b = int(cOff[ci]), int(cOff[ci + 1])
+            pts = cP[a:b]
+            if b - a < 2:
+                continue
+            seg = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+            arc = np.concatenate([[0.0], np.cumsum(seg)])
+            sc = arc / (arc[-1] if arc[-1] > _EPS else 1.0)
+            for kk in range(k):
+                m = int(self.child_idx[ci, kk])
+                gs = int(gidx[m])
+                ga, gb = int(self.offsets[gs]), int(self.offsets[gs + 1])
+                if gs not in garc:
+                    gp = self.rest[ga:gb]
+                    gl = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(gp, axis=0), axis=1))])
+                    garc[gs] = gl
+                gl = garc[gs]
+                tot = gl[-1] if gl[-1] > _EPS else 1.0
+                tgt = sc * tot
+                j = np.clip(np.searchsorted(gl, tgt, side="right") - 1, 0, gb - ga - 2)
+                span = np.maximum(gl[j + 1] - gl[j], _EPS)
+                f = np.clip((tgt - gl[j]) / span, 0.0, 1.0)
+                i0[a:b, kk] = ga + j
+                fr[a:b, kk] = f
+                W[a:b, kk] = self.child_w[ci, kk]
+                bind[a:b, kk] = self.rest[ga + j] * (1 - f)[:, None] + self.rest[ga + j + 1] * f[:, None]
+        self._child_fast = dict(i0=i0, fr=fr, W=W, bind=bind)
+
+    def _children_fast(self):
+        F = self._child_fast
+        P = self.positions
+        out = self.child_rest.copy()
+        for kk in range(F["i0"].shape[1]):
+            i0 = F["i0"][:, kk]
+            f = F["fr"][:, kk][:, None]
+            cur = P[i0] * (1 - f) + P[i0 + 1] * f
+            out += F["W"][:, kk][:, None] * (cur - F["bind"][:, kk])
+        return out
+
 
     def _project_packed(self, positions, offsets):
         """Push non-root points of a packed groom out of every collider (used for skinned children)."""
@@ -995,6 +1113,8 @@ class HairSolver:
 
         if self.child_rest is None:
             return None
+        if self._child_fast is not None:
+            return self._project_packed(self._children_fast(), self.child_off)
         gidx = getattr(self, "_child_guide_idx", self.guide_idx)
         # pack only the guide strands for the interpolator (same offsets? no — extract)
         g_pos, g_off = _extract_strands(self.positions, self.offsets, gidx)
@@ -1013,6 +1133,8 @@ class HairSolver:
         return (self.positions - self.prev) / dt
 
     def reset(self):
+        for col in self.colliders:
+            col["matrix_prev"] = col["matrix"]
         self.positions[:] = self.rest
         self.prev[:] = self.rest
         if self.bind_M is not None:

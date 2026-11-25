@@ -32,6 +32,8 @@ class _RT:
     cache = {}          # frame -> positions (world)
     child_cache = {}
     collider_sig = None
+    col_cache = {}
+    sync_frame = {}
     field = None
     bind_ok = False
     status = "Idle"
@@ -215,6 +217,15 @@ def params_from_scene(scene):
         rest_shape_root=float(hp.rest_shape_root),
         rest_shape_tip=float(hp.rest_shape_tip),
         self_collision=bool(getattr(hp, 'self_collision', True)),
+        hair_collision=bool(hp.hair_collision),
+        strand_radius=float(hp.strand_radius),
+        repel_strength=float(hp.repel_strength),
+        volume=float(hp.volume),
+        clumping=float(hp.clumping),
+        strand_friction=float(hp.strand_friction),
+        gravity_scale=float(hp.gravity_scale),
+        bend_tip_scale=float(hp.bend_tip_scale),
+        stiffness_curve=float(hp.stiffness_curve),
         collision_radius=float(hp.collision_radius),
         collision_iterations=int(hp.collision_iterations),
         collision_friction=float(hp.collision_friction),
@@ -234,32 +245,113 @@ def params_from_scene(scene):
     )
 
 
-def _collider_sig(obj, hp, deps):
-    if obj is None:
-        return None
-    V, T = _mesh_arrays(obj, deps, world=False)
-    if V is None:
-        return None
-    M = tuple(round(x, 6) for x in np.array(obj.matrix_world, dtype=np.float64).ravel())
-    return (obj.name, len(V), len(T), float(V.sum()), int(hp.sdf_resolution), int(hp.sdf_level), M)
+_DEFORM_MODS = {'ARMATURE', 'LATTICE', 'SURFACE_DEFORM', 'MESH_DEFORM', 'CURVE', 'HOOK', 'CAST', 'WAVE',
+                'SIMPLE_DEFORM', 'SHRINKWRAP', 'CLOTH', 'SOFT_BODY', 'NODES', 'DISPLACE'}
+
+
+def _is_deforming(obj):
+    """True when the body's shape (not just its transform) can change over time."""
+    if obj is None or obj.type != 'MESH':
+        return False
+    if any(m.type in _DEFORM_MODS and getattr(m, 'show_viewport', True) for m in obj.modifiers):
+        return True
+    me = obj.data
+    return bool(getattr(me, 'shape_keys', None) and me.shape_keys.animation_data)
+
+
+def _field_resolution(obj, hp):
+    dims = max(max(obj.dimensions), 1e-3)
+    return int(np.clip(max(int(hp.sdf_resolution), int(np.ceil(dims / 0.012))), 16, 96))
+
+
+def _collider_field(obj, hp, deps, deforming):
+    """Cached local-space SDF of `obj`; rebuilt when the mesh (or, for deforming bodies, its shape) changes."""
+    cache = RT.col_cache.setdefault(obj.name, {})
+    res = _field_resolution(obj, hp)
+    if deforming:
+        V, T = _mesh_arrays(obj, deps, world=False)
+        if V is None or len(T) == 0:
+            return None
+        sig = (len(V), len(T), round(float(V.sum()), 5), round(float(np.abs(V).sum()), 5), res, int(hp.sdf_level))
+        if cache.get('sig') != sig:
+            cache['field'] = HS.make_collider(V, T, resolution=res, level=hp.sdf_level, mode='SOLID')
+            cache['sig'] = sig
+        return cache['field']
+    sig = (obj.data.name, len(obj.data.vertices), len(obj.data.polygons), res, int(hp.sdf_level))
+    if cache.get('sig') != sig or cache.get('field') is None:
+        V, T = _mesh_arrays(obj, deps, world=False)
+        if V is None or len(T) == 0:
+            return None
+        cache['field'] = HS.make_collider(V, T, resolution=res, level=hp.sdf_level, mode='SOLID')
+        cache['sig'] = sig
+    return cache['field']
+
+
+def collider_targets(scene, hair=None, include_scene=True):
+    """Ordered [(obj, thickness|None, friction|None, deforming|None)] the solver should collide with."""
+    hp = _hp(scene)
+    out, seen = [], set()
+
+    def add(o, th=None, fr=None, deform=None):
+        if o is None or o.type != 'MESH' or o.name in seen or o is hair:
+            return
+        seen.add(o.name)
+        out.append((o, th, fr, deform))
+
+    add(hp.collider)
+    for c in hp.colliders:
+        if c.enabled:
+            add(c.obj, float(c.thickness), float(c.friction), bool(c.deforming) or None)
+    if include_scene and hp.use_scene_colliders:
+        try:
+            from . import asset_colliders as AC
+            for o in AC.iter_collision_meshes(scene, exclude=hair):
+                add(o)
+        except Exception:
+            pass
+    return out
+
+
+def _sync_colliders(scene, solver, deps):
+    """Make solver.colliders mirror the scene: fields cached per object, world matrices refreshed every step
+    (so a moving glove sweeps and hands velocity to the hair), bodies added / removed live."""
+    hp = _hp(scene)
+    want = collider_targets(scene, hair=hp.hair)
+    names = [o.name for o, *_ in want]
+    solver.colliders[:] = [c for c in solver.colliders if c.get('name') in names]
+    have = {c['name']: c for c in solver.colliders}
+    ordered = []
+    for o, th, fr, deform in want:
+        deforming = _is_deforming(o) if deform is None else bool(deform)
+        field = _collider_field(o, hp, deps, deforming)
+        if field is None:
+            continue
+        M = np.array(o.matrix_world, dtype=np.float64)
+        rad = float(hp.collision_radius) if th is None else float(th)
+        fric = None if fr is None else float(fr)
+        c = have.get(o.name)
+        if c is None:
+            solver.add_collider(field, matrix=M, radius=rad, friction=fric, name=o.name)
+            c = solver.colliders[-1]
+        else:
+            c['field'] = field
+            c['radius'] = rad
+            c['friction'] = fric
+            if RT.sync_frame.get(o.name) != (int(scene.frame_current), solver.frame):
+                solver.set_collider_matrix(solver.colliders.index(c), M)
+        RT.sync_frame[o.name] = (int(scene.frame_current), solver.frame)
+        ordered.append(c)
+    solver.colliders[:] = ordered
+    return solver.colliders
 
 
 def _ensure_field(scene, deps):
+    """Back-compat: the primary collision body's field (or None)."""
     hp = _hp(scene)
     col = hp.collider
-    sig = _collider_sig(col, hp, deps)
-    if sig is None:
-        RT.field = None
-        RT.collider_sig = None
+    if col is None:
         return None
-    # rebuild when the mesh changes; keep the field (local space) when only the world matrix moves
-    mesh_sig = sig[:-1]
-    prev = RT.collider_sig
-    if RT.field is None or prev is None or prev[:-1] != mesh_sig:
-        V, T = _mesh_arrays(col, deps, world=False)
-        RT.field = HS.make_collider(V, T, resolution=hp.sdf_resolution, level=hp.sdf_level, mode='SOLID')
-    RT.collider_sig = sig
-    return RT.field
+    return _collider_field(col, hp, deps, _is_deforming(col))
 
 
 def _root_matrices(scene, solver, deps):
@@ -285,32 +377,6 @@ def _root_matrices(scene, solver, deps):
 
 
 
-def _add_scene_hair_colliders(scene, solver, deps, skip=None):
-    """Register every other Tessera collision body as an extra hair collider."""
-    from . import asset_colliders as AC
-    hp = _hp(scene)
-    rad = float(hp.collision_radius)
-    existing = 1 if solver.colliders else 0
-    extras = [o for o in AC.iter_collision_meshes(scene, exclude=skip) if o is not hp.collider]
-    solver.colliders[:] = solver.colliders[:existing]
-    cache = getattr(solver, '_extra_cols', {})
-    new_cache = {}
-    for o in extras:
-        V, T = _mesh_arrays(o, deps, world=False)
-        if V is None or T is None or len(T) == 0:
-            continue
-        mesh_sig = (o.name, len(V), len(T), float(V.sum()), int(hp.sdf_level))
-        prev = cache.get(o.name)
-        if prev is not None and prev['mesh_sig'] == mesh_sig:
-            field = prev['field']
-        else:
-            field = HS.make_collider(V, T, resolution=max(16, hp.sdf_resolution // 2), level=hp.sdf_level, mode='SOLID')
-        Mw = np.array(o.matrix_world, dtype=np.float64)
-        solver.add_collider(field, matrix=Mw, radius=rad)
-        new_cache[o.name] = dict(field=field, mesh_sig=mesh_sig)
-    solver._extra_cols = new_cache
-
-
 def build_solver(scene, deps=None):
     """(Re)build a HairSolver from the scene pointers. Returns the solver or None."""
     hp = _hp(scene)
@@ -326,7 +392,11 @@ def build_solver(scene, deps=None):
     guide_only = bool(getattr(hair.arc_flow_hair, 'is_guide_only', False)) or p.guide_ratio >= 0.999
     if not guide_only and p.guide_ratio < 1.0 and len(off) - 1 > 1:
         # split into guides (simulated) and children (skinned)
-        gidx = HS.select_guides(len(off) - 1, ratio=p.guide_ratio, seed=scene.arc_flow.seed if hasattr(scene, 'arc_flow') else 0)
+        ng = int(getattr(hair.arc_flow_hair, 'n_guides', 0) or 0)
+        if 0 < ng < len(off) - 1:
+            gidx = np.arange(ng, dtype=np.int64)
+        else:
+            gidx = HS.select_guides(len(off) - 1, ratio=p.guide_ratio, seed=scene.arc_flow.seed if hasattr(scene, 'arc_flow') else 0)
         all_idx = np.arange(len(off) - 1, dtype=np.int64)
         child_idx = np.setdiff1d(all_idx, gidx, assume_unique=False)
         g_pos, g_off = HS.pack_strands([pos[off[i]:off[i + 1]] for i in gidx])
@@ -367,23 +437,23 @@ def build_solver(scene, deps=None):
     else:
         Mw = np.array(hair.matrix_world, dtype=np.float64)
         solver.bind_roots(np.repeat(Mw[None], max(solver.n_strands, 1), axis=0))
-    field = _ensure_field(scene, deps)
-    if field is not None and hp.collider is not None:
-        solver.set_colliders([])
-        solver.add_collider(field, matrix=np.array(hp.collider.matrix_world, dtype=np.float64),
-                            radius=float(hp.collision_radius))
+    solver.set_colliders([])
+    RT.sync_frame.clear()
+    _sync_colliders(scene, solver, deps)
+    try:
         from . import asset_colliders as AC
-        AC.mark_projection_collider(hp.collider)
-        if hp.surface is not None:
-            AC.mark_projection_collider(hp.surface)
-        _add_scene_hair_colliders(scene, solver, deps, skip=hp.collider)
+        for o, *_r in collider_targets(scene, hair=hp.hair, include_scene=False):
+            AC.mark_projection_collider(o)
+    except Exception:
+        pass
     solver.set_wind(_wind(scene, hp))
     ff = _fluid_fn(scene)
     if ff is not None:
         solver.set_fluid_velocity(ff)
     stiff = float(getattr(hair.arc_flow_hair, 'stiffness', 1.0) or 1.0)
     damp = float(getattr(hair.arc_flow_hair, 'damping', 1.0) or 1.0)
-    solver.set_per_strand(stiffness=stiff, damping=damp)
+    gsc = float(getattr(hair.arc_flow_hair, 'gravity_scale', 1.0))
+    solver.set_per_strand(stiffness=stiff, damping=damp, gravity=gsc)
     RT.solver = solver
     RT.scene = scene
     RT.bind_ok = True
@@ -424,15 +494,7 @@ def step_scene(scene, dt=None, write=True, deps=None):
             return None
     solver = RT.solver
     # refresh collider field / matrix and environment forces
-    field = _ensure_field(scene, deps)
-    if field is not None and hp.collider is not None:
-        if not solver.colliders:
-            solver.add_collider(field, matrix=np.array(hp.collider.matrix_world, dtype=np.float64),
-                                radius=float(hp.collision_radius))
-        else:
-            solver.colliders[0]["field"] = field
-            solver.colliders[0]["matrix"] = np.array(hp.collider.matrix_world, dtype=np.float64)
-        _add_scene_hair_colliders(scene, solver, deps, skip=hp.collider)
+    _sync_colliders(scene, solver, deps)
     solver.set_wind(_wind(scene, hp))
     solver.params.update(gravity=_gravity(scene, hp),
                          rest_shape=float(hp.rest_shape),
@@ -440,7 +502,11 @@ def step_scene(scene, dt=None, write=True, deps=None):
                          wind_drag=float(hp.wind_drag),
                          fluid_coupling=float(hp.fluid_coupling),
                          collision_radius=float(hp.collision_radius),
-                         self_collision=bool(getattr(hp, "self_collision", True)))
+                         self_collision=bool(getattr(hp, "self_collision", True)),
+                         hair_collision=bool(hp.hair_collision), strand_radius=float(hp.strand_radius),
+                         repel_strength=float(hp.repel_strength), volume=float(hp.volume),
+                         clumping=float(hp.clumping), strand_friction=float(hp.strand_friction),
+                         gravity_scale=float(hp.gravity_scale))
     ff = _fluid_fn(scene)
     solver.set_fluid_velocity(ff)
     root_M = _root_matrices(scene, solver, deps)
