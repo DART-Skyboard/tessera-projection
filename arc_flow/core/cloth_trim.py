@@ -82,6 +82,25 @@ def boundary_chains(tris, n=None):
     return out
 
 
+def edge_band_chain(rest, tris, edges, which='LOWEST', axis=2, band=0.35):
+    """Boundary chain along the lowest (or highest) edge of a garment: the boundary vertices
+    within ``band`` mesh-edge lengths of the extreme coordinate along ``axis``.  Works for a
+    skirt hem loop and for the hem of a slit jacket tube (where the whole boundary is one loop)."""
+    rest = np.asarray(rest, float)
+    tris = np.asarray(tris, np.int64)
+    bnd = np.unique(np.concatenate([c for c, _cl in boundary_chains(tris)])) if len(tris) else np.zeros(0, np.int64)
+    if len(bnd) == 0:
+        return np.zeros(0, np.int64), False
+    e = np.asarray(edges, np.int64)
+    med = float(np.median(np.linalg.norm(rest[e[:, 1]] - rest[e[:, 0]], axis=1)))
+    z = rest[bnd, axis]
+    if which == 'HIGHEST':
+        sel = bnd[z >= z.max() - band * med]
+    else:
+        sel = bnd[z <= z.min() + band * med]
+    return order_chain(rest, sel, edges)
+
+
 def order_chain(rest, idx, edges=None):
     """Order an unordered vertex set into a polyline: mesh-edge walk when ``edges`` link them,
     otherwise a greedy nearest-neighbour walk from an extreme end."""
@@ -536,6 +555,8 @@ class SeamSeal:
         if len(pairs) > 1:
             c = mid - mid.mean(0)
             ax = np.linalg.svd(c, full_matrices=False)[2][0]
+            if ax[int(np.argmax(np.abs(ax)))] < 0:     # t grows toward +X / +Y / +Z
+                ax = -ax
             tt = c @ ax
         else:
             ax = np.array([0.0, 0.0, 1.0])
