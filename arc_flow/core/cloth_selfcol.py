@@ -237,7 +237,7 @@ class SelfCollider:
         # edge / vertex region: plain distance
         diff = p - q
         dist = np.linalg.norm(diff, axis=1)
-        edge = (~proj_in) & (dist < th) & good
+        edge = (~proj_in) & (dist < th) & good & (sd >= 0.0)
         direction = np.where(face[:, None], s0[:, None] * nrm,
                              diff / np.maximum(dist, 1e-12)[:, None])
         depth = np.where(face, th - sd, th - dist)
