@@ -242,6 +242,48 @@ class _Pairs:
         S.x += omega * dx / np.maximum(cnt, 1.0)[:, None]
 
 
+class _Curv:
+    """Rod bending with rest-shape memory: |x_i - (x_{i-1} + x_{i+1}) / 2| keeps its rest value
+    (zero for a straight hem, the rest curvature for a curved band).  Jacobi XPBD."""
+
+    def __init__(self, chain, closed, rest, compliance):
+        n = len(chain)
+        if closed:
+            ii = np.arange(n)
+            self.a, self.b, self.c = chain[(ii - 1) % n], chain, chain[(ii + 1) % n]
+        else:
+            self.a, self.b, self.c = chain[:-2], chain[1:-1], chain[2:]
+        e0 = rest[self.b] - 0.5 * (rest[self.a] + rest[self.c])
+        self.rest = np.linalg.norm(e0, axis=1)
+        self.compliance = float(compliance)
+        self.lam = np.zeros(len(self.rest), float)
+
+    def reset(self):
+        self.lam[:] = 0.0
+
+    def solve(self, S, h, omega=1.0):
+        if len(self.rest) == 0:
+            return
+        a, b, c, w = self.a, self.b, self.c, S.inv_mass
+        e = S.x[b] - 0.5 * (S.x[a] + S.x[c])
+        L = np.linalg.norm(e, axis=1)
+        n = e / np.maximum(L, 1e-12)[:, None]
+        alpha = self.compliance / (h * h)
+        wsum = w[b] + 0.25 * (w[a] + w[c]) + alpha
+        dl = (-(L - self.rest) - alpha * self.lam) / np.maximum(wsum, 1e-30)
+        dl = np.where((L > 1e-12) | (self.rest > 0), dl, 0.0)
+        dl = np.where(L > 1e-12, dl, 0.0)
+        self.lam += dl
+        dx = np.zeros_like(S.x)
+        cnt = np.zeros(len(S.x), float)
+        np.add.at(dx, b, w[b, None] * dl[:, None] * n)
+        np.add.at(dx, a, -0.5 * w[a, None] * dl[:, None] * n)
+        np.add.at(dx, c, -0.5 * w[c, None] * dl[:, None] * n)
+        for v in (a, b, c):
+            np.add.at(cnt, v, 1.0)
+        S.x += omega * dx / np.maximum(cnt, 1.0)[:, None]
+
+
 # ----------------------------------------------------------------------------- Trim
 
 TRIM_KINDS = {
@@ -319,6 +361,8 @@ class Trim:
                 mod = 1.0 + self.flare * (0.5 + 0.5 * np.sin(2.0 * np.pi * self.flare_count * tm))
                 r0 = r0 * mod
             sets.append(_Pairs(ch[ii], ch[jj], r0, comp))
+        if n >= 3:
+            sets.append(_Curv(ch, self.closed, rest, 1.0 / max(self.bend, 1e-3)))
         self._sets = sets
         # stiffen the cloth edges next to the trim (hem weight)
         self._ring = []
@@ -513,6 +557,7 @@ class SeamSeal:
             self.active[0] = True
             self.active[-1] = True
         self.torn = np.zeros(len(pairs), bool)
+        self.armed = np.zeros(len(pairs), bool)
         self.lam = np.zeros(len(pairs), float)
         self._it = 0
         self.rest_mid = mid
@@ -584,6 +629,7 @@ class SeamSeal:
 
     def reset(self):
         self.torn[:] = False
+        self.armed[:] = False
         self.lam[:] = 0.0
 
     def detach(self, S):
@@ -632,8 +678,10 @@ class SeamSeal:
         if first:
             self.pre_gap = L.copy()
             if self.tear > 0:
+                # a pair can only tear once it has actually been closed (armed)
                 sealed = (self.s >= 0.999) & self.active & ~self.torn
-                self.torn |= sealed & (L > self.tear)
+                self.torn |= sealed & self.armed & (L > self.tear)
+                self.armed |= sealed & (L < max(self.weld_tol * 5.0, 0.5 * self.tear))
         s = self.effective_closure()
         live = s > 1e-4
         if not live.any():
