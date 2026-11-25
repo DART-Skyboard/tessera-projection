@@ -46,6 +46,8 @@ TABS = (
      "Real-time hair curves solver"),
     ('CLOTH', "Cloth", "Cloth", 'MOD_CLOTH',
      "Real-time cloth solver"),
+    ('MUSCLE', "Muscle", "Muscle", 'BONE_DATA',
+     "Muscle projection solver: region painting, contours, shape keys and Geometry Nodes"),
     ('EXAMPLES', "Examples", "Ex", 'FILE_BLEND',
      "Loadable examples and Tessera Geometry Nodes"),
 )

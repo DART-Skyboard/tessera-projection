@@ -356,6 +356,7 @@ class AF_Scene(PropertyGroup):
             ('COMBUSTION', "Combustion", "Combustion, systems, chambers, wind tunnel, thermal, environment and atmosphere"),
             ('HAIR', "Hair", "Real-time hair curves solver"),
             ('CLOTH', "Cloth", "Real-time cloth solver"),
+            ('MUSCLE', "Muscle", "Muscle projection solver: region painting, contours, shape keys and Geometry Nodes"),
             ('EXAMPLES', "Examples", "Loadable examples and Tessera Geometry Nodes"),
         ],
         default='REMESH',

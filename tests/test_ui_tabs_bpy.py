@@ -101,8 +101,8 @@ ok(hasattr(bpy.ops.arcflow, "set_ui_tab"), "arcflow.set_ui_tab registered")
 ok(hasattr(af, "ui_tab"), "scene.arc_flow.ui_tab exists")
 ok(tuple(e.identifier for e in af.bl_rna.properties["ui_tab"].enum_items) == ui_tabs.TAB_IDS,
    "ui_tab enum matches TAB_IDS %s" % (tuple(e.identifier for e in af.bl_rna.properties["ui_tab"].enum_items),))
-ok(set(ui_tabs.TAB_IDS) == {"REMESH", "FLUID", "COMBUSTION", "HAIR", "CLOTH", "EXAMPLES"},
-   "six category tabs")
+ok(set(ui_tabs.TAB_IDS) == {"REMESH", "FLUID", "COMBUSTION", "HAIR", "CLOTH", "MUSCLE", "EXAMPLES"},
+   "seven category tabs")
 ok(af.ui_tab == "REMESH", "default tab is REMESH")
 
 # hosted panels stay registered (backward compatible class ids) but do not stack in the N-panel
