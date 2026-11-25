@@ -368,6 +368,11 @@ class ClothSolver:
         self.last_stretch = 0.0
         self.tension = np.zeros(self.n, float)
 
+        # >>> trim hook (core/cloth_trim.py): objects with optional begin_step(S, dt),
+        # solve(S, h) (called once per solver iteration) and post_step(S, dt)
+        self.extra_constraints = []
+        # <<< trim hook
+
     # ---------------------------------------------------------------- pins / skin
 
     def set_pins(self, indices, targets=None, hard=True, compliance=0.0):
@@ -543,6 +548,11 @@ class ClothSolver:
         pinned = self.pin_hard
         if pinned.any():
             self.pin_vel[pinned] = (self.pin_target[pinned] - self.x[pinned]) / dt
+        # >>> trim hook
+        for _c in self.extra_constraints:
+            if hasattr(_c, 'begin_step'):
+                _c.begin_step(self, dt)
+        # <<< trim hook
 
         self._lam_stretch[:] = 0.0
         self._lam_shear[:] = 0.0
@@ -577,6 +587,11 @@ class ClothSolver:
                 if self.use_dihedral and len(self.hinges):
                     self._solve_dihedral(h)
                 self._solve_soft_pins(h)
+                # >>> trim hook
+                for _c in self.extra_constraints:
+                    if hasattr(_c, 'solve'):
+                        _c.solve(self, h)
+                # <<< trim hook
             self._collide()
             if self.self_collision:
                 self._self_collide(ref=self.x_prev, passes=1)
@@ -598,6 +613,11 @@ class ClothSolver:
         self.t += dt
         self.frame += 1
         self._update_tension()
+        # >>> trim hook
+        for _c in self.extra_constraints:
+            if hasattr(_c, 'post_step'):
+                _c.post_step(self, dt)
+        # <<< trim hook
         self.last_ms = 1000.0 * (_time.perf_counter() - t0)
         return self.x
 
