@@ -380,7 +380,7 @@ class Instance:
                     axis=[np.round(self.a, 5).tolist(), np.round(self.b, 5).tolist()], source=self.source,
                     half_width=round(float(self.half_width), 6), length=round(float(self.length), 6),
                     idx=self.idx.tolist(), w=np.round(self.w, prec).tolist(),
-                    bulge=np.round(self.bulge, prec).tolist(), slide=np.round(self.slide, prec).tolist())
+                    bulge=np.round(self.bulge, prec + 3).tolist(), slide=np.round(self.slide, prec + 3).tolist())
 
     @staticmethod
     def from_dict(d):
@@ -655,12 +655,14 @@ def jiggle_step(x, v, target, dt, k=120.0, damping=9.0, amount=1.0):
 # data export
 # --------------------------------------------------------------------------------------------------------------------
 def result_to_json(instances, regions, meta=None):
-    return json.dumps(dict(version=1, meta=meta or {},
+    """JSON text, one instance per line (keeps Blender text-block writes fast)."""
+    head = json.dumps(dict(version=1, meta=meta or {},
                            regions=[{k: (list(v) if isinstance(v, (tuple, np.ndarray)) else v)
                                      for k, v in r.items() if k in ('key', 'label', 'group', 'cid', 'color', 'flex',
                                                                     'accent', 'emphasis', 'tone', 'range', 'bones')}
-                                    for r in regions],
-                           instances=[i.to_dict() for i in instances]))
+                                    for r in regions]))
+    body = ",\n".join(json.dumps(i.to_dict(4)) for i in instances)
+    return head[:-1] + ', "instances": [\n' + body + "\n]}"
 
 
 def instances_from_json(text):

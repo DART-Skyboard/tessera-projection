@@ -21,6 +21,7 @@ from .core import muscle_solver as MS
 
 ATTR_ID = "tp_muscle_id"
 ATTR_COLOR = "tp_muscle_color"
+ATTR_SOLVED_COLOR = "tp_muscle_solved_color"
 ATTR_BULGE = "tp_muscle_bulge"
 ATTR_SLIDE = "tp_muscle_slide"
 ATTR_FLEX = "tp_muscle_flex"
@@ -111,6 +112,37 @@ def write_colors(obj, ms):
     except Exception:
         pass
     me.update()
+
+
+def write_solved_colors(obj, ms, label, strength):
+    """Colour of the solved region partition (what the projection made of the paint), shaded by membership strength."""
+    me = obj.data
+    table = {i: tuple(r.color) for i, r in enumerate(ms.regions)}
+    rgba = np.empty((len(label), 4), np.float32)
+    rgba[:] = (0.36, 0.35, 0.34, 1.0)
+    st = np.clip(np.asarray(strength) * 1.6, 0.0, 1.0)
+    for ri in np.unique(label):
+        if ri >= 0 and int(ri) in table:
+            sel = label == ri
+            c = np.array(table[int(ri)])
+            rgba[sel, :3] = (np.array([0.36, 0.35, 0.34])[None, :] * (1 - st[sel, None]) + c[None, :] * st[sel, None])
+    a = me.color_attributes.get(ATTR_SOLVED_COLOR)
+    if a is None or a.domain != 'POINT' or a.data_type != 'FLOAT_COLOR':
+        if a is not None:
+            me.color_attributes.remove(a)
+        a = me.color_attributes.new(ATTR_SOLVED_COLOR, 'FLOAT_COLOR', 'POINT')
+    a.data.foreach_set('color', rgba.ravel())
+    me.update()
+
+
+def set_active_color(obj, name):
+    me = obj.data
+    a = me.color_attributes.get(name)
+    if a is None:
+        return False
+    me.color_attributes.active_color = a
+    me.color_attributes.render_color_index = list(me.color_attributes.keys()).index(name)
+    return True
 
 
 def show_colors_in_viewports(ctx, on=True):
@@ -405,6 +437,7 @@ def run_solve(scene):
                 toward = toward / max(np.linalg.norm(toward), 1e-12)
                 inst.slide = toward[None, :] * nrmv[:, None]
     _CACHE[skin.name] = insts
+    write_solved_colors(skin, ms, out['label'], out['membership'].max(axis=1) if out['membership'].size else np.zeros(len(v)))
     for r in ms.regions:
         r.n_instances = sum(1 for i in insts if i.key == r.key)
     refresh_painted_counts(skin, ms)
@@ -774,16 +807,17 @@ def build_control_rig(scene, ik=True):
 # --------------------------------------------------------------------------------------------------------------------
 _JOINTS = {   # name: (x, y, z, radius)
     'pelvis': (0, 0, 0.95, 0.15), 'spine': (0, 0, 1.15, 0.14), 'chest': (0, 0, 1.40, 0.165), 'cn': (0, 0, 1.50, 0.14),
-    'neck': (0, 0, 1.62, 0.052), 'headb': (0, 0, 1.68, 0.075), 'headt': (0, 0, 1.78, 0.095),
+    'neck': (0, 0, 1.62, 0.052), 'headb': (0, 0, 1.67, 0.07), 'headm': (0, 0, 1.745, 0.098), 'headt': (0, 0, 1.83, 0.05),
+    'nose': (0, -0.115, 1.735, 0.017), 'chin': (0, -0.07, 1.665, 0.03),
     'sh': (0.20, 0, 1.50, 0.062), 'el': (0.46, 0, 1.25, 0.046), 'wr': (0.70, 0, 1.03, 0.034), 'hand': (0.80, 0, 0.93, 0.036),
     'hp': (0.10, 0, 0.93, 0.10), 'kn': (0.11, -0.01, 0.50, 0.062), 'an': (0.11, 0, 0.10, 0.046), 'toe': (0.11, -0.17, 0.045, 0.04),
 }
-_EDGES = [('pelvis', 'spine'), ('spine', 'chest'), ('chest', 'cn'), ('cn', 'neck'), ('neck', 'headb'), ('headb', 'headt'),
+_EDGES = [('pelvis', 'spine'), ('spine', 'chest'), ('chest', 'cn'), ('cn', 'neck'), ('neck', 'headb'), ('headb', 'headm'), ('headm', 'headt'), ('headm', 'nose'), ('headb', 'chin'),
           ('cn', 'sh'), ('sh', 'el'), ('el', 'wr'), ('wr', 'hand'), ('pelvis', 'hp'), ('hp', 'kn'), ('kn', 'an'), ('an', 'toe')]
 _BONES = [  # name, head point, tail point, parent  (+x side gets .L, mirrored .R)
     ('pelvis', (0, 0, .95), (0, 0, 1.15), None), ('spine', (0, 0, 1.15), (0, 0, 1.40), 'pelvis'),
     ('chest', (0, 0, 1.40), (0, 0, 1.52), 'spine'), ('neck', (0, 0, 1.52), (0, 0, 1.62), 'chest'),
-    ('head', (0, 0, 1.62), (0, 0, 1.82), 'neck'),
+    ('head', (0, 0, 1.62), (0, 0, 1.84), 'neck'),
 ]
 _SIDE_BONES = [
     ('shoulder', (0, 0, 1.50), (.20, 0, 1.50), 'chest'), ('upper_arm', (.20, 0, 1.50), (.46, 0, 1.25), 'shoulder'),
@@ -1061,13 +1095,17 @@ class AF_OT_muscle_auto_seed(_Op, Operator):
 class AF_OT_muscle_show_colors(_Op, Operator):
     bl_idname = "arcflow.muscle_show_colors"
     bl_label = "Show Region Colours"
-    bl_description = "Show the painted region colours in the viewport"
+    bl_description = "Show the painted region colours (or the solved partition) in the viewport"
+
+    solved: BoolProperty(name="Solved regions", default=False, description="Show the regions the solver projected instead of the raw paint")
 
     def execute(self, ctx):
         ms = _need_skin(self, ctx)
         if ms is None:
             return {'CANCELLED'}
         write_colors(ms.skin, ms)
+        if self.solved:
+            set_active_color(ms.skin, ATTR_SOLVED_COLOR)
         show_colors_in_viewports(ctx, True)
         return {'FINISHED'}
 
