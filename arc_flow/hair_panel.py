@@ -76,6 +76,55 @@ def _draw_collision(l, hp):
         row.prop(hp, "ground_z")
 
 
+def _draw_colliders(l, hp):
+    col = l.column(align=True)
+    row = col.row(align=True)
+    row.scale_y = 1.15
+    row.operator("arcflow.hair_collider_add", text="Add Selected as Collider", icon='ADD')
+    row.operator("arcflow.hair_collider_auto", text="Auto", icon='ARMATURE_DATA')
+    col.prop(hp, "use_scene_colliders")
+    if hp.collider is not None:
+        r = col.row(align=True)
+        r.label(text=hp.collider.name + "  (collision body)", icon='MESH_ICOSPHERE')
+    for i, c in enumerate(hp.colliders):
+        box = col.box()
+        r = box.row(align=True)
+        r.prop(c, "enabled", text="")
+        r.prop(c, "obj", text="")
+        op = r.operator("arcflow.hair_collider_remove", text="", icon='X')
+        op.index = i
+        r = box.row(align=True)
+        r.prop(c, "thickness", text="Thick")
+        r.prop(c, "friction", text="Friction")
+        r.prop(c, "deforming", text="", icon='MOD_ARMATURE')
+    if not len(hp.colliders) and hp.collider is None:
+        col.label(text="No collision bodies yet: select the head / body / glove and add it", icon='INFO')
+
+
+def _draw_volume(l, hp):
+    col = l.column(align=True)
+    col.prop(hp, "hair_collision")
+    if hp.hair_collision:
+        col.prop(hp, "strand_radius")
+        col.prop(hp, "repel_strength")
+        col.prop(hp, "volume")
+        col.prop(hp, "clumping")
+        col.prop(hp, "strand_friction")
+    col.separator()
+    col.prop(hp, "gravity_scale")
+    col.prop(hp, "stiffness_curve")
+    col.prop(hp, "bend_tip_scale")
+
+
+def _draw_look(l, hp):
+    col = l.column(align=True)
+    row = col.row(align=True)
+    row.scale_y = 1.15
+    row.operator("arcflow.hair_make_children", icon='PARTICLE_DATA')
+    row.operator("arcflow.hair_assign_shader", icon='MATERIAL')
+    col.operator("arcflow.hair_settle", icon='PHYSICS')
+
+
 def _draw_wind(l, hp):
     col = l.column(align=True)
     col.prop(hp, "use_env_wind")
@@ -173,11 +222,20 @@ def draw_hair_tab(layout, context):
     _draw_live(l, hp)
     l.separator()
     col = l.column()
+    col.label(text="Collision bodies", icon='MOD_PHYSICS')
+    _draw_colliders(col, hp)
+    col = l.column()
     col.label(text="Solver", icon='PHYSICS')
     _draw_solver(col, hp)
     col = l.column()
     col.label(text="Collision & tessellation", icon='MOD_SOLIDIFY')
     _draw_collision(col, hp)
+    col = l.column()
+    col.label(text="Volume, clumping & profiles", icon='STRANDS')
+    _draw_volume(col, hp)
+    col = l.column()
+    col.label(text="Groom look", icon='MATERIAL')
+    _draw_look(col, hp)
     col = l.column()
     col.label(text="Wind & fluid", icon='FORCE_WIND')
     _draw_wind(col, hp)

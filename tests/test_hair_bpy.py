@@ -186,6 +186,72 @@ ok('FINISHED' in bpy.ops.arcflow.hair_reset(), "hair_reset operator")
 ok('FINISHED' in bpy.ops.arcflow.hair_step(), "hair_step operator")
 ok('FINISHED' in bpy.ops.arcflow.hair_rebuild(), "hair_rebuild operator")
 
+# ----------------------------------------------------------------------------- colliders: registration, auto, moving glove
+bpy.ops.object.mode_set(mode='OBJECT') if bpy.context.object and bpy.context.object.mode != 'OBJECT' else None
+for o in list(bpy.data.objects):
+    o.select_set(False)
+bpy.ops.mesh.primitive_uv_sphere_add(radius=0.05, location=(0.45, 0.0, 1.45), segments=16, ring_count=8)
+glove = bpy.context.active_object
+glove.name = "TS_TestGlove"
+glove.select_set(True)
+hp.colliders.clear()
+ok('FINISHED' in bpy.ops.arcflow.hair_collider_add(), "Add Selected as Collider operator")
+ok(len(hp.colliders) == 1 and hp.colliders[0].obj is glove, "collider list registers the selected mesh")
+ok(hasattr(hp.colliders[0], 'thickness') and hasattr(hp.colliders[0], 'friction'), "per-collider thickness + friction props")
+hp.colliders[0].thickness = 0.02
+hp.colliders[0].friction = 0.15
+hp.use_scene_colliders = False
+S = HO.build_solver(sc)
+names = [c['name'] for c in S.colliders]
+ok(head.name in names and glove.name in names, "solver has both the head and the added glove collider (%s)" % names)
+gc = next(c for c in S.colliders if c['name'] == glove.name)
+ok(abs(gc['radius'] - 0.02) < 1e-6 and abs(gc['friction'] - 0.15) < 1e-6, "per-collider thickness / friction reach the solver")
+# moving collider: sweep the glove through the head hair; matrix follows the object, hair gets knocked, never ends inside it
+hp.rest_shape = 0.3
+HO.reset_scene(sc, write=True)
+for i in range(6):
+    HO.step_scene(sc, dt=1.0 / 24.0, write=True)
+base, boff, _ = HO.read_curves(hair, world=True)
+hit_pt = base[np.argmin(np.abs(base[:, 2] - np.percentile(base[:, 2], 20)))]
+moved_ok, worst, peak = True, 1e9, 0.0
+for i in range(14):
+    glove.location = (float(hit_pt[0]) + 0.35 - 0.5 * i / 13.0, float(hit_pt[1]), float(hit_pt[2]))
+    bpy.context.view_layer.update()
+    HO.step_scene(sc, dt=1.0 / 24.0, write=True)
+    gc = next(c for c in HO.RT.solver.colliders if c['name'] == glove.name)
+    moved_ok &= bool(np.allclose(gc['matrix'][:3, 3], np.array(glove.matrix_world.translation), atol=1e-6))
+    cur, _o, _r = HO.read_curves(hair, world=True)
+    free = np.ones(len(cur), bool); free[boff[:-1]] = False
+    worst = min(worst, float(np.linalg.norm(cur[free] - np.array(glove.location), axis=1).min()))
+    peak = max(peak, float(np.abs(cur - base).max()))
+ok(moved_ok, "moving collider: solver matrix tracks the glove object every step")
+ok(peak > 0.02, "hair reacts to the moving glove (peak displacement %.3f m)" % peak)
+ok(worst > 0.05 + 0.02 - 0.015, "no strand point inside the moving glove (min dist %.3f, radius 0.05)" % worst)
+# auto colliders
+bpy.ops.object.select_all(action='DESELECT')
+hp.colliders.clear()
+ok('FINISHED' in bpy.ops.arcflow.hair_collider_auto(), "Auto Colliders operator")
+ok(any(c.obj is head for c in hp.colliders) or hp.collider is head, "auto colliders find the scalp / head")
+ok('FINISHED' in bpy.ops.arcflow.hair_collider_remove(index=0) if len(hp.colliders) else True, "remove collider operator")
+# hair-hair + profile props flow into the solver
+hp.volume, hp.clumping, hp.gravity_scale = 1.5, 0.5, 1.2
+S = HO.build_solver(sc)
+ok(abs(S.params.volume - 1.5) < 1e-6 and abs(S.params.gravity_scale - 1.2) < 1e-6 and S.params.hair_collision, "volume / clumping / gravity scale reach the solver")
+# shader assign + children + settle operators
+ok('FINISHED' in bpy.ops.arcflow.hair_assign_shader('EXEC_DEFAULT', preset='AUBURN', add_scalp=True), "Assign Hair Shader operator")
+mat = hair.data.materials[0]
+types = {n.bl_idname for n in mat.node_tree.nodes}
+ok('ShaderNodeBsdfHairPrincipled' in types and 'ShaderNodeBsdfPrincipled' in types, "hair material: Principled Hair BSDF + EEVEE Principled fallback")
+hn = next(n for n in mat.node_tree.nodes if n.bl_idname == 'ShaderNodeBsdfHairPrincipled')
+ok(getattr(hn, 'model', 'CHIANG') == 'CHIANG', "Chiang hair model")
+ok(any(o.name.endswith(" Scalp") for o in bpy.data.objects), "scalp skin shell created")
+n0 = len(hair.data.curves)
+ok('FINISHED' in bpy.ops.arcflow.hair_make_children('EXEC_DEFAULT', per_guide=3), "Make Children operator")
+ok(len(hair.data.curves) == n0 * 4 and hair.arc_flow_hair.n_guides == n0, "children added (%d -> %d curves), guides = first %d" % (n0, len(hair.data.curves), n0))
+S = HO.build_solver(sc)
+ok(S.n_strands == n0 and S.child_rest is not None, "solver simulates the guides and skins the children")
+ok(HO.settle_scene(sc, steps=6) == 6, "settle_scene runs")
+
 # ----------------------------------------------------------------------------- verification render (temp — do not clobber the Extensions showcase still)
 preview = os.path.join(tempfile.mkdtemp(prefix="tessera_hair_preview_"), "hair_solver_verify.png")
 # a staged pose for the still
@@ -200,10 +266,10 @@ for i in range(10):
 
 sc.render.engine = 'CYCLES'
 sc.cycles.device = 'CPU'
-sc.cycles.samples = 16
+sc.cycles.samples = 6
 sc.cycles.use_denoising = False
-sc.render.resolution_x = 960
-sc.render.resolution_y = 720
+sc.render.resolution_x = 480
+sc.render.resolution_y = 360
 sc.render.resolution_percentage = 100
 sc.render.filepath = preview
 sc.render.image_settings.file_format = 'PNG'

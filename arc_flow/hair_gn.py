@@ -133,6 +133,17 @@ HAIR_PRESETS = {
 HAIR_PRESET_ITEMS = [(k, k.replace('_', ' ').title(), "") for k in HAIR_PRESETS]
 
 
+
+def _mixin(node, name):
+    """The RGBA socket of a Mix node input (the node also carries float / vector twins with the same names)."""
+    return next(sk for sk in node.inputs if sk.name == name and sk.type == 'RGBA') if name != 'Factor' else \
+        next(sk for sk in node.inputs if sk.name == 'Factor' and sk.type == 'VALUE')
+
+
+def _mixout(node):
+    return next(sk for sk in node.outputs if sk.type == 'RGBA')
+
+
 def _sock(node, *names):
     for n in names:
         if n in node.inputs:
@@ -211,14 +222,14 @@ def apply_hair_material(obj, color=None, name="Tessera Hair", preset='CHESTNUT',
     mix = nt.nodes.new('ShaderNodeMix'); mix.data_type = 'RGBA'; mix.location = (-120, -300)
     dark = tuple(c * (1.0 - root_dark * 0.45) for c in base) + (1.0,)
     light = tuple(min(1.0, c * (1.0 + tip_light * 1.8) + 0.02) for c in base) + (1.0,)
-    mix.inputs['A'].default_value = dark
-    mix.inputs['B'].default_value = light
-    L.new(info.outputs['Intercept'], mix.inputs['Factor'])
+    _mixin(mix, 'A').default_value = dark
+    _mixin(mix, 'B').default_value = light
+    L.new(info.outputs['Intercept'], _mixin(mix, 'Factor'))
     mixr = nt.nodes.new('ShaderNodeMix'); mixr.data_type = 'RGBA'; mixr.blend_type = 'MULTIPLY'; mixr.location = (40, -300)
-    mixr.inputs['Factor'].default_value = 1.0
-    L.new(mix.outputs['Result'], mixr.inputs['A'])
-    L.new(rnd.outputs[0], mixr.inputs['B'])
-    L.new(mixr.outputs['Result'], prin.inputs['Base Color'])
+    _mixin(mixr, 'Factor').default_value = 1.0
+    L.new(_mixout(mix), _mixin(mixr, 'A'))
+    L.new(rnd.outputs[0], _mixin(mixr, 'B'))
+    L.new(_mixout(mixr), prin.inputs['Base Color'])
     for n, v in (('Roughness', 0.36), ('Metallic', 0.0), ('Coat Weight', coat * 0.5), ('Specular IOR Level', 0.6),
                  ('Anisotropic', 0.6)):
         if n in prin.inputs:

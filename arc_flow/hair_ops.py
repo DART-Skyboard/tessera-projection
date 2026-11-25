@@ -16,6 +16,7 @@ from bpy.types import Operator
 from bpy_extras.io_utils import ExportHelper
 from mathutils import Matrix
 
+from . import hair_gn as HG
 from .core import hair_solver as HS
 from .core.hair_solver import HairParams, HairSolver
 
@@ -681,12 +682,15 @@ def bake_scene(scene, start=None, end=None):
         a, b = b, a
     was_live = RT.live
     stop_live(scene)
+    cur0 = int(scene.frame_current)
+    scene.frame_set(a)
     if build_solver(scene) is None:
+        scene.frame_set(cur0)
         return [], None
     reset_scene(scene, write=True)
     frames = []
     p = params_from_scene(scene)
-    cur = int(scene.frame_current)
+    cur = cur0
     try:
         for f in range(a, b + 1):
             scene.frame_set(f)
@@ -1189,10 +1193,264 @@ class AF_OT_hair_set_role(Operator):
         return {'FINISHED'}
 
 
+
+# ----------------------------------------------------------------------------- collider / groom / look operators
+
+
+def auto_collider_candidates(scene, hair=None):
+    """Meshes that should block this hair: the scalp / surface, bodies skinned to the armature, the armature's
+    children, and nearby props whose bounds overlap the groom. Returns a list of objects (no duplicates)."""
+    hp = _hp(scene)
+    hair = hair or hp.hair
+    found = []
+
+    def add(o):
+        if o is not None and o.type == 'MESH' and o is not hair and o not in found:
+            if o.arc_flow_hair.role == 'HAIR':
+                return
+            found.append(o)
+    add(hp.collider)
+    add(hp.surface)
+    arm = hp.armature
+    if hair is not None and hair.parent is not None and hair.parent.type == 'MESH':
+        add(hair.parent)
+    try:
+        if hair is not None and hair.data.surface is not None:
+            add(hair.data.surface)
+    except Exception:
+        pass
+    for o in scene.objects:
+        if o.type != 'MESH':
+            continue
+        if arm is not None and (o.parent is arm or any(m.type == 'ARMATURE' and m.object is arm for m in o.modifiers)):
+            add(o)
+    if hair is not None and len(hair.data.points):
+        pos, off, _r = read_curves(hair, world=True)
+        lo, hi = pos.min(axis=0) - 0.05, pos.max(axis=0) + 0.05
+        for o in scene.objects:
+            if o.type != 'MESH' or o in found or o.hide_viewport:
+                continue
+            d = o.dimensions
+            if max(d) > 3.0 or max(d) < 0.01 or 'Backdrop' in o.name or 'Ground' in o.name or 'Floor' in o.name:
+                continue
+            c = np.array([o.matrix_world @ __import__('mathutils').Vector(b) for b in o.bound_box])
+            if np.all(c.max(axis=0) >= lo) and np.all(c.min(axis=0) <= hi):
+                add(o)
+    return found
+
+
+def add_collider_entry(scene, obj, thickness=None, friction=None):
+    hp = _hp(scene)
+    for c in hp.colliders:
+        if c.obj is obj:
+            return c
+    c = hp.colliders.add()
+    c.obj = obj
+    c.thickness = float(hp.collision_radius if thickness is None else thickness)
+    c.friction = float(hp.collision_friction if friction is None else friction)
+    c.deforming = _is_deforming(obj)
+    try:
+        from . import asset_colliders as AC
+        AC.mark_projection_collider(obj)
+    except Exception:
+        pass
+    RT.solver = None if RT.solver is None else RT.solver
+    return c
+
+
+class AF_OT_hair_collider_add(Operator):
+    bl_idname = "arcflow.hair_collider_add"
+    bl_label = "Add Selected as Collider"
+    bl_description = "Add every selected mesh (head, body, hand, glove, prop) to the hair collision list"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, ctx):
+        hp = _hp(ctx.scene)
+        n = 0
+        for o in ctx.selected_objects:
+            if o.type == 'MESH' and o is not hp.hair:
+                add_collider_entry(ctx.scene, o)
+                n += 1
+        if not n:
+            self.report({'ERROR'}, "Select one or more meshes first")
+            return {'CANCELLED'}
+        self.report({'INFO'}, "Added %d collider(s)" % n)
+        return {'FINISHED'}
+
+
+class AF_OT_hair_collider_remove(Operator):
+    bl_idname = "arcflow.hair_collider_remove"
+    bl_label = "Remove Collider"
+    bl_options = {'REGISTER', 'UNDO'}
+    index: IntProperty(default=-1)
+
+    def execute(self, ctx):
+        hp = _hp(ctx.scene)
+        i = self.index if self.index >= 0 else hp.collider_index
+        if 0 <= i < len(hp.colliders):
+            hp.colliders.remove(i)
+            hp.collider_index = max(0, min(hp.collider_index, len(hp.colliders) - 1))
+            return {'FINISHED'}
+        return {'CANCELLED'}
+
+
+class AF_OT_hair_collider_auto(Operator):
+    bl_idname = "arcflow.hair_collider_auto"
+    bl_label = "Auto Colliders"
+    bl_description = "Find the scalp / head, the armature's body meshes and nearby props, and add them as colliders"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, ctx):
+        found = auto_collider_candidates(ctx.scene)
+        if not found:
+            self.report({'WARNING'}, "No body meshes found: assign a Scalp / surface or Armature first")
+            return {'CANCELLED'}
+        for o in found:
+            if o is not _hp(ctx.scene).collider:
+                add_collider_entry(ctx.scene, o)
+        self.report({'INFO'}, "Added %d collider(s): %s" % (len(found), ", ".join(o.name for o in found[:4])))
+        return {'FINISHED'}
+
+
+class AF_OT_hair_assign_shader(Operator):
+    bl_idname = "arcflow.hair_assign_shader"
+    bl_label = "Assign Hair Shader"
+    bl_description = "Give the hair a realistic Principled Hair (Chiang) shader with a root-to-tip gradient, per-strand tone and an EEVEE fallback"
+    bl_options = {'REGISTER', 'UNDO'}
+    preset: EnumProperty(name="Colour", items=HG.HAIR_PRESET_ITEMS, default='CHESTNUT')
+    add_scalp: bpy.props.BoolProperty(name="Add scalp skin", default=True)
+    as_tubes: bpy.props.BoolProperty(name="Tapered tubes (EEVEE)", default=False,
+                                     description="Convert the strands to tapered tube meshes (needed to see thickness in EEVEE solid views)")
+
+    def execute(self, ctx):
+        from . import hair_gn
+        hp = _hp(ctx.scene)
+        hair = hp.hair or (ctx.active_object if ctx.active_object and ctx.active_object.type == 'CURVES' else None)
+        if hair is None:
+            self.report({'ERROR'}, "Assign Hair curves first")
+            return {'CANCELLED'}
+        hair_gn.apply_hair_material(hair, preset=self.preset)
+        if self.as_tubes:
+            hair_gn.apply_hair_gn(hair, radius=float(hair.arc_flow_hair.radius), sides=4, as_tubes=True, taper=0.8)
+        else:
+            for m in list(hair.modifiers):
+                if m.name == "Tessera Hair Render":
+                    hair.modifiers.remove(m)
+        if self.add_scalp and (hp.surface or hp.collider):
+            surf = hp.surface or hp.collider
+            if not any(o.name == surf.name + " Scalp" for o in bpy.data.objects):
+                hair_gn.make_scalp_shell(surf, hair, preset=self.preset)
+        self.report({'INFO'}, "Hair shader assigned (%s)" % self.preset.title())
+        return {'FINISHED'}
+
+    def invoke(self, ctx, ev):
+        return ctx.window_manager.invoke_props_dialog(self)
+
+
+class AF_OT_hair_make_children(Operator):
+    bl_idname = "arcflow.hair_make_children"
+    bl_label = "Make Children"
+    bl_description = "Surround each guide strand with children: root scatter, tip clumping, frizz and flyaways. The first strands stay the simulated guides"
+    bl_options = {'REGISTER', 'UNDO'}
+    per_guide: IntProperty(name="Children per guide", default=8, min=1, max=64)
+    spread: bpy.props.FloatProperty(name="Root spread", default=0.012, min=0.0, max=0.1, unit='LENGTH')
+    clump: bpy.props.FloatProperty(name="Clumping", default=0.55, min=0.0, max=1.0, subtype='FACTOR')
+    tip_spread: bpy.props.FloatProperty(name="Tip spread", default=0.0, min=0.0, max=0.1, unit='LENGTH')
+    frizz: bpy.props.FloatProperty(name="Frizz", default=0.004, min=0.0, max=0.05, unit='LENGTH')
+    seed: IntProperty(name="Seed", default=1)
+
+    def execute(self, ctx):
+        hp = _hp(ctx.scene)
+        hair = hp.hair
+        if hair is None or hair.type != 'CURVES':
+            self.report({'ERROR'}, "Assign Hair curves first")
+            return {'CANCELLED'}
+        n_g = int(hair.arc_flow_hair.n_guides) or len(hair.data.curves)
+        pos, off, rad = read_curves(hair, world=False)
+        g_off = off[:n_g + 1]
+        g_pos = pos[:g_off[-1]]
+        cP, cOff = HS.generate_children(g_pos, g_off, per_guide=self.per_guide, spread=self.spread, clump=self.clump,
+                                        frizz=self.frizz, tip_spread=self.tip_spread, seed=self.seed)
+        counts = np.diff(cOff).astype(int).tolist()
+        # rebuild the curve data with guides first, children after
+        allP, allOff = HS.pack_strands(HS.unpack_strands(g_pos, g_off) + HS.unpack_strands(cP, cOff))
+        new = bpy.data.hair_curves.new(hair.data.name)
+        new.add_curves(np.diff(allOff).astype(int).tolist())
+        new.points.foreach_set('position', np.ascontiguousarray(allP, dtype=np.float32).ravel())
+        r0 = float(rad[0]) if len(rad) else 0.003
+        t = np.concatenate([np.linspace(0, 1, b - a) for a, b in zip(allOff[:-1], allOff[1:])])
+        new.points.foreach_set('radius', np.ascontiguousarray(r0 * (1.0 - 0.8 * t ** 1.3), dtype=np.float32))
+        for m in hair.data.materials:
+            new.materials.append(m)
+        try:
+            new.surface = hair.data.surface
+        except Exception:
+            pass
+        old = hair.data
+        hair.data = new
+        if old.users == 0:
+            bpy.data.hair_curves.remove(old)
+        hair.arc_flow_hair.n_guides = n_g
+        RT.solver = None
+        RT.bind_ok = False
+        self.report({'INFO'}, "%d guides + %d children" % (n_g, len(cOff) - 1))
+        return {'FINISHED'}
+
+
+class AF_OT_hair_settle(Operator):
+    bl_idname = "arcflow.hair_settle"
+    bl_label = "Settle & Set Rest Pose"
+    bl_description = "Run the simulation for a moment so the hair drapes over the head and shoulders, then keep that as the rest pose"
+    bl_options = {'REGISTER', 'UNDO'}
+    steps: IntProperty(name="Steps", default=48, min=4, max=400)
+
+    def execute(self, ctx):
+        n = settle_scene(ctx.scene, self.steps)
+        if n is None:
+            self.report({'ERROR'}, "No hair curves to settle")
+            return {'CANCELLED'}
+        self.report({'INFO'}, "Settled %d steps; rest pose updated" % n)
+        return {'FINISHED'}
+
+
+def settle_scene(scene, steps=48, set_rest=True, rest_shape_during=0.03):
+    """Pre-roll the groom against all colliders (low style memory so gravity + contact decide the drape), then
+    optionally store the result as the new rest pose (the style the hair springs back to after a hit)."""
+    hp = _hp(scene)
+    if build_solver(scene) is None:
+        return None
+    S = RT.solver
+    keep = (float(S.params.rest_shape), float(S.params.rest_shape_root), float(S.params.rest_shape_tip))
+    S.params.update(rest_shape=rest_shape_during)
+    for _ in range(int(steps)):
+        step_scene(scene, dt=S.params.dt, write=False)
+    S.params.update(rest_shape=keep[0])
+    S.prev[:] = S.positions
+    if set_rest:
+        S.set_rest()
+        if hasattr(S, '_full_rest'):
+            S._full_rest = _compose_full(S)[0].copy()
+    full, _o = _compose_full(S)
+    RT.updating = True
+    try:
+        write_curves(hp.hair, full)
+    finally:
+        RT.updating = False
+    hp.status = "Settled %d steps" % int(steps)
+    return int(steps)
+
+
+def enable_cache_playback():
+    """Apply baked frames (RT.cache) to the curves whenever the frame changes, without Live mode."""
+    if _on_frame not in bpy.app.handlers.frame_change_post:
+        bpy.app.handlers.frame_change_post.append(_on_frame)
+
 CLASSES = (
     AF_OT_hair_add_empty, AF_OT_hair_example,
     AF_OT_hair_live_start, AF_OT_hair_live_stop, AF_OT_hair_step, AF_OT_hair_reset, AF_OT_hair_rebuild,
     AF_OT_hair_bake, AF_OT_hair_export_package, AF_OT_hair_export_alembic, AF_OT_hair_set_role,
+    AF_OT_hair_collider_add, AF_OT_hair_collider_remove, AF_OT_hair_collider_auto,
+    AF_OT_hair_assign_shader, AF_OT_hair_make_children, AF_OT_hair_settle,
 )
 
 
