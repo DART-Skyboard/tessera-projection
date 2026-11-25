@@ -36,8 +36,8 @@ def jacket(nx=11, ny=13, gap=0.10, w=0.5, h=0.6):
     return V, T, pins, left, right
 
 
-def build(progress, strength=1.0, tear=0.0, **kw):
-    V, T, pins, left, right = jacket()
+def build(progress, strength=1.0, tear=0.0, gap=0.10, **kw):
+    V, T, pins, left, right = jacket(gap=gap)
     S = CS.ClothSolver(V, T, pins=pins, preset='COTTON', quality='REALTIME', self_collision=False)
     pairs = CT.pair_seam(S.rest, S.stretch_edges, np.concatenate([left, right]))
     seam = CT.SeamSeal(S.rest, pairs, mode='ZIPPER', progress=progress, strength=strength, tear=tear, **kw)
@@ -81,7 +81,7 @@ hi = g[seam.t > 0.8].mean()
 ok(lo < 0.01 and hi > 0.05, "zip at 0.5: start closed (%.3f), far end open (%.3f)" % (lo, hi))
 
 # --- tear
-S, seam, _ = build(1.0, strength=1.0, tear=0.02)
+S, seam, _ = build(1.0, strength=1.0, tear=0.02, gap=0.012)
 run(S, 30)
 ok(not seam.torn.any() and seam.armed.all(), "sealed seam with tear limit closes and holds")
 S.x[seam.pairs[5, 1]] += np.array([0.3, 0, 0])
