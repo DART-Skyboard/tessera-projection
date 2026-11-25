@@ -85,6 +85,13 @@ _r("lower_leg_q", "Lower leg", "Calves", 2, "Q", ("shin", "calf", "leg_low", "fo
 _r("limb_mid", "Limb belly (custom creatures)", "Custom", 2, "BQ", ("limb", "seg", "tentacle"), (0.1, 0.9), 'any', 0.8, rng=1.3)
 _r("head_mass", "Head mass (extra heads)", "Head and face", 2, "BQ", ("head",), (0.1, 0.9), 'any', 0.5, rng=0.8)
 
+# bilateral muscles: a patch that crosses the skin's mid-plane is split into a left and a right muscle
+PAIRED = {"zygomaticus", "masseter", "orbicularis_oculi", "deltoid", "trapezius", "pectoralis", "serratus", "latissimus",
+          "obliques", "gluteus", "quadriceps", "hamstrings", "adductors", "gastrocnemius", "tibialis", "haunch",
+          "foreleg_shoulder", "lower_leg_q", "biceps", "triceps", "brachialis", "forearm_flexors", "forearm_extensors",
+          "brachioradialis", "thenar", "palm", "foot_arch", "toes", "erector_spinae", "sternocleidomastoid"}
+for _d in _R:
+    _d['pair'] = _d['key'] in PAIRED
 CATALOG = tuple(_R)
 CATALOG_INDEX = {r['key']: i for i, r in enumerate(CATALOG)}
 CID_CUSTOM_BASE = 1000
@@ -473,9 +480,22 @@ def solve(verts, edges, normals, seed_labels, regions, strokes=None, attachments
         if mask.sum() < min_patch:
             continue
         comp = g.components(mask)
+        if reg.get('pair') and comp.max() >= 0:
+            xm = float(np.median(v[:, 0]))
+            ext = max(float(np.ptp(v[:, 0])), 1e-9)
+            nxt = int(comp.max()) + 1
+            for ci in range(int(comp.max()) + 1):
+                sel = np.nonzero(comp == ci)[0]
+                xs = v[sel, 0] - xm
+                left, right = xs > 0.01 * ext, xs < -0.01 * ext
+                if left.sum() >= min_patch and right.sum() >= min_patch:
+                    comp[sel[right]] = nxt
+                    nxt += 1
+        sizes = np.bincount(comp[comp >= 0]) if comp.max() >= 0 else np.zeros(0)
+        floor = max(min_patch, 0.2 * float(sizes.max() if len(sizes) else 0))
         for ci in range(int(comp.max()) + 1):
             idx = np.nonzero(comp == ci)[0]
-            if len(idx) < min_patch:
+            if len(idx) < floor:
                 continue
             P = v[idx]
             c, a = _pca_axis(P)
@@ -493,6 +513,9 @@ def solve(verts, edges, normals, seed_labels, regions, strokes=None, attachments
             att = (attachments or {}).get(ri)
             if line is None and att and len(att) >= 2:
                 A = np.asarray(att, float)
+                reach = 0.9 * float(np.linalg.norm(P.max(0) - P.min(0))) + 1e-9
+                A = A[np.linalg.norm(A - c, axis=1) <= reach]
+            if line is None and att and len(att) >= 2 and len(A) >= 2:
                 proj = (A - c) @ a
                 line = np.stack([A[np.argmin(proj)], A[np.argmax(proj)]])
                 source = 'attach'
