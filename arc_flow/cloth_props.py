@@ -68,6 +68,18 @@ class AF_ClothGarment(PropertyGroup):
     friction: FloatProperty(name="Friction", default=0.20, min=0.0, max=1.0, subtype='FACTOR')
     self_collision: BoolProperty(name="Self-collision", default=True,
                                  description="The garment is a collision body that cannot pass through itself (vertex and triangle, spatial hash, thickness). On by default")
+    self_collision_mode: EnumProperty(
+        name="Self-collision mode",
+        items=[('AUTO', "Auto", "Real-time preset uses the cheaper variant, every other preset the accurate one"),
+               ('FAST', "Fast (real-time)", "Cached candidate pairs refreshed every few substeps, one response pass"),
+               ('ACCURATE', "Accurate", "Re-detect every substep with two response passes")],
+        default='AUTO')
+    self_thickness: FloatProperty(name="Contact thickness", default=0.004, min=0.0005, max=0.05, unit='LENGTH',
+                                  description="Layers are kept at least this far apart (vertex against triangle)")
+    self_friction: FloatProperty(name="Contact friction", default=0.3, min=0.0, max=1.0, subtype='FACTOR',
+                                 description="Coulomb friction between touching cloth layers")
+    self_ignore_group: StringProperty(name="Ignore group", default="",
+                                      description="Vertex group whose vertices are left out of self-collision (e.g. a lining stitched to the shell)")
     use_dihedral: BoolProperty(name="Dihedral bend", default=True)
     substeps: IntProperty(name="Substeps", default=4, min=1, max=32)
     iterations: IntProperty(name="Iterations", default=8, min=1, max=64)
