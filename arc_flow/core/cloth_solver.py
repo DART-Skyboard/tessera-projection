@@ -819,7 +819,7 @@ class ClothSolver:
         _m = str(self.self_collision_mode).upper()
         sc.mode = 'FAST' if _m == 'FAST' else 'ACCURATE'
         sc.layered = (_m == 'LAYERED')
-        sc.layer_period = max(1, int(self.substeps))
+        sc.layer_period = 1   # every substep: last-substep-only measured clearly worse (27-36 vs 4-8 crossings)
         if sc.rest is None:
             sc.set_rest(self.rest)
         return sc
