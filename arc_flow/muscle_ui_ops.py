@@ -131,8 +131,9 @@ def switch_preset(scene, preset=None, detail=None):
 # Muscle Pencil geometry: snap to the skin and follow the surface along mesh edges
 # --------------------------------------------------------------------------------------------------------------------
 def _adjacency(skin):
+    """CSR edge adjacency (python lists, for the Dijkstra) and a KD-tree of the rest (basis) vertices, cached per mesh."""
     me = skin.data
-    key = (me.name, len(me.vertices), len(me.edges), me.session_uid if hasattr(me, 'session_uid') else 0)
+    key = (me.name, len(me.vertices), len(me.edges))
     hit = _ADJ_CACHE.get(skin.name)
     if hit is not None and hit[0] == key:
         return hit[1], hit[2]
@@ -141,11 +142,14 @@ def _adjacency(skin):
     e = np.empty(len(me.edges) * 2, np.int64)
     me.edges.foreach_get("vertices", e)
     e = e.reshape(-1, 2)
-    ln = np.linalg.norm(v[e[:, 0]] - v[e[:, 1]], axis=1)
-    adj = [[] for _ in range(len(v))]
-    for (a, b), w in zip(e.tolist(), ln.tolist()):
-        adj[a].append((b, w))
-        adj[b].append((a, w))
+    src = np.concatenate([e[:, 0], e[:, 1]])
+    dst = np.concatenate([e[:, 1], e[:, 0]])
+    o = np.argsort(src, kind='stable')
+    src, dst = src[o], dst[o]
+    w = np.linalg.norm(v[src] - v[dst], axis=1)
+    indptr = np.zeros(len(v) + 1, np.int64)
+    np.cumsum(np.bincount(src, minlength=len(v)), out=indptr[1:])
+    adj = (indptr.tolist(), dst.tolist(), w.tolist())
     from mathutils import kdtree
     kd = kdtree.KDTree(len(v))
     for i, p in enumerate(v.tolist()):
@@ -156,10 +160,11 @@ def _adjacency(skin):
     return adj, kd
 
 
-def _edge_path(adj, a, b, max_visit=200000):
-    """Shortest path a -> b over mesh edges (Dijkstra).  [a, b] if b is unreachable within max_visit."""
+def _edge_path(adj, a, b, max_visit=250000):
+    """Shortest path a -> b over mesh edges (Dijkstra on the CSR lists).  [a, b] if b is unreachable within max_visit."""
     if a == b:
         return [a]
+    indptr, nbr, wt = adj
     dist = {a: 0.0}
     prev = {}
     pq = [(0.0, a)]
@@ -173,8 +178,9 @@ def _edge_path(adj, a, b, max_visit=200000):
         seen += 1
         if seen > max_visit:
             return [a, b]
-        for w, l in adj[u]:
-            nd = d + l
+        for k in range(indptr[u], indptr[u + 1]):
+            w = nbr[k]
+            nd = d + wt[k]
             if nd < dist.get(w, 1e30):
                 dist[w] = nd
                 prev[w] = u
@@ -187,24 +193,28 @@ def _edge_path(adj, a, b, max_visit=200000):
     return out[::-1]
 
 
-def points_to_chain(skin, pts_local, follow_surface=True):
-    """Snap skin-local points to their nearest skin vertices and (optionally) join consecutive vertices along the mesh
-    edges.  Returns an ordered vertex index chain without consecutive duplicates or back-tracking loops."""
-    adj, kd = _adjacency(skin)
-    snapped = []
+def snap_points(skin, pts_local):
+    """Nearest rest-pose skin vertex for every skin-local point (consecutive duplicates removed)."""
+    _adj, kd = _adjacency(skin)
+    out = []
     for p in pts_local:
         _co, idx, _d = kd.find(tuple(p))
-        if idx is None:
-            continue
-        if not snapped or snapped[-1] != idx:
-            snapped.append(idx)
+        if idx is not None and (not out or out[-1] != idx):
+            out.append(idx)
+    return out
+
+
+def indices_to_chain(skin, snapped, follow_surface=True):
+    """Join consecutive vertex indices along the mesh edges (the line hugs the surface contour) and drop back-tracking
+    loops (a b a -> a) that jittery mouse input produces.  Returns an ordered vertex chain."""
+    snapped = [int(i) for i in snapped]
+    snapped = [i for k, i in enumerate(snapped) if k == 0 or i != snapped[k - 1]]
     if len(snapped) < 2 or not follow_surface:
         return snapped
+    adj, _kd = _adjacency(skin)
     chain = [snapped[0]]
     for a, b in zip(snapped, snapped[1:]):
-        seg = _edge_path(adj, a, b)
-        chain.extend(seg[1:])
-    # drop back-tracks (a b a -> a) that jittery mouse input produces
+        chain.extend(_edge_path(adj, a, b)[1:])
     out = []
     pos = {}
     for i in chain:
@@ -217,6 +227,35 @@ def points_to_chain(skin, pts_local, follow_surface=True):
         pos[i] = len(out)
         out.append(i)
     return out
+
+
+def points_to_chain(skin, pts_local, follow_surface=True):
+    """Snap skin-local points to their nearest rest-pose vertices and join them along the surface."""
+    return indices_to_chain(skin, snap_points(skin, pts_local), follow_surface)
+
+
+def hit_vertex(skin, origin_local, dir_local, depsgraph=None):
+    """Skin vertex under a ray (skin-local origin / direction): ray-casts the evaluated (posed, shape-keyed) skin and
+    returns (vertex index, local hit point), picking the hit face's corner nearest the hit.  Works on a posed character
+    because the face index is shared with the rest mesh (armature / shape keys keep the topology).  None when missed."""
+    ok, loc, _nrm, fi = skin.ray_cast(origin_local, dir_local, depsgraph=depsgraph) if depsgraph is not None \
+        else skin.ray_cast(origin_local, dir_local)
+    if not ok or fi < 0:
+        return None
+    me = skin.data
+    ev = None
+    if depsgraph is not None:
+        try:
+            ev = skin.evaluated_get(depsgraph).data
+        except Exception:
+            ev = None
+    if ev is not None and len(ev.vertices) == len(me.vertices) and fi < len(ev.polygons):
+        poly = ev.polygons[fi]
+        best = min(poly.vertices, key=lambda i: (ev.vertices[i].co - loc).length)
+        return int(best), tuple(loc)
+    # topology changed by a modifier: snap the hit point to the rest mesh instead
+    s = snap_points(skin, [tuple(loc)])
+    return (s[0], tuple(loc)) if s else None
 
 
 def commit_stroke(scene, chain, index=None):
@@ -285,7 +324,7 @@ def _overlay_key(scene):
     raw = skin.data.get(MO.PROP_STROKES, "")
     cols = tuple((r.cid, tuple(round(c, 3) for c in r.color), r.enabled) for r in ms.regions)
     act = ms.regions[ms.index].cid if 0 <= ms.index < len(ms.regions) else -1
-    return (skin.name, len(skin.data.vertices), hash(raw), hash(cols), act)
+    return (skin.name, len(skin.data.vertices), hash(raw), hash(cols), act, _DRAW.get('gen', 0))
 
 
 def _build_batches(scene):
@@ -297,8 +336,7 @@ def _build_batches(scene):
     strokes = MO.load_strokes(skin)
     if not strokes:
         return []
-    v = MO.basis_coords(skin)
-    _, _, nrm = MO.skin_arrays(skin)
+    v, nrm = _display_coords(skin)
     size = float(np.ptp(v, axis=0).max()) if len(v) else 1.0
     off = max(size * 0.002, 1e-4)
     col = {r.cid: tuple(r.color) for r in ms.regions}
@@ -320,6 +358,41 @@ def _build_batches(scene):
         if pos:
             out.append((batch_for_shader(shader, 'LINES', {"pos": pos, "color": cl}), 5.0 if active else 3.0))
     return out
+
+
+def _display_coords(skin):
+    """Vertex positions / normals the lines are drawn on: the evaluated (posed, shape-keyed) skin when its topology
+    matches the rest mesh, else the rest pose."""
+    import numpy as np
+    try:
+        dg = bpy.context.evaluated_depsgraph_get()
+        me = skin.evaluated_get(dg).data
+        if len(me.vertices) == len(skin.data.vertices):
+            n = len(me.vertices)
+            v = np.empty(n * 3, np.float64)
+            me.vertices.foreach_get('co', v)
+            nr = np.empty(n * 3, np.float64)
+            me.vertex_normals.foreach_get('vector', nr)
+            return v.reshape(-1, 3), nr.reshape(-1, 3)
+    except Exception:
+        pass
+    v = MO.basis_coords(skin)
+    _, _, nr = MO.skin_arrays(skin)
+    return v, nr
+
+
+@bpy.app.handlers.persistent
+def _on_depsgraph(scene, depsgraph):
+    """Re-place the overlay lines when the skin or its skeleton moves (pose, frame change, shape keys)."""
+    ms = _ms(scene)
+    if ms is None or ms.skin is None or _DRAW['handle'] is None:
+        return
+    names = {ms.skin.name, ms.armature.name if ms.armature is not None else ""}
+    for u in depsgraph.updates:
+        idb = getattr(u, 'id', None)
+        if idb is not None and getattr(idb, 'name', None) in names and (u.is_updated_geometry or u.is_updated_transform):
+            _DRAW['gen'] = _DRAW.get('gen', 0) + 1
+            return
 
 
 def _draw_overlay():
@@ -505,9 +578,13 @@ def register():
             _DRAW['handle'] = bpy.types.SpaceView3D.draw_handler_add(_draw_overlay, (), 'WINDOW', 'POST_VIEW')
         except Exception:
             _DRAW['handle'] = None
+    if _on_depsgraph not in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.append(_on_depsgraph)
 
 
 def unregister():
+    if _on_depsgraph in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.remove(_on_depsgraph)
     if _DRAW['handle'] is not None:
         try:
             bpy.types.SpaceView3D.draw_handler_remove(_DRAW['handle'], 'WINDOW')

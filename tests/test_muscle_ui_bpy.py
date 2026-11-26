@@ -308,6 +308,24 @@ bpy.ops.arcflow.muscle_complete()
 skin.matrix_world = mw0
 bpy.context.view_layer.update()
 
+# the interactive pencil ray-casts the POSED skin: the hit must map back to the right rest vertex
+arm = ms.armature
+pb = arm.pose.bones[bi['names'][ua[0]]]
+pb.rotation_mode = 'XYZ'
+pb.rotation_euler = (0.0, 0.0, math.radians(-60))
+bpy.context.view_layer.update()
+dg = bpy.context.evaluated_depsgraph_get()
+ev = skin.evaluated_get(dg).data
+tgt = int(pick[1])
+p_ev, n_ev = ev.vertices[tgt].co.copy(), ev.vertices[tgt].normal.copy()
+moved = (p_ev - Vector(v[tgt])).length
+h = MUI.hit_vertex(skin, p_ev + n_ev * 0.3, -n_ev, dg)
+nb = {tgt} | {a for e in edges if tgt in e for a in e}
+ok(moved > 0.01 and h is not None and h[0] in nb,
+   "posed skin hit maps to the rest vertex (moved %.3f, hit %s, want %d)" % (moved, h and h[0], tgt))
+pb.rotation_euler = (0.0, 0.0, 0.0)
+bpy.context.view_layer.update()
+
 # ---------------------------------------------------------------------------------------------------------------- 4
 def keys():
     return [r.key for r in ms.regions]

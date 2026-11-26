@@ -1249,9 +1249,10 @@ class AF_OT_muscle_paint(Operator):
         return ms is not None and ms.skin is not None and ctx.area is not None and ctx.area.type == 'VIEW_3D'
 
     def _hit_vertex(self, ctx, event):
+        """Rest-pose position of the skin vertex under the mouse (works on a posed character), or None."""
         from bpy_extras import view3d_utils
-        ms = _ms(ctx.scene)
-        skin = ms.skin
+        from . import muscle_ui_ops as MUI
+        skin = _ms(ctx.scene).skin
         hit = _view_under_mouse(ctx, event)
         if hit is None:
             return None
@@ -1260,14 +1261,8 @@ class AF_OT_muscle_paint(Operator):
         direction = view3d_utils.region_2d_to_vector_3d(region, rv3d, co)
         inv = skin.matrix_world.inverted()
         o, d = inv @ origin, (inv.to_3x3() @ direction).normalized()
-        ok, loc, nrm, fi = skin.ray_cast(o, d)
-        if not ok:
-            return None
-        poly = skin.data.polygons[fi]
-        v = basis_coords(skin)
-        cand = np.array(poly.vertices)
-        k = cand[np.argmin(np.linalg.norm(v[cand] - np.array(loc), axis=1))]
-        return v[k]
+        h = MUI.hit_vertex(skin, o, d, ctx.evaluated_depsgraph_get())
+        return None if h is None else basis_coords(skin)[h[0]]
 
     def modal(self, ctx, event):
         ms = _ms(ctx.scene)
@@ -1317,9 +1312,10 @@ class AF_OT_muscle_contour(AF_OT_muscle_paint):
                       "the surface contour and gives the fibre direction; its two ends are the tendon attachments. "
                       "Backspace removes the last line, right click or Esc finishes")
 
-    def _hit_local(self, ctx, event):
-        """Surface point under the mouse in skin-local space (None when the skin is missed)."""
+    def _hit(self, ctx, event):
+        """(vertex index, skin-local hit point) under the mouse on the evaluated (posed) skin, or None."""
         from bpy_extras import view3d_utils
+        from . import muscle_ui_ops as MUI
         skin = _ms(ctx.scene).skin
         hit = _view_under_mouse(ctx, event)
         if hit is None:
@@ -1329,8 +1325,7 @@ class AF_OT_muscle_contour(AF_OT_muscle_paint):
         direction = view3d_utils.region_2d_to_vector_3d(region, rv3d, co)
         inv = skin.matrix_world.inverted()
         o, d = inv @ origin, (inv.to_3x3() @ direction).normalized()
-        ok, loc, _nrm, _fi = skin.ray_cast(o, d)
-        return tuple(loc) if ok else None
+        return MUI.hit_vertex(skin, o, d, ctx.evaluated_depsgraph_get())
 
     def _header(self, ctx, text=None):
         try:
@@ -1364,11 +1359,12 @@ class AF_OT_muscle_contour(AF_OT_muscle_paint):
             return {'PASS_THROUGH'}
         if event.type == 'LEFTMOUSE':
             if event.value == 'PRESS':
-                self._pts = []
+                self._pts, self._idx = [], []
                 self._down = True
-                p = self._hit_local(ctx, event)
-                if p is not None:
-                    self._pts.append(p)
+                h = self._hit(ctx, event)
+                if h is not None:
+                    self._idx.append(h[0])
+                    self._pts.append(h[1])
             elif event.value == 'RELEASE':
                 self._down = False
                 self._finish(ctx)
@@ -1376,9 +1372,10 @@ class AF_OT_muscle_contour(AF_OT_muscle_paint):
             ctx.area.tag_redraw()
             return {'RUNNING_MODAL'}
         if event.type in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'} and self._down:
-            p = self._hit_local(ctx, event)
-            if p is not None and (not self._pts or p != self._pts[-1]):
-                self._pts.append(p)
+            h = self._hit(ctx, event)
+            if h is not None and (not self._idx or h[0] != self._idx[-1]):
+                self._idx.append(h[0])
+                self._pts.append(h[1])
                 MUI.LIVE['pts'] = list(self._pts)
                 ctx.area.tag_redraw()
             return {'RUNNING_MODAL'}
@@ -1389,12 +1386,12 @@ class AF_OT_muscle_contour(AF_OT_muscle_paint):
     def _finish(self, ctx):
         from . import muscle_ui_ops as MUI
         ms = _ms(ctx.scene)
-        pts = getattr(self, '_pts', [])
-        self._pts = []
+        idx = getattr(self, '_idx', [])
+        self._pts, self._idx = [], []
         MUI.LIVE['pts'] = []
-        if len(pts) < 2:
+        if len(idx) < 2:
             return
-        chain = MUI.points_to_chain(ms.skin, pts, True)
+        chain = MUI.indices_to_chain(ms.skin, idx, True)
         if len(chain) >= 2:
             MUI.commit_stroke(ctx.scene, chain)
             g = ms.regions[ms.index]
@@ -1403,7 +1400,7 @@ class AF_OT_muscle_contour(AF_OT_muscle_paint):
 
     def invoke(self, ctx, event):
         from . import muscle_ui_ops as MUI
-        self._pts = []
+        self._pts, self._idx = [], []
         self._down = False
         ms = _ms(ctx.scene)
         if not ms.regions:
