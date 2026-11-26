@@ -161,12 +161,112 @@ class SelfCollider:
         self._cache = None
 
     def set_rest(self, rest):
-        """Rest-pose positions: pairs from different connected pieces keep the side they had at rest."""
+        """Rest-pose positions.  Pairs from different connected pieces (garment layers, pockets, collars) keep the side
+        they had at rest; the per-face side table is built here (see ``_build_side_table``)."""
         r = np.asarray(rest, float)
         T = self.tris
         n = np.cross(r[T[:, 1]] - r[T[:, 0]], r[T[:, 2]] - r[T[:, 0]])
         self.rest_nrm = n / np.maximum(np.linalg.norm(n, axis=1), 1e-14)[:, None]
         self.rest = r.copy()
+        self._build_side_table()
+
+    # ------------------------------------------------------------------ rest-side table (layers)
+    def _build_side_table(self):
+        """Which side of every face each *other* piece lies on at rest.
+
+        The rest relation must not be read per vertex from ``(rest[v] - rest[t]) . n_rest[t]`` for whatever face ``t``
+        is nearest *now*: once layers slide, twist or drape (tens of frames), ``t`` is no longer the face that was
+        next to ``v`` at rest, and on a curved or flared garment the plane of a far face puts ``v`` on the wrong side
+        (concentric skirts: after ~17 degrees of relative twist), so the corrector pushes ``v`` THROUGH the lower layer.
+        That was the frame-100 layer crossing.  Instead, piece ``b``'s side of face ``t`` is a property of the pair
+        (face, piece) and is fixed at rest:
+
+        * ``side[t, b]`` = sign of the plane distance of ``b``'s nearest rest vertex to face ``t`` (within a radius),
+        * faces with no part of ``b`` nearby use the majority sign of their piece pair (piece of ``t``, ``b``),
+        * a piece pair that never comes near at rest has no rest side (0): contacts fall back to continuity
+          (the side the vertex had at the start of the substep).
+
+        Stored sparse (sorted int64 keys + int8 signs) so meshes with many small pieces stay cheap."""
+        labels, pid = np.unique(self.comp, return_inverse=True)
+        self.pid = pid.astype(np.int64)
+        self.npieces = P = int(len(labels))
+        self.face_piece = self.pid[self.tris[:, 0]]
+        self.side_face_keys = np.zeros(0, np.int64)
+        self.side_face_val = np.zeros(0, np.int8)
+        self.side_pair_keys = np.zeros(0, np.int64)
+        self.side_pair_val = np.zeros(0, np.int8)
+        if P < 2 or self.rest is None or len(self.tris) == 0:
+            return
+        r = self.rest
+        th = self.thickness
+        R = max(4.0 * float(self.layer_radius), 8.0 * th)
+        save_th = self.thickness
+        v = t = np.zeros(0, np.int64)
+        try:
+            for _try in range(6):                  # shrink the search radius if the pair budget overflows
+                self.thickness = R
+                self.stats.pop('overflow', None)
+                v, t = self._candidates(r, r, 0.0)
+                if 'overflow' not in self.stats or R <= 2.0 * th:
+                    break
+                R = max(0.5 * R, 2.0 * th)
+        finally:
+            self.thickness = save_th
+            self.stats.pop('overflow', None)
+        if len(v) == 0:
+            return
+        k = self.pid[v] != self.face_piece[t]
+        v, t = v[k], t[k]
+        if len(v) == 0:
+            return
+        tr = self.tris[t]
+        q, _b, _in = closest_point_triangle(r[v], r[tr[:, 0]], r[tr[:, 1]], r[tr[:, 2]])
+        dist = np.linalg.norm(r[v] - q, axis=1)
+        d = ((r[v] - r[tr[:, 0]]) * self.rest_nrm[t]).sum(1)
+        keep = dist <= R
+        v, t, dist, d = v[keep], t[keep], dist[keep], d[keep]
+        if len(v) == 0:
+            return
+        key = t * P + self.pid[v]
+        order = np.lexsort((dist, key))          # nearest vertex of each piece per face first
+        key, d, dist = key[order], d[order], dist[order]
+        first = np.ones(len(key), bool)
+        first[1:] = key[1:] != key[:-1]
+        key, d, dist = key[first], d[first], dist[first]
+        sgn = np.where(d > 0.25 * th, 1, np.where(d < -0.25 * th, -1, 0)).astype(np.int8)
+        good = sgn != 0                            # touching / stitched at rest: no reliable side
+        self.side_face_keys, self.side_face_val = key[good], sgn[good]
+        # majority per piece pair (face piece a, other piece b), weighted towards close faces
+        tt, bb = key // P, key % P
+        pk = self.face_piece[tt] * P + bb
+        wgt = sgn.astype(float) / np.maximum(dist, 0.25 * th)
+        upk, inv = np.unique(pk, return_inverse=True)
+        tot = np.bincount(inv, weights=wgt, minlength=len(upk))
+        pv = np.sign(tot).astype(np.int8)
+        nz = pv != 0
+        self.side_pair_keys, self.side_pair_val = upk[nz], pv[nz]
+
+    def rest_side(self, v, t):
+        """Rest side (+1 / -1, 0 = unknown) of vertex ``v``'s piece relative to face ``t``, for cross-piece pairs."""
+        out = np.zeros(len(v), np.int8)
+        if getattr(self, 'npieces', 0) < 2 or len(v) == 0:
+            return out
+        P = self.npieces
+        pb = self.pid[v]
+        cross = pb != self.face_piece[t]
+        if len(self.side_face_keys):
+            key = t * P + pb
+            pos = np.minimum(np.searchsorted(self.side_face_keys, key), len(self.side_face_keys) - 1)
+            hit = (self.side_face_keys[pos] == key) & cross
+            out = np.where(hit, self.side_face_val[pos], out).astype(np.int8)
+        if len(self.side_pair_keys):
+            miss = (out == 0) & cross
+            if miss.any():
+                key = self.face_piece[t] * P + pb
+                pos = np.minimum(np.searchsorted(self.side_pair_keys, key), len(self.side_pair_keys) - 1)
+                hit = (self.side_pair_keys[pos] == key) & miss
+                out = np.where(hit, self.side_pair_val[pos], out).astype(np.int8)
+        return out
 
     def invalidate(self):
         self._cache = None
@@ -276,10 +376,9 @@ class SelfCollider:
         s0 = np.where(d0 < 0.0, -1.0, 1.0)
         cross = np.zeros(len(v), bool)
         if self.rest is not None:
-            cross = self.comp[v] != self.comp[tr[:, 0]]
-            if cross.any():
-                dr = ((self.rest[v] - self.rest[tr[:, 0]]) * self.rest_nrm[t]).sum(1)
-                s0 = np.where(cross, np.where(dr < 0.0, -1.0, 1.0), s0)
+            rs = self.rest_side(v, t)              # fixed per (face, piece) at rest; 0 = unknown -> continuity
+            cross = rs != 0
+            s0 = np.where(cross, rs.astype(float), s0)
         sd = s0 * d
         # projection test for the face region: point projects inside (closest point interior)
         proj_in = inside
@@ -408,20 +507,21 @@ class SelfCollider:
         return total
 
     def layered_correct(self, x, xp, w):
-        """Rest-side corrector for ordered pieces (garment layers).  A vertex of an upper piece must stay on the side
-        of every lower piece's nearest face that it had at rest, at >= thickness.  It is projected there whatever
-        way it got across (vertex-face, edge-edge, tunnelling).  Pieces are ordered by their lowest vertex index."""
-        if self.rest is None:
+        """Rest-side corrector for separate pieces (garment layers, pockets, collars).
+
+        For every vertex and every *other* piece near it, take that piece's NEAREST face (unsigned closest-point
+        distance, not the deepest one: through a fold, a far face's plane says nothing about the side) and project the
+        vertex to the side of that face that its piece had at rest (``rest_side``), at >= thickness, whatever way it
+        got across (vertex-face, edge-edge, tunnelling).  Works in both directions (an inner layer poking out through
+        an outer one is pulled back in too), so piece order / vertex numbering does not matter.  A pinned vertex
+        carries the face instead."""
+        if self.rest is None or getattr(self, 'npieces', 0) < 2:
             return 0
-        labels = np.unique(self.comp)
-        if len(labels) < 2:
-            return 0
-        rank = np.searchsorted(labels, self.comp)
         th = self.thickness
         R = max(float(self.layer_radius), 2.0 * th)
-        save_th, save_on = self.thickness, self.vert_on
+        save_th = self.thickness
+        v = t = np.zeros(0, np.int64)
         try:
-            self.vert_on = save_on & (rank > 0)
             for _try in range(3):             # a huge search radius can overflow the pair budget: shrink it
                 self.thickness = R
                 self.stats.pop('overflow', None)
@@ -430,46 +530,74 @@ class SelfCollider:
                     break
                 R = max(0.5 * R, 2.0 * th)
         finally:
-            self.thickness, self.vert_on = save_th, save_on
+            self.thickness = save_th
+        if len(v) == 0:
+            return 0
+        pb = self.pid[v]
+        k = pb != self.face_piece[t]
+        if self.allow.shape[0] > 1:
+            k &= self.allow[self.layer[v], self.layer[self.tris[t, 0]]]
+        tr0 = self.tris[t]
+        k &= self.vert_on[tr0[:, 0]] & self.vert_on[tr0[:, 1]] & self.vert_on[tr0[:, 2]]
+        v, t = v[k], t[k]
         if len(v) == 0:
             return 0
         tr = self.tris[t]
-        k = rank[v] > rank[tr[:, 0]]
-        v, t, tr = v[k], t[k], tr[k]
-        if len(v) == 0:
-            return 0
         a, b, c = x[tr[:, 0]], x[tr[:, 1]], x[tr[:, 2]]
         p = x[v]
         nrm = np.cross(b - a, c - a)
         nl = np.linalg.norm(nrm, axis=1)
         good = nl > 1e-14
         nrm = nrm / np.where(good, nl, 1.0)[:, None]
-        q, bary, inside = closest_point_triangle(p, a, b, c)
-        d = ((p - a) * nrm).sum(1)
-        dr = ((self.rest[v] - self.rest[tr[:, 0]]) * self.rest_nrm[t]).sum(1)
-        s0 = np.where(dr < 0.0, -1.0, 1.0)
-        sd = s0 * d
+        q, _bary, inside = closest_point_triangle(p, a, b, c)
         diff = p - q
         dist = np.linalg.norm(diff, axis=1)
-        face = inside & good & (np.abs(d) < R) & (sd < th)
-        edge = (~inside) & good & (dist < th) & (sd >= 0.0)
+        # nearest face of each other piece per vertex
+        P = self.npieces
+        key = v * P + self.face_piece[t]
+        order = np.lexsort((dist, key))
+        key_s = key[order]
+        first = np.ones(len(order), bool)
+        first[1:] = key_s[1:] != key_s[:-1]
+        sel = order[first]
+        sel = sel[good[sel] & (dist[sel] < R)]
+        if len(sel) == 0:
+            return 0
+        v, t, tr, nrm, diff, dist, inside = v[sel], t[sel], tr[sel], nrm[sel], diff[sel], dist[sel], inside[sel]
+        a = x[tr[:, 0]]
+        rs = self.rest_side(v, t).astype(float)
+        # unknown rest side: keep the side of the substep start (continuity)
+        if (rs == 0).any():
+            pa, pb_, pc = xp[tr[:, 0]], xp[tr[:, 1]], xp[tr[:, 2]]
+            n0 = np.cross(pb_ - pa, pc - pa)
+            n0 /= np.maximum(np.linalg.norm(n0, axis=1), 1e-14)[:, None]
+            d0 = ((xp[v] - pa) * n0).sum(1)
+            rs = np.where(rs == 0, np.where(d0 < 0.0, -1.0, 1.0), rs)
+        d = ((x[v] - a) * nrm).sum(1)
+        sd = rs * d
+        face = inside & (sd < th)
+        edge = (~inside) & (dist < th) & (((diff * nrm).sum(1) * rs) >= 0.0)
         m = face | edge
         if not m.any():
+            self.stats['layered_fixed'] = 0
             return 0
-        v, t, tr, nrm, s0, sd, diff, dist, face = v[m], t[m], tr[m], nrm[m], s0[m], sd[m], diff[m], dist[m], face[m]
-        direction = np.where(face[:, None], s0[:, None] * nrm, diff / np.maximum(dist, 1e-12)[:, None])
+        v, tr, nrm, rs, sd, diff, dist, face = v[m], tr[m], nrm[m], rs[m], sd[m], diff[m], dist[m], face[m]
+        direction = np.where(face[:, None], rs[:, None] * nrm, diff / np.maximum(dist, 1e-12)[:, None])
         need = np.where(face, th - sd, th - dist)
-        order = np.argsort(-need, kind='stable')
-        v, tr, direction, need = v[order], tr[order], direction[order], need[order]
-        _u, first = np.unique(v, return_index=True)
-        v, tr, direction, need = v[first], tr[first], direction[first], need[first]
         push = need[:, None] * direction
+        # several pieces can push one vertex (a middle layer): sum their corrections
+        n = self.n
+        dx = np.zeros((n, 3))
         free = w[v] > 0.0
-        x[v[free]] += push[free]
+        for j in range(3):
+            dx[:, j] += np.bincount(v[free], weights=push[free, j], minlength=n)
         pin = ~free
-        if pin.any():                      # the vertex cannot move: carry the lower face away instead
+        if pin.any():                      # the vertex cannot move: carry the face away instead
             for kk in range(3):
-                x[tr[pin, kk]] -= push[pin] * (w[tr[pin, kk]] > 0.0)[:, None]
+                mv = (w[tr[pin, kk]] > 0.0)
+                for j in range(3):
+                    dx[:, j] += np.bincount(tr[pin, kk][mv], weights=-push[pin][mv, j], minlength=n)
+        x += dx
         self.stats['layered_fixed'] = int(len(v))
         return int(len(v))
 
