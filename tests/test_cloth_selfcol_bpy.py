@@ -63,7 +63,7 @@ cl.use_scene_wind = False
 cl.wind = (0, 0, 0)
 
 S = CO.build_solver(sc, g)
-ok(S.self_collision is True and S.self_collision_mode == 'ACCURATE', "BALANCED: panel toggle ON reaches the solver, accurate mode")
+ok(S.self_collision is True and S.self_collision_mode == 'LAYERED', "BALANCED: panel toggle ON reaches the solver, AUTO -> layered (rest-side) mode")
 g.quality = 'REALTIME'
 S = CO.build_solver(sc, g)
 ok(S.self_collision is True and S.self_collision_mode == 'FAST', "REALTIME + AUTO: cheaper vectorised variant, not off")

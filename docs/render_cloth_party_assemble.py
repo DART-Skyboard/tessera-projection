@@ -12,6 +12,7 @@ import sys
 
 work, out = sys.argv[1], sys.argv[2]
 fps = int(sys.argv[3]) if len(sys.argv) > 3 else 24
+hold = float(sys.argv[4]) if len(sys.argv) > 4 else 1.0   # slow-motion factor (each grab is shown hold x longer)
 d = os.path.join(work, 'ui_frames')
 man = json.load(open(os.path.join(d, 'manifest.json')))
 man.sort(key=lambda e: e['frame'])
@@ -19,7 +20,7 @@ lst = os.path.join(work, 'concat.txt')
 with open(lst, 'w') as fh:
     for i, e in enumerate(man):
         nxt = man[i + 1]['frame'] if i + 1 < len(man) else e['frame'] + 2
-        fh.write("file '%s'\nduration %.6f\n" % (os.path.join(d, e['file']), (nxt - e['frame']) / fps))
+        fh.write("file '%s'\nduration %.6f\n" % (os.path.join(d, e['file']), hold * (nxt - e['frame']) / fps))
     fh.write("file '%s'\n" % os.path.join(d, man[-1]['file']))
 os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
 subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', '-f', 'concat', '-safe', '0', '-i', lst, '-vf', 'fps=%d,format=yuv420p' % fps,
