@@ -808,11 +808,11 @@ def build_control_rig(scene, ik=True):
 _JOINTS = {   # name: (x, y, z, radius)
     'pelvis': (0, 0, 0.95, 0.15), 'spine': (0, 0, 1.15, 0.14), 'chest': (0, 0, 1.40, 0.165), 'cn': (0, 0, 1.50, 0.14),
     'neck': (0, 0, 1.60, 0.058), 'headb': (0, 0, 1.68, 0.09), 'headm': (0, 0, 1.75, 0.125), 'headt': (0, 0, 1.83, 0.085),
-    'nose': (0, -0.13, 1.735, 0.026), 'chin': (0, -0.08, 1.665, 0.045),
+    'nose': (0, -0.13, 1.735, 0.026),
     'sh': (0.20, 0, 1.50, 0.062), 'el': (0.46, 0, 1.25, 0.046), 'wr': (0.70, 0, 1.03, 0.034), 'hand': (0.80, 0, 0.93, 0.036),
     'hp': (0.10, 0, 0.93, 0.10), 'kn': (0.11, -0.01, 0.50, 0.062), 'an': (0.11, 0, 0.10, 0.046), 'toe': (0.11, -0.17, 0.045, 0.04),
 }
-_EDGES = [('pelvis', 'spine'), ('spine', 'chest'), ('chest', 'cn'), ('cn', 'neck'), ('neck', 'headb'), ('headb', 'headm'), ('headm', 'headt'), ('headm', 'nose'), ('headb', 'chin'),
+_EDGES = [('pelvis', 'spine'), ('spine', 'chest'), ('chest', 'cn'), ('cn', 'neck'), ('neck', 'headb'), ('headb', 'headm'), ('headm', 'headt'), ('headm', 'nose'),
           ('cn', 'sh'), ('sh', 'el'), ('el', 'wr'), ('wr', 'hand'), ('pelvis', 'hp'), ('hp', 'kn'), ('kn', 'an'), ('an', 'toe')]
 _BONES = [  # name, head point, tail point, parent  (+x side gets .L, mirrored .R)
     ('pelvis', (0, 0, .95), (0, 0, 1.15), None), ('spine', (0, 0, 1.15), (0, 0, 1.40), 'pelvis'),
