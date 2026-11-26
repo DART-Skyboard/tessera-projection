@@ -230,7 +230,7 @@ def apply_hair_material(obj, color=None, name="Tessera Hair", preset='CHESTNUT',
     L.new(_mixout(mix), _mixin(mixr, 'A'))
     L.new(rnd.outputs[0], _mixin(mixr, 'B'))
     L.new(_mixout(mixr), prin.inputs['Base Color'])
-    for n, v in (('Roughness', 0.45), ('Metallic', 0.0), ('Coat Weight', 0.0), ('Specular IOR Level', 0.35)):
+    for n, v in (('Roughness', 0.6), ('Metallic', 0.0), ('Coat Weight', 0.0), ('Specular IOR Level', 0.12)):
         if n in prin.inputs:
             prin.inputs[n].default_value = v
     L.new(prin.outputs[0], out_e.inputs['Surface'])

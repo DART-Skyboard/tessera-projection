@@ -610,9 +610,9 @@ def setup_studio():
         ob.location = loc
         ob.rotation_euler = rot
         return ob
-    area("TS_Key", (-1.1, -1.5, 2.3), (math.radians(60), 0, math.radians(-35)), 1.2, 110, (1.0, 0.92, 0.82))
+    area("TS_Key", (-1.1, -1.5, 2.3), (math.radians(60), 0, math.radians(-35)), 1.2, 90, (1.0, 0.92, 0.82))
     area("TS_Fill", (1.4, -0.9, 1.6), (math.radians(80), 0, math.radians(55)), 1.6, 40, (0.75, 0.82, 1.0))
-    area("TS_Rim", (0.5, 1.3, 2.2), (math.radians(-35), 0, math.radians(200)), 0.6, 260, (1.0, 0.9, 0.78))
+    area("TS_Rim", (0.5, 1.3, 2.2), (math.radians(-35), 0, math.radians(200)), 0.6, 110, (1.0, 0.9, 0.78))
     cam = bpy.data.cameras.new("TS_Cam")
     cam.lens = 55
     cob = bpy.data.objects.new("TS_Cam", cam)
