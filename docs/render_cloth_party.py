@@ -651,7 +651,7 @@ def build():
         CO.add_collider(scene, bpy.data.objects[nm])
     cl.use_scene_wind = False
     cl.use_fluid_velocity = False
-    cl.wind = (3.0, 0.4, 0.2)
+    cl.wind = (1.0, 0.2, 0.1)
     cl.status = "Nebula Gown: 3 layers, self-collision ON."
     animate(scene, arm, cl)
     scene.frame_set(1)
@@ -706,7 +706,7 @@ def animate(scene, arm, cl):
         arm.location = (sway, 0.0, 0.0)
         arm.keyframe_insert('rotation_euler', frame=k + 1)
         arm.keyframe_insert('location', frame=k + 1)
-        gust = 2.5 + 2.8 * (0.5 + 0.5 * math.sin(t * 0.9)) + 1.6 * math.sin(t * 2.7) ** 2
+        gust = 0.5 + 1.1 * (0.5 + 0.5 * math.sin(t * 0.9)) + 0.5 * math.sin(t * 2.7) ** 2
         env = 1.0 if t > 1.0 else t
         cl.wind = (gust * env, 0.35 * math.sin(t * 0.5), 0.15 + 0.2 * math.sin(t * 1.7))
         cl.keyframe_insert('wind', frame=k + 1)
