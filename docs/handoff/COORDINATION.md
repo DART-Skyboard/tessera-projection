@@ -57,6 +57,7 @@ worker A owns it from here.
 ## Cloth frame-100 notes from the lead (for worker B)
 - Repro script: `/workspace/tp7demo/layered_skirt.py` (3 concentric skirt pieces on a twisting / swaying waist over a body column,
   gusty wind, LAYERED mode; prints wrong-side counts per layer pair at frames 24..300; usage `python3 layered_skirt.py LAYERED 300`).
+- Metric fixed 14:20 (radial sign; ring_grid faces point inward). An early run with the wrong sign is void; no valid before-numbers yet.
 - Root-cause hypothesis (not yet verified): `SelfCollider._contacts` and `layered_correct` decide the "rest side" of a cross-piece
   pair from `(rest[v] - rest[tri0]) . rest_nrm[t]`, i.e. the rest relation between vertex v and whatever face t is nearest NOW.
   After the layers slide / twist (tens of frames), the nearest face is no longer v's rest neighbour; on a curved garment (skirt) a
