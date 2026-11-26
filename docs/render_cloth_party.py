@@ -204,7 +204,7 @@ def build_dress(cols=COLS):
             hz = 0.46 + 0.30 * math.cos(th[i])
             z = zw + (hz - zw) * s
             t = max(0.0, (Z_WAIST - z) / (Z_WAIST - Z_HEM))
-            extra = 0.014 + 0.17 * s ** 1.3
+            extra = 0.028 + 0.17 * s ** 1.3
             p = shell_point(z, th[i], extra=extra)
             d = pleat(th[i], s, 0.030, 1.1)
             rad = np.array([np.sin(th[i]), -np.cos(th[i]), 0.0])
@@ -231,7 +231,7 @@ def build_dress(cols=COLS):
         for i in range(ccols):
             u = (i / (ccols - 1) - 0.5) * 2.0
             theta = math.pi + u * span * (0.55 + 0.45 * s)
-            extra = 0.030 + 0.40 * s ** 1.5
+            extra = 0.040 + 0.40 * s ** 1.5
             p = shell_point(z, theta, extra=extra)
             d = 0.035 * s * math.sin(7 * u * math.pi * 0.5 + 0.4) * math.sin(math.pi * (i / (ccols - 1)))
             rad = np.array([np.sin(theta), -np.cos(theta), 0.0])
@@ -730,7 +730,8 @@ def sim():
     CO.RT.live_running = True
     scene.frame_set(1)
     S = CO.build_solver(scene, g)
-    S.self_collider().iterations = int(os.environ.get("PARTY_SC_PASSES", "3"))   # response passes per substep
+    S.self_inloop = os.environ.get("PARTY_INLOOP", "0") == "1"
+    S.self_collider().iterations = int(os.environ.get("PARTY_SC_PASSES", "4"))   # response passes per substep
     S.ground_z = 0.0                      # the showroom floor is an analytic ground plane
     print("sim:", S.n, "verts, self_collision", S.self_collision, S.self_collision_mode, "substeps", S.substeps,
           "iters", S.iterations, flush=True)

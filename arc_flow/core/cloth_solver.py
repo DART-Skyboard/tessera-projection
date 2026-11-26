@@ -292,6 +292,7 @@ class ClothSolver:
         self.self_collision_mode = str(pr.get('self_collision_mode', 'ACCURATE'))
         # contact thickness / friction against itself (0 / -1 -> follow cloth thickness / friction)
         self.self_thickness = float(pr.get('self_thickness', 0.0))
+        self.self_inloop = False
         self.self_friction = float(pr.get('self_friction', -1.0))
         self.self_layers = None
         self.self_ignore_pairs = ()
@@ -574,6 +575,10 @@ class ClothSolver:
                 if self.use_dihedral and len(self.hinges):
                     self._solve_dihedral(h)
                 self._solve_soft_pins(h)
+                if self.self_collision and self.self_inloop and _it < max(1, int(self.iterations)) - 1:
+                    # contacts re-applied between constraint iterations so stretch cannot drag vertices back across
+                    self.self_collider().solve(self.x, self.x_prev, self.inv_mass, substep_index=_,
+                                               reuse=(_it > 0), passes=1)
             self._collide()
             if self.self_collision:
                 self._self_collide(ref=self.x_prev, passes=1, substep_index=_)

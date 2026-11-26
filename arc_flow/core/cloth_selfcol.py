@@ -350,13 +350,15 @@ class SelfCollider:
         return k
 
     # ------------------------------------------------------------------ public
-    def solve(self, x, xp, inv_mass, substep_index=0, speed_slack=None):
+    def solve(self, x, xp, inv_mass, substep_index=0, speed_slack=None, reuse=False, passes=None):
         """Resolve contacts in place on ``x`` (positions after constraint projection).
         ``xp`` are the positions at the start of the substep.  Returns number of contacts."""
         import time as _t
         t0 = _t.perf_counter()
         fast = self.mode == 'FAST'
-        refresh = (not fast) or self._cache is None or (substep_index % max(self.fast_period, 1) == 0)
+        refresh = (not reuse) and ((not fast) or self._cache is None or (substep_index % max(self.fast_period, 1) == 0))
+        if reuse and self._cache is None:
+            refresh = True
         if refresh:
             if speed_slack is None:
                 disp = np.linalg.norm(x - xp, axis=1)
@@ -390,7 +392,7 @@ class SelfCollider:
         self.stats['pairs'] = len(v)
         total = 0
         if len(v):
-            for _ in range(1 if fast else max(1, self.iterations)):
+            for _ in range(int(passes) if passes else (1 if fast else max(1, self.iterations))):
                 total += self._respond(x, xp, inv_mass, v, t)
         self.stats['ms'] = 1000.0 * (_t.perf_counter() - t0)
         return total
