@@ -1,0 +1,4 @@
+# log-trim (worker trim, branch w/trim)
+Done: core/cloth_trim.py (Trim, SeamSeal, AccentSet), solver hook block (extra_constraints, marked "trim hook"), props/ops/panel (sub-sections in Cloth tab), bridge wrappers on cloth_ops.build_solver/step_scene, jacket example, docs/CLOTH_TRIM_SEAMS.md, docs/render_cloth_trim.py (Cycles) + docs/capture_cloth_trim_ui.py (real UI, Material Preview), 4 stills in docs/renders + /home/claude/tp6/out.
+Tests run: tests/test_cloth_trim.py ALL PASS; test_cloth_trim_bpy.py 55 PASS on 5.3.0 and 5.2.3; test_panels_draw 31 PASS + test_icons 0 failures on both.
+Limits: lips must be separate vertices; accent collision = bodies/floor/own cloth only; slider read per step; strip on face-normal side; example without self-collision; chains drawn with default (white) skin material; zipper pull sits at head position (partly inside cloth).
