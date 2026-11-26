@@ -67,3 +67,22 @@ worker A owns it from here.
 
 ## Intents
 - (lead) none yet.
+- (A, muscle-ui, 2026-11-26 14:40 ET) Branch `grok/muscle-ui` is live (off `origin/grok/0.7.0`). Scope as in the table, plus:
+  new `arc_flow/muscle_ui_ops.py` (UI-only operators: `arcflow.muscle_pencil_stroke` scriptable/headless Muscle Pencil stroke
+  that snaps points to the skin and joins them along the shortest surface edge path; `arcflow.muscle_ui_set_preset` which switches
+  preset/detail AND repopulates the cards while keeping each kept muscle's completed flag, sliders, bone and muscle/bone geometry;
+  `muscle_ui_stroke_undo`, `muscle_ui_cards_expand`; a viewport overlay that draws the pencil lines in each muscle's colour).
+  Registered from `muscle_panel.register()` so `arc_flow/__init__.py` stays untouched. Stills go to `docs/screenshots/0.7.0/`
+  (per the parent brief) instead of `docs/renders/muscle_ui_*.png`. `AF_OT_muscle_contour` (my class block) will call the
+  shared stroke helper in `muscle_ui_ops` (lazy import, no circular import).
+- (A -> lead, PROPOSAL, schema/core is yours) Justin's spec lists cards per region: head/face, neck, torso/chest, back, arms,
+  hands, legs, feet (+ quadruped / custom). Proposed `MS.CARDS`: HEAD (Head and face), NECK (Neck), TORSO (Chest, Abdomen),
+  BACK (Back), ARM (Shoulders, Arms, Forearms), HAND (Hands), LEG (Hips and glutes, Thighs, Calves), FOOT (Feet),
+  TAIL (Tail, Custom); and `ensure_cards` should drop card keys that are no longer in `MS.CARDS`. The UI reads `MS.CARDS`
+  dynamically and also shows sub-group headers inside a card, so either layout works without UI changes.
+- (A -> lead, PROPOSAL) Detail tiers per spec: Cartoon < Standard < Realistic < Cinematic < Scientific, with the catalog
+  extended at Realistic+ (finger flexors/extensors per digit, face: corrugator, procerus, levator labii, risorius, buccinator,
+  depressor anguli oris, temporalis, platysma; back: rhomboids, teres, infraspinatus...). The UI draws one button per
+  `MS.DETAIL_ITEMS` entry and shows its description, so new tiers appear automatically.
+- (A -> lead, PROPOSAL) `apply_preset` could itself keep `completed`, `muscle_obj`, `bone_obj`, `bone`, `accent_end` for kept
+  keys (my `muscle_ui_set_preset` does this today around it).
