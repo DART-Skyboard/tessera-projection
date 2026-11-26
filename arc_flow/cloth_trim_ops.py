@@ -290,7 +290,7 @@ def _ensure_instances(scene, a, K):
     return obs
 
 
-def _line_object(scene, name, V, E, thickness):
+def _line_object(scene, name, V, E, thickness, roots=()):
     """Polyline object (chains) drawn with a Skin modifier so loose edges get thickness."""
     import bmesh
     ob = bpy.data.objects.get(name)
@@ -311,6 +311,7 @@ def _line_object(scene, name, V, E, thickness):
         lay = bm.verts.layers.skin.verify()
         for v in bm.verts:
             v[lay].radius = (float(thickness), float(thickness))
+            v[lay].use_root = v.index in set(roots)
         bm.to_mesh(me)
         bm.free()
     else:
@@ -375,7 +376,7 @@ def refresh_objects(scene, g, S):
             V = C.reshape(-1, 3)
             m = C.shape[1]
             E = [(k * m + j, k * m + j + 1) for k in range(o.K) for j in range(m - 1)]
-            _line_object(scene, "%s Chains" % a.name, V, E, max(a.collide_radius * 0.5, 0.0015))
+            _line_object(scene, "%s Chains" % a.name, V, E, max(a.collide_radius * 0.5, 0.0015), roots=[k * m for k in range(o.K)])
     for sm in ts.seams:
         o = B.seams.get(sm.name)
         if o is None:
