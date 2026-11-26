@@ -642,7 +642,7 @@ def build():
     g.margin = 0.006
     g.self_collision = True                 # <- the point of this scene
     g.self_collision_mode = 'ACCURATE'
-    g.self_thickness = 0.006
+    g.self_thickness = 0.007
     g.self_friction = 0.35
     for o in body_objs:
         CO.add_collider(scene, o)
@@ -730,7 +730,7 @@ def sim():
     CO.RT.live_running = True
     scene.frame_set(1)
     S = CO.build_solver(scene, g)
-    S.self_collider().iterations = 1       # one response pass per substep keeps the 720-frame solve affordable
+    S.self_collider().iterations = int(os.environ.get("PARTY_SC_PASSES", "3"))   # response passes per substep
     S.ground_z = 0.0                      # the showroom floor is an analytic ground plane
     print("sim:", S.n, "verts, self_collision", S.self_collision, S.self_collision_mode, "substeps", S.substeps,
           "iters", S.iterations, flush=True)
