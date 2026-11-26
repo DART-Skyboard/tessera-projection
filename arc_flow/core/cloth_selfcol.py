@@ -135,6 +135,8 @@ class SelfCollider:
                                          np.asarray(ring_extra, np.int64).reshape(-1, 2)])
         self.ring = _ring_keys(self.n, ring_edges, 1)
         self.vert_th = None if vert_th is None else np.asarray(vert_th, float).reshape(-1)
+        self.rest_amb = 0.002       # rest offsets smaller than this are ambiguous: the piece-pair majority side decides
+        self.pair_sign = None
         self.layer_reach = 0.6      # rest-side ordering applies to pairs that were within this distance at rest
         self.comp = mesh_components(self.n, edges)   # disconnected pieces (garment layers) keep their rest-pose order
         self.rest = None
@@ -175,6 +177,48 @@ class SelfCollider:
         n = np.cross(r[T[:, 1]] - r[T[:, 0]], r[T[:, 2]] - r[T[:, 0]])
         self.rest_nrm = n / np.maximum(np.linalg.norm(n, axis=1), 1e-14)[:, None]
         self.rest = r.copy()
+        self.pair_sign = None
+
+    def _rest_side(self, v, t, dr):
+        """Rest side (+1 / -1) of vertex ``v`` against triangle ``t`` from the rest offset ``dr``.  Pieces that were
+        laid ON each other at rest (offset below ``rest_amb``, e.g. a sash on a dress) take the side that the piece
+        pair has on average, so the unavoidable noise of a near-zero offset cannot pull a vertex through the cloth."""
+        sgn = np.where(dr < 0.0, -1.0, 1.0)
+        if self.pair_sign is None:
+            self._compute_pair_signs()
+        amb = np.abs(dr) < self.rest_amb
+        if amb.any() and self.pair_sign:
+            ps = np.array([self.pair_sign.get((int(a), int(b)), 1.0) for a, b in
+                           zip(self.comp[v[amb]], self.comp[self.tris[t[amb], 0]])])
+            sgn[amb] = ps
+        return sgn
+
+    def _compute_pair_signs(self):
+        """Mean rest offset sign per ordered pair of pieces (vertices of A against faces of B within a few mm)."""
+        self.pair_sign = {}
+        if self.rest is None or len(np.unique(self.comp)) < 2:
+            return
+        r = self.rest
+        save = self.thickness
+        try:
+            self.thickness = max(self.rest_amb * 2.0, 0.004)
+            v, t = self._candidates(r, r, 0.0)
+        finally:
+            self.thickness = save
+        if len(v) == 0:
+            return
+        tr = self.tris[t]
+        k = self.comp[v] != self.comp[tr[:, 0]]
+        v, t, tr = v[k], t[k], tr[k]
+        if len(v) == 0:
+            return
+        q, _b, inside = closest_point_triangle(r[v], r[tr[:, 0]], r[tr[:, 1]], r[tr[:, 2]])
+        dr = ((r[v] - r[tr[:, 0]]) * self.rest_nrm[t]).sum(1)
+        ok = inside & (np.abs(dr) < self.rest_amb * 2.0)
+        acc = {}
+        for a, b, d in zip(self.comp[v[ok]], self.comp[tr[ok, 0]], dr[ok]):
+            acc[(int(a), int(b))] = acc.get((int(a), int(b)), 0.0) + float(d)
+        self.pair_sign = {k_: (-1.0 if d < 0 else 1.0) for k_, d in acc.items()}
 
     def invalidate(self):
         self._cache = None
@@ -301,7 +345,8 @@ class SelfCollider:
                 dr = ((self.rest[v] - self.rest[tr[:, 0]]) * self.rest_nrm[t]).sum(1)
                 # rest-side ordering only for pieces that really were stacked at rest (within reach)
                 cross &= np.abs(dr) < self.layer_reach
-                s0 = np.where(cross, np.where(dr < 0.0, -1.0, 1.0), s0)
+                if cross.any():
+                    s0 = np.where(cross, self._rest_side(v, t, dr), s0)
         sd = s0 * d
         # projection test for the face region: point projects inside (closest point interior)
         proj_in = inside
@@ -476,7 +521,7 @@ class SelfCollider:
         th = th[k] if np.ndim(th) else th
         q, bary, inside = closest_point_triangle(p, a, b, c)
         d = ((p - a) * nrm).sum(1)
-        s0 = np.where(dr < 0.0, -1.0, 1.0)
+        s0 = self._rest_side(v, t, dr)
         sd = s0 * d
         diff = p - q
         dist = np.linalg.norm(diff, axis=1)
@@ -503,7 +548,7 @@ class SelfCollider:
         self.stats['layered_fixed'] = int(len(v))
         return int(len(v))
 
-    def wrong_side(self, x, reach=None, chunk=160, labels=None):
+    def wrong_side(self, x, reach=None, chunk=160, labels=None, detail=None):
         """Diagnostic: per ordered piece pair (P, Q) the number of P vertices that sit on the wrong (non-rest) side of
         the nearest Q face they project onto, and the deepest such vertex.  Independent of the solver (brute force
         matrix test, no hashing, no pair budget).  Returns {(p, q): (count, worst_depth_m)} over piece labels."""
@@ -549,13 +594,79 @@ class SelfCollider:
                     j = np.argmin(ad, axis=1)
                     r_ = np.arange(len(ids))
                     has = np.isfinite(ad[r_, j])
-                    sd = np.where(drr[r_, j] < 0.0, -1.0, 1.0) * d[r_, j]
+                    sd = self._rest_side(ids, tq[j], drr[r_, j]) * d[r_, j]
                     bad = has & (sd < 0.0)
                     cnt[int(q)] += int(bad.sum())
+                    if detail is not None and bad.any():
+                        detail.setdefault((int(p), int(q)), []).extend(zip(ids[bad].tolist(), (-sd[bad]).tolist(), tq[j[bad]].tolist()))
                     if bad.any():
                         worst[int(q)] = max(worst[int(q)], float((-sd[bad]).max()))
             for q in cnt:
                 out[(int(p), q)] = (cnt[q], worst[q])
+        return out
+
+    def crossings(self, x, labels=None, chunk=400, eps=1e-9, same=True, extra=None):
+        """Ground-truth interpenetration: number of mesh EDGES of piece P that pierce a TRIANGLE of piece Q
+        (segment-triangle test, Moeller-Trumbore, AABB prefiltered).  Needs no rest pose and no ordering assumption.
+        Returns {(p, q): count} for every ordered pair; with ``same`` also (p, p) = self-intersections of one piece
+        (triangles that share a vertex with the edge are ignored).  ``extra`` = (verts, tris) of an outside body
+        (e.g. the dress form): edges of every piece against it, reported as (p, 'ext')."""
+        T = self.tris
+        lab = self.comp if labels is None else np.asarray(labels, np.int64)
+        E = np.unique(np.sort(np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]]), axis=1), axis=0)
+        A, B, C = x[T[:, 0]], x[T[:, 1]], x[T[:, 2]]
+        tlo = np.minimum(np.minimum(A, B), C)
+        thi = np.maximum(np.maximum(A, B), C)
+        e0, e1 = x[E[:, 0]], x[E[:, 1]]
+        elo, ehi = np.minimum(e0, e1), np.maximum(e0, e1)
+        out = {}
+        labels_u = np.unique(lab)
+        tl = lab[T[:, 0]]
+        el = lab[E[:, 0]]
+
+        def count(ei, tsel, TA, TB, TC, tlo_, thi_, tris_idx=None):
+            cnt = 0
+            for s0 in range(0, len(ei), chunk):
+                ids = ei[s0:s0 + chunk]
+                ov = ((elo[ids][:, None, :] <= thi_[None]) & (ehi[ids][:, None, :] >= tlo_[None])).all(-1)
+                a_, b_ = np.nonzero(ov)
+                if len(a_) == 0:
+                    continue
+                ee, tt = ids[a_], b_
+                if tris_idx is not None:                      # same piece: skip triangles sharing a vertex with the edge
+                    tv = tris_idx[tt]
+                    share = ((tv == E[ee, 0][:, None]) | (tv == E[ee, 1][:, None])).any(1)
+                    ee, tt = ee[~share], tt[~share]
+                    if len(ee) == 0:
+                        continue
+                P0, D = e0[ee], e1[ee] - e0[ee]
+                V0, V1, V2 = TA[tt], TB[tt], TC[tt]
+                E1, E2 = V1 - V0, V2 - V0
+                h = np.cross(D, E2)
+                det = (E1 * h).sum(1)
+                ok = np.abs(det) > eps
+                inv = 1.0 / np.where(ok, det, 1.0)
+                sv = P0 - V0
+                u = (sv * h).sum(1) * inv
+                qv = np.cross(sv, E1)
+                v = (D * qv).sum(1) * inv
+                t = (E2 * qv).sum(1) * inv
+                hit = ok & (u > 1e-7) & (v > 1e-7) & (u + v < 1 - 1e-7) & (t > 1e-7) & (t < 1 - 1e-7)
+                cnt += int(hit.sum())
+            return cnt
+
+        for p in labels_u:
+            ei = np.nonzero(el == p)[0]
+            for q in labels_u:
+                if q == p and not same:
+                    continue
+                ti = np.nonzero(tl == q)[0]
+                out[(int(p), int(q))] = count(ei, ti, A[ti], B[ti], C[ti], tlo[ti], thi[ti], T[ti] if q == p else None)
+            if extra is not None:
+                ev, et = extra
+                EA, EB, EC = ev[et[:, 0]], ev[et[:, 1]], ev[et[:, 2]]
+                out[(int(p), 'ext')] = count(ei, None, EA, EB, EC, np.minimum(np.minimum(EA, EB), EC),
+                                             np.maximum(np.maximum(EA, EB), EC))
         return out
 
     def min_distance(self, x, limit=None):
