@@ -292,6 +292,8 @@ def collider_targets(scene, hair=None, include_scene=True):
     """Ordered [(obj, thickness|None, friction|None, deforming|None)] the solver should collide with."""
     hp = _hp(scene)
     out, seen = [], set()
+    if not getattr(hp, 'use_colliders', True):
+        return out
 
     def add(o, th=None, fr=None, deform=None):
         if o is None or o.type != 'MESH' or o.name in seen or o is hair:
@@ -1237,6 +1239,81 @@ def auto_collider_candidates(scene, hair=None):
             if np.all(c.max(axis=0) >= lo) and np.all(c.min(axis=0) <= hi):
                 add(o)
     return found
+
+
+OVERLAY_MAT = "Tessera Collision Overlay"
+
+
+def mark_proxy(obj, on=True):
+    """Flag a mesh as a hidden-by-default collision proxy (capsules fitted to a rig): shown only while Show bodies is on."""
+    obj['af_hair_proxy'] = bool(on)
+    return obj
+
+
+def _overlay_material():
+    m = bpy.data.materials.get(OVERLAY_MAT)
+    if m is not None:
+        return m
+    m = bpy.data.materials.new(OVERLAY_MAT)
+    m.use_nodes = True
+    nt = m.node_tree
+    nt.nodes.clear()
+    out = nt.nodes.new('ShaderNodeOutputMaterial')
+    em = nt.nodes.new('ShaderNodeEmission')
+    em.inputs['Color'].default_value = (0.05, 0.85, 0.95, 1.0)
+    em.inputs['Strength'].default_value = 1.4
+    tr = nt.nodes.new('ShaderNodeBsdfTransparent')
+    mix = nt.nodes.new('ShaderNodeMixShader')
+    mix.inputs[0].default_value = 0.42
+    nt.links.new(tr.outputs[0], mix.inputs[1])
+    nt.links.new(em.outputs[0], mix.inputs[2])
+    nt.links.new(mix.outputs[0], out.inputs['Surface'])
+    m.diffuse_color = (0.05, 0.85, 0.95, 0.4)
+    try:
+        m.surface_render_method = 'BLENDED'
+    except Exception:
+        pass
+    try:
+        m.blend_method = 'BLEND'
+    except Exception:
+        pass
+    m.use_backface_culling = False
+    return m
+
+
+def collision_objects(scene):
+    hp = _hp(scene)
+    objs = []
+    for o in ([hp.collider] + [c.obj for c in hp.colliders]):
+        if o is not None and o.type == 'MESH' and o not in objs:
+            objs.append(o)
+    return objs
+
+
+def set_collider_overlay(scene, show):
+    """Show / hide the collision bodies in the viewport. Capsule proxies (flag `af_hair_proxy`) are hidden when off and get a translucent
+    teal material + wire when on; ordinary meshes (head, body, glove) only get a wire overlay drawn in front."""
+    mat = _overlay_material() if show else None
+    n = 0
+    for o in collision_objects(scene):
+        try:
+            if o.get('af_hair_proxy'):
+                if show:
+                    if mat.name not in [m.name for m in o.data.materials if m]:
+                        o.data.materials.clear()
+                        o.data.materials.append(mat)
+                    o.show_wire = True
+                    o.show_in_front = False
+                    o.hide_set(False)
+                else:
+                    o.hide_set(True)
+            else:
+                o.show_wire = bool(show)
+                o.show_in_front = bool(show)
+            n += 1
+        except Exception:
+            pass
+    return n
 
 
 def add_collider_entry(scene, obj, thickness=None, friction=None):

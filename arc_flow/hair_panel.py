@@ -4,7 +4,7 @@ object Properties panel (`AF_PT_hair_object`) stays; there is no sibling
 VIEW_3D Hair panel, so the category does not stack outside the tab card.
 """
 import bpy
-from bpy.types import Panel
+from bpy.types import Panel, UIList
 
 from . import hair_ops as HO
 
@@ -76,20 +76,44 @@ def _draw_collision(l, hp):
         row.prop(hp, "ground_z")
 
 
+class AF_UL_hair_colliders(UIList):
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        row = layout.row(align=True)
+        row.prop(item, "enabled", text="")
+        if item.obj is not None:
+            row.label(text=item.obj.name, icon='MESH_CAPSULE' if item.obj.get('af_hair_proxy') else 'MESH_ICOSPHERE')
+        else:
+            row.label(text="(empty)", icon='ERROR')
+        row.prop(item, "thickness", text="", emboss=False)
+
+
 def _draw_colliders(l, hp):
     col = l.column(align=True)
     row = col.row(align=True)
     row.scale_y = 1.15
+    row.prop(hp, "use_colliders", text="Collision On" if hp.use_colliders else "Collision Off",
+             icon='CHECKBOX_HLT' if hp.use_colliders else 'CHECKBOX_DEHLT', toggle=True)
+    row.prop(hp, "show_colliders", text="Show Bodies", icon='HIDE_OFF' if hp.show_colliders else 'HIDE_ON', toggle=True)
+    row = col.row(align=True)
     row.operator("arcflow.hair_collider_add", text="Add Selected as Collider", icon='ADD')
     row.operator("arcflow.hair_collider_auto", text="Auto", icon='ARMATURE_DATA')
     col.prop(hp, "use_scene_colliders")
     if hp.collider is not None:
         r = col.row(align=True)
         r.label(text=hp.collider.name + "  (collision body)", icon='MESH_ICOSPHERE')
-    for i, c in enumerate(hp.colliders):
+    n = len(hp.colliders)
+    if n:
+        solver = HO.RT.solver
+        n_on = sum(1 for c in hp.colliders if c.enabled and c.obj is not None)
+        stat = "%d of %d bodies enabled" % (n_on, n)
+        if solver is not None and hp.use_colliders:
+            stat += "   %d contacts" % int(getattr(solver, 'last_contacts', 0))
+        col.label(text=stat, icon='MOD_PHYSICS')
+        col.template_list("AF_UL_hair_colliders", "", hp, "colliders", hp, "collider_index", rows=min(max(n, 3), 8))
+        i = max(0, min(hp.collider_index, n - 1))
+        c = hp.colliders[i]
         box = col.box()
         r = box.row(align=True)
-        r.prop(c, "enabled", text="")
         r.prop(c, "obj", text="")
         op = r.operator("arcflow.hair_collider_remove", text="", icon='X')
         op.index = i
@@ -97,7 +121,7 @@ def _draw_colliders(l, hp):
         r.prop(c, "thickness", text="Thick")
         r.prop(c, "friction", text="Friction")
         r.prop(c, "deforming", text="", icon='MOD_ARMATURE')
-    if not len(hp.colliders) and hp.collider is None:
+    elif hp.collider is None:
         col.label(text="No collision bodies yet: select the head / body / glove and add it", icon='INFO')
 
 
@@ -268,7 +292,7 @@ class AF_PT_hair_object(Panel):
         _draw_object(self.layout, ctx)
 
 
-CLASSES = (AF_PT_hair_object,)  # Properties editor only — VIEW_3D content lives in the HAIR tab card
+CLASSES = (AF_UL_hair_colliders, AF_PT_hair_object)  # Properties editor only — VIEW_3D content lives in the HAIR tab card
 
 
 def register():

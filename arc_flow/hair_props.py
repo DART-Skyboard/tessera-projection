@@ -23,6 +23,14 @@ def _arm_poll(self, obj):
     return obj is not None and obj.type == 'ARMATURE'
 
 
+def _overlay_changed(self, context):
+    try:
+        from . import hair_ops
+        hair_ops.set_collider_overlay(context.scene, bool(self.show_colliders))
+    except Exception:
+        pass
+
+
 def _live_changed(self, context):
     try:
         from . import hair_ops
@@ -62,6 +70,10 @@ class AF_HairScene(PropertyGroup):
 
     colliders: CollectionProperty(type=AF_HairCollider)
     collider_index: IntProperty(default=0)
+    use_colliders: BoolProperty(name="Collision", default=True,
+                                description="Master switch: strands collide with every enabled body below (off = hair passes through bodies, for comparison)")
+    show_colliders: BoolProperty(name="Show bodies", default=False, update=_overlay_changed,
+                                 description="Display the collision bodies as a translucent overlay (capsule proxies are hidden otherwise; other meshes get a wire overlay)")
     use_scene_colliders: BoolProperty(name="Other Tessera collision bodies", default=True,
                                       description="Also collide with every body the Cloth / Fluid / Wind-tunnel tabs marked as a collision body")
 
