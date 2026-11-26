@@ -46,6 +46,8 @@ TABS = (
      "Real-time hair curves solver"),
     ('CLOTH', "Cloth", "Cloth", 'MOD_CLOTH',
      "Real-time cloth solver"),
+    ('MUSCLE', "Muscle", "Muscle", 'BONE_DATA',
+     "Muscle projection solver: region painting, contours, shape keys and Geometry Nodes"),
     ('EXAMPLES', "Examples", "Ex", 'FILE_BLEND',
      "Loadable examples and Tessera Geometry Nodes"),
 )
@@ -62,7 +64,7 @@ HOSTED_PANELS = (
     "AF_PT_fm_mode", "AF_PT_fm_main", "AF_PT_fm_fluids", "AF_PT_fm_solver",
     "AF_PT_fm_object", "AF_PT_fm_env", "AF_PT_srf", "AF_PT_retopo",
     "AF_PT_examples", "AF_PT_shader", "AF_PT_thermal", "AF_PT_windtunnel",
-    "AF_PT_gn_nodes_view3d", "AF_PT_cloth",
+    "AF_PT_gn_nodes_view3d", "AF_PT_cloth", "AF_PT_muscle",
 )
 
 # tab_id -> list of callables (layout, context)
