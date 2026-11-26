@@ -96,6 +96,25 @@ def _ring_keys(n, edges, hops=1):
     return keys
 
 
+def mesh_components(n, edges):
+    """Connected-component label per vertex (min-label propagation over the edges, vectorised)."""
+    lab = np.arange(n, dtype=np.int64)
+    e = np.asarray(edges, np.int64).reshape(-1, 2)
+    if len(e) == 0:
+        return lab
+    a, b = e[:, 0], e[:, 1]
+    for _ in range(4 * n + 8):
+        m = np.minimum(lab[a], lab[b])
+        new = lab.copy()
+        np.minimum.at(new, a, m)
+        np.minimum.at(new, b, m)
+        new = new[new]                       # pointer jumping
+        if np.array_equal(new, lab):
+            break
+        lab = new
+    return lab
+
+
 class SelfCollider:
     """Self-collision state for one triangle mesh."""
 
@@ -108,7 +127,10 @@ class SelfCollider:
         self.mode = mode
         self.fast_period = int(fast_period)
         self.iterations = int(iterations)
-        self.ring = _ring_keys(self.n, edges, 1)       # (v,u) with u in 1-ring(v) or u == v
+        self.ring = _ring_keys(self.n, edges, 1)
+        self.comp = mesh_components(self.n, edges)   # disconnected pieces (garment layers) keep their rest-pose order
+        self.rest = None
+        self.rest_nrm = None       # (v,u) with u in 1-ring(v) or u == v
         self.layer = np.zeros(self.n, np.int32)
         self.allow = np.ones((1, 1), bool)
         self.vert_on = np.ones(self.n, bool)
@@ -134,6 +156,14 @@ class SelfCollider:
         self.layer = np.maximum(lid, 0).astype(np.int32)
         self.allow = allow
         self._cache = None
+
+    def set_rest(self, rest):
+        """Rest-pose positions: pairs from different connected pieces keep the side they had at rest."""
+        r = np.asarray(rest, float)
+        T = self.tris
+        n = np.cross(r[T[:, 1]] - r[T[:, 0]], r[T[:, 2]] - r[T[:, 0]])
+        self.rest_nrm = n / np.maximum(np.linalg.norm(n, axis=1), 1e-14)[:, None]
+        self.rest = r.copy()
 
     def invalidate(self):
         self._cache = None
@@ -241,13 +271,21 @@ class SelfCollider:
         n0 = n0 / np.where(n0l > 1e-14, n0l, 1.0)[:, None]
         d0 = ((xp[v] - pa) * n0).sum(1)
         s0 = np.where(d0 < 0.0, -1.0, 1.0)
+        cross = np.zeros(len(v), bool)
+        if self.rest is not None:
+            cross = self.comp[v] != self.comp[tr[:, 0]]
+            if cross.any():
+                dr = ((self.rest[v] - self.rest[tr[:, 0]]) * self.rest_nrm[t]).sum(1)
+                s0 = np.where(cross, np.where(dr < 0.0, -1.0, 1.0), s0)
         sd = s0 * d
         # projection test for the face region: point projects inside (closest point interior)
         proj_in = inside
         crossed = sd < 0.0
         # slack for tunnelled vertices: they must still project inside and be within a bound
-        move = np.maximum(np.linalg.norm(x[v] - xp[v], axis=1), 0.0)
-        near_plane = np.abs(d) < (th + 2.0 * move + 1e-6)
+        dtri = np.maximum(np.maximum(np.linalg.norm(a - pa, axis=1), np.linalg.norm(b - pb, axis=1)),
+                          np.linalg.norm(c - pc, axis=1))
+        move = np.linalg.norm(x[v] - xp[v], axis=1) + dtri
+        near_plane = (np.abs(d) < (th + 2.0 * move + 1e-6)) | (cross & (np.abs(d) < 0.25))
         face = proj_in & good & (sd < th) & (near_plane | ~crossed)
         # edge / vertex region: plain distance
         diff = p - q
