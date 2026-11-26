@@ -53,9 +53,20 @@ def run():
         xtst.XTestFakeButtonEvent(xdpy, b, 1 if down else 0, 0)
         x11.XFlush(xdpy)
     bpy.context.preferences.view.show_splash = False
-    mouse_move(800, 500)
-    yield 0.5
-    mouse_move(300, 700)
+    x11.XKeysymToKeycode.restype = ctypes.c_ubyte
+    x11.XKeysymToKeycode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+    xtst.XTestFakeKeyEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
+
+    def key(sym):
+        kc = x11.XKeysymToKeycode(xdpy, sym)
+        xtst.XTestFakeKeyEvent(xdpy, kc, 1, 0); x11.XFlush(xdpy)
+        xtst.XTestFakeKeyEvent(xdpy, kc, 0, 0); x11.XFlush(xdpy)
+    for _ in range(2):                         # dismiss the splash: Escape + click away from it, then park the mouse
+        mouse_move(700, 880); yield 0.3
+        key(0xff1b); yield 0.5
+        mouse_move(400, 300); yield 0.2
+        mouse_button(1, True); mouse_button(1, False); yield 0.5
+    mouse_move(700, 880)
     yield 1.0
     S = hcs.build_scene(('long', 'short'))
     log("scene built %.1fs" % (time.time() - t0))
@@ -93,8 +104,15 @@ def run():
                 pass
     # view the bust from the camera-ish front 3/4
     r3d = sp.region_3d
-    from mathutils import Vector
-    r3d.view_perspective = 'CAMERA'
+    from mathutils import Vector, Euler
+    r3d.view_perspective = 'PERSP'
+    r3d.view_location = (0.42, 0.0, 1.42)
+    r3d.view_distance = 2.5
+    r3d.view_rotation = Euler((1.5708 - 0.04, 0.0, 0.0), 'XYZ').to_quaternion()
+    sp.lens = 50
+    for k in ('show_floor', 'show_axis_x', 'show_axis_y', 'show_cursor', 'show_text', 'show_object_origins', 'show_relationship_lines'):
+        if hasattr(sp.overlay, k):
+            setattr(sp.overlay, k, False)
     sc.camera = bpy.data.objects['TS_Cam']
     for r in area.regions:
         if r.type == 'UI':
