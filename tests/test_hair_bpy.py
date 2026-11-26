@@ -252,6 +252,33 @@ S = HO.build_solver(sc)
 ok(S.n_strands == n0 and S.child_rest is not None, "solver simulates the guides and skins the children")
 ok(HO.settle_scene(sc, steps=6) == 6, "settle_scene runs")
 
+# ----------------------------------------------------------------------------- collision master switch, overlay, collider list (Ariel work)
+ok(hasattr(bpy.types, "AF_UL_hair_colliders"), "collision body UI list registered")
+hp_ = sc.arc_flow_hair
+ok(hp_.use_colliders is True, "Collision master switch defaults on")
+n_before = len(HO.collider_targets(sc, hair=hp_.hair))
+proxy = bpy.data.objects.new("TS_ProxyCap", bpy.data.meshes.new("TS_ProxyCap"))
+_v, _t = HS.MS.uvsphere(n=12, m=6, r=0.05, center=(0, 0, 0))
+proxy.data.from_pydata(_v.tolist(), [], _t.tolist())
+sc.collection.objects.link(proxy)
+HO.mark_proxy(proxy)
+c_ = HO.add_collider_entry(sc, proxy)
+ok(any(o is proxy for o, *_r in HO.collider_targets(sc, hair=hp_.hair)), "added collider appears in collider_targets")
+hp_.show_colliders = True
+ok((not proxy.hide_get()) and proxy.show_wire and len(proxy.data.materials) == 1, "Show Bodies reveals a proxy with the translucent overlay material")
+hp_.show_colliders = False
+ok(proxy.hide_get(), "Show Bodies off hides the proxy again")
+hp_.use_colliders = False
+ok(HO.collider_targets(sc, hair=hp_.hair) == [], "Collision off: no body is passed to the solver")
+sol_ = HO.build_solver(sc)
+ok(sol_ is not None and len(sol_.colliders) == 0, "solver built with Collision off has no colliders")
+hp_.use_colliders = True
+sol_ = HO.build_solver(sc)
+ok(sol_ is not None and len(sol_.colliders) >= 1, "Collision on again restores the colliders")
+hp_.colliders.remove(len(hp_.colliders) - 1)
+bpy.data.objects.remove(proxy, do_unlink=True)
+ok(len(HO.collider_targets(sc, hair=hp_.hair)) == n_before, "collider list back to its previous size")
+
 # ----------------------------------------------------------------------------- verification render (temp — do not clobber the Extensions showcase still)
 preview = os.path.join(tempfile.mkdtemp(prefix="tessera_hair_preview_"), "hair_solver_verify.png")
 # a staged pose for the still

@@ -467,6 +467,54 @@ def test_generate_children_and_fast_skin():
     ok(S._child_fast is not None, "fast child skinning path is active")
 
 
+def test_ariel_import_helpers():
+    """docs/ariel_import.py parsing / mesh helpers (no Blender, no game assets): DHS1 layout, head mesh from an SDF, capsule winding."""
+    import json
+    import struct
+    sys.path.insert(0, os.path.join(HERE, '..', 'docs'))
+    import ariel_import as AI
+    N, K, G = 6, 4, 2
+    rest = np.random.default_rng(1).normal(size=(N, K, 3)).astype('<f4')
+    group = np.arange(N, dtype=np.uint8)
+    guide_of = np.array([0, 1, 0, 1, 0, 1], dtype='<u4')
+    guides = np.array([0, 1], dtype='<u4')
+    nx = ny = nz = 12
+    cell = 0.02
+    org = np.array([-0.12, -0.12, -0.12])
+    ii = np.stack(np.meshgrid(*[np.arange(n) for n in (nx, ny, nz)], indexing='ij'), -1) * cell + org
+    sd = (np.linalg.norm(ii, axis=-1) - 0.08)
+    unit = 1e-4
+    sdf_i16 = np.round(sd / unit).astype('<i2')
+    data = rest.tobytes() + group.tobytes() + b'\0' * (((N + 3) & ~3) - N) + guide_of.tobytes() + guides.tobytes()
+    sdf_off = len(data)
+    data += sdf_i16.tobytes()
+    meta = dict(version=2, count=N, points=K, guides=G, headBone='Head', groups=['a'], colliders=[],
+                sdf=dict(bone='Head', origin=org.tolist(), cell=cell, dims=[nx, ny, nz], unit=unit, byteOffsetFromData=sdf_off))
+    j = json.dumps(meta).encode()
+    blob = b'DHS1' + struct.pack('<I', len(j)) + struct.pack('<I', 0) + j + data
+    import tempfile
+    p = os.path.join(tempfile.mkdtemp(), 'x.bin')
+    open(p, 'wb').write(blob)
+    d = AI.parse_dhs1(p)
+    ok(d['rest'].shape == (N, K, 3) and np.allclose(d['rest'], rest), "DHS1: strand positions parsed")
+    ok(np.array_equal(d['group'], group) and np.array_equal(d['guide_of'], guide_of) and np.array_equal(d['guides'], guides),
+       "DHS1: group / guideOf / guides parsed")
+    ok(d['sdf'] is not None and d['sdf']['v'].shape == (nx, ny, nz) and abs(d['sdf']['v'][6, 6, 6] - sd[6, 6, 6]) < 2e-4, "DHS1: head SDF parsed")
+    V, T = AI.head_mesh_from_sdf(d['sdf'], center=(0, 0, 0), n_u=24, n_v=12, rmax=0.11, step=0.002)
+    r = np.linalg.norm(V, axis=1)
+    ok(abs(np.median(r) - 0.08) < 0.004, "head mesh from SDF has the field's radius (median %.4f)" % np.median(r))
+    cv, ct = AI.capsule_mesh((0, 0, 0), (0, 0.2, 0), 0.05)
+    A, B, C = cv[ct[:, 0]], cv[ct[:, 1]], cv[ct[:, 2]]
+    vol = np.einsum('ij,ij->i', A, np.cross(B, C)).sum() / 6.0
+    ok(vol > 0.0, "capsule mesh faces outward (signed volume %.5f > 0)" % vol)
+    ok(abs(vol - (math_pi_cap(0.05, 0.2))) / math_pi_cap(0.05, 0.2) < 0.08, "capsule volume close to analytic")
+
+
+def math_pi_cap(r, L):
+    import math
+    return math.pi * r * r * L + 4.0 / 3.0 * math.pi * r ** 3
+
+
 def main():
     test_pack_and_groom()
     test_root_pinning()
@@ -486,6 +534,7 @@ def main():
     test_hair_hair_volume()
     test_profiles_and_gravity_scale()
     test_generate_children_and_fast_skin()
+    test_ariel_import_helpers()
     test_speed()
     print("ALL PASS" if not ok.fail else "FAILED %d" % ok.fail)
     return ok.fail
