@@ -119,7 +119,7 @@ class SelfCollider:
     """Self-collision state for one triangle mesh."""
 
     def __init__(self, tris, edges, nverts, thickness=0.003, friction=0.2, mode='ACCURATE',
-                 fast_period=3, iterations=2):
+                 fast_period=3, iterations=2, ring_extra=None, vert_th=None):
         self.tris = np.asarray(tris, np.int64).reshape(-1, 3)
         self.n = int(nverts)
         self.thickness = float(thickness)
@@ -127,7 +127,15 @@ class SelfCollider:
         self.mode = mode
         self.fast_period = int(fast_period)
         self.iterations = int(iterations)
-        self.ring = _ring_keys(self.n, edges, 1)
+        # welded / stitched vertex pairs are topological neighbours for contact purposes (ring), but they do
+        # not merge the pieces: ``comp`` (layer identity) comes from the mesh edges only
+        ring_edges = edges
+        if ring_extra is not None and len(ring_extra):
+            ring_edges = np.concatenate([np.asarray(edges, np.int64).reshape(-1, 2),
+                                         np.asarray(ring_extra, np.int64).reshape(-1, 2)])
+        self.ring = _ring_keys(self.n, ring_edges, 1)
+        self.vert_th = None if vert_th is None else np.asarray(vert_th, float).reshape(-1)
+        self.layer_reach = 0.6      # rest-side ordering applies to pairs that were within this distance at rest
         self.comp = mesh_components(self.n, edges)   # disconnected pieces (garment layers) keep their rest-pose order
         self.rest = None
         self.layered = False       # 'LAYERED' mode: rest-side corrector for ordered pieces
@@ -200,6 +208,8 @@ class SelfCollider:
         if not (np.isfinite(x).all() and np.isfinite(xp).all()):
             self.stats['nonfinite'] = True
             return np.zeros(0, np.int64), np.zeros(0, np.int64)
+        if self.vert_th is not None:
+            th = max(th, float(self.vert_th.max()))
         grow = th + slack
         P = np.stack([x[tris[:, 0]], x[tris[:, 1]], x[tris[:, 2]], xp[tris[:, 0]], xp[tris[:, 1]], xp[tris[:, 2]]])
         tlo = P.min(0) - grow
@@ -255,10 +265,20 @@ class SelfCollider:
         return v[keep], t[keep]
 
     # ------------------------------------------------------------------ one response pass
+    def _thmax(self):
+        return self.thickness if self.vert_th is None else max(self.thickness, float(self.vert_th.max()))
+
+    def _pair_th(self, v, tr):
+        """Contact thickness of vertex/triangle pairs: the thicker of the two fabrics (scalar without members)."""
+        if self.vert_th is None:
+            return self.thickness
+        vt = self.vert_th
+        return np.maximum(self.thickness, np.maximum(vt[v], np.maximum(vt[tr[:, 0]], np.maximum(vt[tr[:, 1]], vt[tr[:, 2]]))))
+
     def _contacts(self, x, xp, v, t, w):
         """Geometry for candidate pairs -> (mask, normal*sign, depth, bary, tri verts) of true contacts."""
-        th = self.thickness
         tr = self.tris[t]
+        th = self._pair_th(v, tr)
         a, b, c = x[tr[:, 0]], x[tr[:, 1]], x[tr[:, 2]]
         p = x[v]
         nrm = np.cross(b - a, c - a)
@@ -279,6 +299,8 @@ class SelfCollider:
             cross = self.comp[v] != self.comp[tr[:, 0]]
             if cross.any():
                 dr = ((self.rest[v] - self.rest[tr[:, 0]]) * self.rest_nrm[t]).sum(1)
+                # rest-side ordering only for pieces that really were stacked at rest (within reach)
+                cross &= np.abs(dr) < self.layer_reach
                 s0 = np.where(cross, np.where(dr < 0.0, -1.0, 1.0), s0)
         sd = s0 * d
         # projection test for the face region: point projects inside (closest point interior)
@@ -382,7 +404,7 @@ class SelfCollider:
                 dall = np.linalg.norm(x - xp, axis=1)
                 dtri = np.maximum(np.maximum(dall[T[:, 0]], dall[T[:, 1]]), dall[T[:, 2]])
                 # a pair can only touch during the step if it is within thickness + both parties' travel
-                lim = self.thickness + (2.0 if fast else 1.0) * (dall[v] + dtri[t]) + 1e-6
+                lim = self._thmax() + (2.0 if fast else 1.0) * (dall[v] + dtri[t]) + 1e-6
                 A0, B0, C0 = x[T[:, 0]], x[T[:, 1]], x[T[:, 2]]
                 N = np.cross(B0 - A0, C0 - A0)
                 N /= np.maximum(np.linalg.norm(N, axis=1), 1e-14)[:, None]
@@ -408,55 +430,63 @@ class SelfCollider:
         return total
 
     def layered_correct(self, x, xp, w):
-        """Rest-side corrector for ordered pieces (garment layers).  A vertex of an upper piece must stay on the side
-        of every lower piece's nearest face that it had at rest, at >= thickness.  It is projected there whatever
-        way it got across (vertex-face, edge-edge, tunnelling).  Pieces are ordered by their lowest vertex index."""
+        """Rest-side corrector for ordered pieces (garment layers / separate objects of a group).
+
+        A vertex of one piece must stay on the side of the nearest face of every OTHER piece that it had at rest,
+        at >= contact thickness, wherever it got across (vertex-face, edge-edge, tunnelling).  Both directions are
+        corrected (upper vertex vs lower face and lower vertex vs upper face).  Only pairs that were stacked at
+        rest (within ``layer_reach``) are ordered this way; pieces that started apart use the continuity (previous
+        side) logic of the normal contacts, so a flag may swing round the edge of a plate.  The candidate search
+        box is the swept box of the vertex and the face grown by ``layer_radius``."""
         if self.rest is None:
             return 0
-        labels = np.unique(self.comp)
-        if len(labels) < 2:
+        if len(np.unique(self.comp)) < 2:
             return 0
-        rank = np.searchsorted(labels, self.comp)
-        th = self.thickness
-        R = max(float(self.layer_radius), 2.0 * th)
-        save_th, save_on = self.thickness, self.vert_on
+        R = max(float(self.layer_radius), 2.0 * self._thmax())
+        save_th = self.thickness
         try:
-            self.vert_on = save_on & (rank > 0)
-            for _try in range(3):             # a huge search radius can overflow the pair budget: shrink it
+            for _try in range(4):             # a large radius can overflow the pair budget: shrink it
                 self.thickness = R
                 self.stats.pop('overflow', None)
                 v, t = self._candidates(x, xp, 0.0)
-                if 'overflow' not in self.stats or R <= 2.0 * th:
+                if 'overflow' not in self.stats or R <= 2.0 * self._thmax():
                     break
-                R = max(0.5 * R, 2.0 * th)
+                R = max(0.5 * R, 2.0 * self._thmax())
         finally:
-            self.thickness, self.vert_on = save_th, save_on
+            self.thickness = save_th
         if len(v) == 0:
             return 0
         tr = self.tris[t]
-        k = rank[v] > rank[tr[:, 0]]
+        k = (self.comp[v] != self.comp[tr[:, 0]]) & self.vert_on[v]
         v, t, tr = v[k], t[k], tr[k]
         if len(v) == 0:
             return 0
+        th = self._pair_th(v, tr)
         a, b, c = x[tr[:, 0]], x[tr[:, 1]], x[tr[:, 2]]
         p = x[v]
         nrm = np.cross(b - a, c - a)
         nl = np.linalg.norm(nrm, axis=1)
         good = nl > 1e-14
         nrm = nrm / np.where(good, nl, 1.0)[:, None]
+        dr = ((self.rest[v] - self.rest[tr[:, 0]]) * self.rest_nrm[t]).sum(1)
+        k = good & (np.abs(dr) < self.layer_reach)
+        if not k.any():
+            return 0
+        v, t, tr, a, b, c, p, nrm, dr = v[k], t[k], tr[k], a[k], b[k], c[k], p[k], nrm[k], dr[k]
+        th = th[k] if np.ndim(th) else th
         q, bary, inside = closest_point_triangle(p, a, b, c)
         d = ((p - a) * nrm).sum(1)
-        dr = ((self.rest[v] - self.rest[tr[:, 0]]) * self.rest_nrm[t]).sum(1)
         s0 = np.where(dr < 0.0, -1.0, 1.0)
         sd = s0 * d
         diff = p - q
         dist = np.linalg.norm(diff, axis=1)
-        face = inside & good & (np.abs(d) < R) & (sd < th)
-        edge = (~inside) & good & (dist < th) & (sd >= 0.0)
+        face = inside & (np.abs(d) < R) & (sd < th)
+        edge = (~inside) & (dist < th) & (sd >= 0.0)
         m = face | edge
         if not m.any():
             return 0
         v, t, tr, nrm, s0, sd, diff, dist, face = v[m], t[m], tr[m], nrm[m], s0[m], sd[m], diff[m], dist[m], face[m]
+        th = th[m] if np.ndim(th) else th
         direction = np.where(face[:, None], s0[:, None] * nrm, diff / np.maximum(dist, 1e-12)[:, None])
         need = np.where(face, th - sd, th - dist)
         order = np.argsort(-need, kind='stable')
@@ -472,6 +502,61 @@ class SelfCollider:
                 x[tr[pin, kk]] -= push[pin] * (w[tr[pin, kk]] > 0.0)[:, None]
         self.stats['layered_fixed'] = int(len(v))
         return int(len(v))
+
+    def wrong_side(self, x, reach=None, chunk=160, labels=None):
+        """Diagnostic: per ordered piece pair (P, Q) the number of P vertices that sit on the wrong (non-rest) side of
+        the nearest Q face they project onto, and the deepest such vertex.  Independent of the solver (brute force
+        matrix test, no hashing, no pair budget).  Returns {(p, q): (count, worst_depth_m)} over piece labels."""
+        reach = self.layer_reach if reach is None else float(reach)
+        T = self.tris
+        A, B, C = x[T[:, 0]], x[T[:, 1]], x[T[:, 2]]
+        v0, v1 = B - A, C - A
+        N = np.cross(v0, v1)
+        nl = np.linalg.norm(N, axis=1)
+        okT = nl > 1e-14
+        N = N / np.where(okT, nl, 1.0)[:, None]
+        d00, d01, d11 = (v0 * v0).sum(1), (v0 * v1).sum(1), (v1 * v1).sum(1)
+        den = d00 * d11 - d01 * d01
+        den = np.where(np.abs(den) < 1e-18, 1e-18, den)
+        rest, RN = self.rest, self.rest_nrm
+        lab = self.comp if labels is None else np.asarray(labels, np.int64)
+        labels = np.unique(lab)
+        tcomp = lab[T[:, 0]]
+        out = {}
+        for p in labels:
+            vp = np.nonzero((lab == p) & self.vert_on)[0]
+            cnt = {int(q): 0 for q in labels if q != p}
+            worst = {int(q): 0.0 for q in labels if q != p}
+            for q in labels:
+                if q == p:
+                    continue
+                tq = np.nonzero((tcomp == q) & okT)[0]
+                if len(tq) == 0 or len(vp) == 0:
+                    continue
+                for s in range(0, len(vp), chunk):
+                    ids = vp[s:s + chunk]
+                    P = x[ids][:, None, :]
+                    rel = P - A[tq][None]
+                    d = (rel * N[tq][None]).sum(-1)
+                    d02 = (rel * v0[tq][None]).sum(-1)
+                    d12 = (rel * v1[tq][None]).sum(-1)
+                    u = (d11[tq] * d02 - d01[tq] * d12) / den[tq]
+                    w_ = (d00[tq] * d12 - d01[tq] * d02) / den[tq]
+                    inside = (u >= -1e-6) & (w_ >= -1e-6) & (u + w_ <= 1.0 + 1e-6)
+                    drr = ((rest[ids][:, None, :] - rest[T[tq, 0]][None]) * RN[tq][None]).sum(-1)
+                    ok = inside & (np.abs(drr) < reach)
+                    ad = np.where(ok, np.abs(d), np.inf)
+                    j = np.argmin(ad, axis=1)
+                    r_ = np.arange(len(ids))
+                    has = np.isfinite(ad[r_, j])
+                    sd = np.where(drr[r_, j] < 0.0, -1.0, 1.0) * d[r_, j]
+                    bad = has & (sd < 0.0)
+                    cnt[int(q)] += int(bad.sum())
+                    if bad.any():
+                        worst[int(q)] = max(worst[int(q)], float((-sd[bad]).max()))
+            for q in cnt:
+                out[(int(p), q)] = (cnt[q], worst[q])
+        return out
 
     def min_distance(self, x, limit=None):
         """Smallest vertex-to-triangle distance over all non-excluded pairs (diagnostic, unsigned)."""

@@ -275,6 +275,8 @@ class ClothSolver:
         pr = dict(PRESETS[preset if preset in PRESETS else 'COTTON'])
         q = dict(QUALITY[quality if quality in QUALITY else 'BALANCED'])
         pr.update(q)
+        members = kwargs.pop('members', None)
+        member_params = kwargs.pop('member_params', None)
         pr.update(kwargs)
         self.preset = preset if preset in PRESETS else 'COTTON'
         self.quality = quality if quality in QUALITY else 'BALANCED'
@@ -341,6 +343,19 @@ class ClothSolver:
         self._lam_hinge = np.zeros(len(self.hinges), float)
         self._lam_pin = None
 
+        # group of cloth objects solved as one unit: per-member fabric, optional weld / stitch constraints
+        self.members = None            # (N,) int member id per vertex (None = single object)
+        self.member_params = None
+        self.vert_thickness = None     # (N,) contact thickness per vertex (None = global)
+        self.damping_v = None          # (N,1) damping per vertex (None = global)
+        self._ce = None                # per-edge compliance arrays when members differ
+        self.stitch = None             # dict(a, tri, bary, rest) welds between members
+        self.stitch_compliance = 2e-5
+        self._lam_stitch = None
+        self.stitch_ring_edges = np.zeros((0, 2), np.int64)
+        if members is not None:
+            self.set_members(members, member_params, pr)
+
         # pins
         self.pin_hard = np.zeros(self.n, bool)
         self.pin_target = self.rest.copy()
@@ -365,6 +380,105 @@ class ClothSolver:
         self.last_ms = 0.0
         self.last_stretch = 0.0
         self.tension = np.zeros(self.n, float)
+
+
+    # ---------------------------------------------------------------- group (several objects, one system)
+
+    def set_members(self, members, member_params=None, defaults=None):
+        """Per-vertex member ids and per-member fabric parameters (density, stretch, shear, bend, damping,
+        thickness, friction).  Mass, XPBD compliances, damping and contact thickness become per-member, so a
+        leather collar and a silk pocket can share one self-colliding system."""
+        mem = np.asarray(members, np.int64).reshape(-1)
+        if len(mem) != self.n:
+            raise ValueError("one member id per vertex")
+        k = int(mem.max()) + 1
+        base = dict(density=self.density, stretch=1.0 / max(self.stretch_compliance, 1e-18),
+                    shear=1.0 / max(self.shear_compliance, 1e-18), bend=1.0 / max(self.bend_compliance, 1e-18),
+                    damping=self.damping, thickness=self.thickness, friction=self.friction)
+        if defaults:
+            for key in base:
+                if key in defaults:
+                    base[key] = float(defaults[key])
+        plist = []
+        for m in range(k):
+            d = dict(base)
+            if member_params is not None and m < len(member_params) and member_params[m]:
+                d.update({a: float(b) for a, b in member_params[m].items() if a in base})
+            plist.append(d)
+        self.members = mem
+        self.member_params = plist
+        col = lambda key: np.array([p[key] for p in plist], float)[mem]
+        self.density_v = col('density')
+        self.mass = self.density_v * self.area0
+        self.inv_mass = 1.0 / self.mass
+        self.damping_v = col('damping')[:, None]
+        self.vert_thickness = col('thickness')
+        self.thickness = float(self.vert_thickness.max())
+        em = lambda E: mem[E[:, 0]]
+        stf = np.array([p['stretch'] for p in plist], float)
+        shr = np.array([p['shear'] for p in plist], float)
+        bnd = np.array([p['bend'] for p in plist], float)
+        comp = lambda a: 1.0 / np.maximum(a, 1e-6)
+        ce = dict(stretch=comp(stf[em(self.stretch_edges)]) if len(self.stretch_edges) else np.zeros(0),
+                  shear=comp(shr[em(self.shear_edges)]) if len(self.shear_edges) else np.zeros(0),
+                  bend=comp(bnd[em(self.bend_edges)]) if len(self.bend_edges) else np.zeros(0))
+        if len(self.hinges):
+            ce['hinge'] = comp(np.maximum(bnd[mem[self.hinges[:, 0]]] * 0.35, 1e-6))
+        self._ce = ce
+        if self._selfcol is not None:
+            self._selfcol = None
+        return self
+
+    def set_stitches(self, vert, tri, bary, rest=None, stiffness=5.0e4):
+        """Weld constraints: vertex ``vert[i]`` is held at the barycentric point ``bary[i]`` of the triangle
+        vertices ``tri[i]`` (3 ints) at distance ``rest[i]`` (default: the current distance).
+        A vertex-to-vertex weld is ``tri=(b,b,b)``, ``bary=(1,0,0)``."""
+        a = np.asarray(vert, np.int64).reshape(-1)
+        T = np.asarray(tri, np.int64).reshape(-1, 3)
+        B = np.asarray(bary, float).reshape(-1, 3)
+        if len(a) == 0:
+            self.stitch = None
+            self.stitch_ring_edges = np.zeros((0, 2), np.int64)
+            self._selfcol = None
+            return
+        q = (B[:, :, None] * self.x[T]).sum(1)
+        r = np.linalg.norm(self.x[a] - q, axis=1) if rest is None else np.asarray(rest, float).reshape(-1)
+        self.stitch = dict(a=a, tri=T, bary=B, rest=r)
+        self.stitch_compliance = _compliance(stiffness)
+        self._lam_stitch = np.zeros(len(a), float)
+        # welded pairs are topologically adjacent: they must not fight the self-collision
+        ring = np.concatenate([np.stack([a, T[:, k]], 1) for k in range(3) if (B[:, k] > 1e-6).any()])
+        self.stitch_ring_edges = ring[ring[:, 0] != ring[:, 1]]
+        self._selfcol = None
+
+    def _solve_stitches(self, h):
+        st = self.stitch
+        if st is None:
+            return
+        a, T, B, rest = st['a'], st['tri'], st['bary'], st['rest']
+        x, w = self.x, self.inv_mass
+        alpha = self.stitch_compliance / (h * h)
+        q = B[:, 0:1] * x[T[:, 0]] + B[:, 1:2] * x[T[:, 1]] + B[:, 2:3] * x[T[:, 2]]
+        d = x[a] - q
+        L = np.linalg.norm(d, axis=1)
+        n = d / np.maximum(L, 1e-9)[:, None]
+        C = L - rest
+        wsum = w[a] + B[:, 0] ** 2 * w[T[:, 0]] + B[:, 1] ** 2 * w[T[:, 1]] + B[:, 2] ** 2 * w[T[:, 2]] + alpha
+        dl = (-C - alpha * self._lam_stitch) / np.maximum(wsum, 1e-18)
+        dl = np.where(L > 1e-9, dl, 0.0)
+        self._lam_stitch += dl
+        corr = dl[:, None] * n
+        dx = np.zeros_like(x)
+        cn = np.bincount(a, minlength=self.n).astype(float)
+        for j in range(3):
+            dx[:, j] += np.bincount(a, weights=(w[a] * corr[:, j]), minlength=self.n)
+        for k in range(3):
+            wk = B[:, k] * w[T[:, k]]
+            for j in range(3):
+                dx[:, j] -= np.bincount(T[:, k], weights=wk * corr[:, j], minlength=self.n)
+            cn += np.bincount(T[:, k], weights=(B[:, k] > 1e-6).astype(float), minlength=self.n)
+        m = cn > 0
+        x[m] += dx[m] / cn[m, None]
 
     # ---------------------------------------------------------------- pins / skin
 
@@ -546,6 +660,9 @@ class ClothSolver:
         self._lam_shear[:] = 0.0
         self._lam_bend[:] = 0.0
         self._lam_hinge[:] = 0.0
+        if self._lam_stitch is not None:
+            self._lam_stitch[:] = 0.0
+        ce = self._ce
 
         # Hard pins travel with pin_vel during substeps and snap to the exact
         # target only at the end of the full step, so a moving rig imparts inertia
@@ -566,14 +683,15 @@ class ClothSolver:
             self._integrate(h, g, wind, fluid_velocity)
             for _it in range(max(1, int(self.iterations))):
                 self._solve_distance(h, self.stretch_edges, self.stretch_rest,
-                                     self.stretch_compliance, self._lam_stretch, self._groups_stretch)
+                                     self.stretch_compliance if ce is None else ce['stretch'], self._lam_stretch, self._groups_stretch)
                 self._solve_distance(h, self.shear_edges, self.shear_rest,
-                                     self.shear_compliance, self._lam_shear, self._groups_shear)
+                                     self.shear_compliance if ce is None else ce['shear'], self._lam_shear, self._groups_shear)
                 if self.use_isometric_bend and len(self.bend_edges):
                     self._solve_distance(h, self.bend_edges, self.bend_rest,
-                                         self.bend_compliance, self._lam_bend, self._groups_bend)
+                                         self.bend_compliance if ce is None else ce['bend'], self._lam_bend, self._groups_bend)
                 if self.use_dihedral and len(self.hinges):
                     self._solve_dihedral(h)
+                self._solve_stitches(h)
                 self._solve_soft_pins(h)
                 if self.self_collision and self.self_inloop and _it < max(1, int(self.iterations)) - 1:
                     # contacts re-applied between constraint iterations so stretch cannot drag vertices back across
@@ -583,7 +701,7 @@ class ClothSolver:
             if self.self_collision:
                 self._self_collide(ref=self.x_prev, passes=1, substep_index=_)
             self.v = (self.x - self.x_prev) / h
-            damp = max(0.0, 1.0 - self.damping * h)
+            damp = np.maximum(0.0, 1.0 - self.damping_v * h) if self.damping_v is not None else max(0.0, 1.0 - self.damping * h)
             self.v *= damp
             if self.vmax > 0:
                 sp = np.linalg.norm(self.v, axis=1)
@@ -662,9 +780,10 @@ class ClothSolver:
         """Colour-grouped Gauss-Seidel XPBD distance constraints."""
         if len(edges) == 0:
             return
-        alpha = float(compliance) / (h * h)
+        alpha_all = np.asarray(compliance, float) / (h * h)
         x, w = self.x, self.inv_mass
         for g in groups:
+            alpha = alpha_all[g] if alpha_all.ndim else alpha_all
             i, j = edges[g, 0], edges[g, 1]
             d = x[j] - x[i]
             L = np.linalg.norm(d, axis=1)
@@ -673,7 +792,8 @@ class ClothSolver:
             wsum = w[i] + w[j] + alpha
             dlam = np.zeros(len(g), float)
             live = (L > 1e-12) & (wsum > 0)
-            dlam[live] = (-C[live] - alpha * lam[g][live]) / wsum[live]
+            al = alpha[live] if np.ndim(alpha) else alpha
+            dlam[live] = (-C[live] - al * lam[g][live]) / wsum[live]
             lam[g] = lam[g] + dlam
             corr = dlam[:, None] * n
             x[i] = x[i] - w[i, None] * corr
@@ -690,7 +810,7 @@ class ClothSolver:
         H = self.hinges
         if len(H) == 0:
             return
-        alpha = float(self.dihedral_compliance) / (h * h)
+        alpha = (float(self.dihedral_compliance) if self._ce is None or 'hinge' not in self._ce else self._ce['hinge']) / (h * h)
         x, w = self.x, self.inv_mass
         rest = self.hinge_rest
         lam = self._lam_hinge
@@ -727,7 +847,7 @@ class ClothSolver:
                 + w[k] * (q3 * q3).sum(1) + w[l] * (q4 * q4).sum(1) + alpha)
         dlam = np.zeros(len(H), float)
         live = good & (wsum > 1e-12)
-        dlam[live] = (-C[live] - alpha * lam[live]) / wsum[live]
+        dlam[live] = (-C[live] - (alpha[live] if np.ndim(alpha) else alpha) * lam[live]) / wsum[live]
         lam += dlam
         s = dlam[:, None]
         dx = np.zeros_like(x)
@@ -810,7 +930,8 @@ class ClothSolver:
         """The (lazily built) vectorised self-collision state for this mesh."""
         sc = self._selfcol
         if sc is None or len(sc.tris) != len(self.tris):
-            sc = SC.SelfCollider(self.tris, self.stretch_edges, self.n)
+            sc = SC.SelfCollider(self.tris, self.stretch_edges, self.n, ring_extra=self.stitch_ring_edges,
+                                 vert_th=self.vert_thickness)
             if self.self_layers is not None:
                 sc.set_layers(self.self_layers, self.self_ignore_pairs)
             self._selfcol = sc
