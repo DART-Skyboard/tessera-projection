@@ -368,7 +368,7 @@ def _mixout(node):
 
 
 # ----------------------------------------------------------------------------- body material (skin head + a top)
-def body_material(ob, skin=(0.55, 0.36, 0.28, 1.0), top=(0.03, 0.035, 0.045, 1.0)):
+def body_material(ob, skin=(0.36, 0.20, 0.145, 1.0), top=(0.025, 0.03, 0.045, 1.0)):
     """One material: warm skin above the neckline, a dark knit top below it (split on object-space height)."""
     mat = bpy.data.materials.new("TS_BustBody")
     mat.use_nodes = True
@@ -433,15 +433,50 @@ STYLES = {
 }
 
 
-def build_guides(V, N, style, seed=4):
+def drape_strand(field, root, normal, length, n_pts, hc, part, wave=0.0, rng=None, margin=0.010):
+    """Rest shape found by combing: leave the scalp, then slide downhill over the actual body (SDF) until free fall.
+    The sim's settle pass then only has to relax it, so the groom starts outside the skull / shoulders."""
+    step = length / (n_pts - 1)
+    pts = [np.asarray(root, float)]
+    pos = pts[0] + normal * margin
+    pts.append(pos.copy())
+    down = np.array((0.0, 0.0, -1.0))
+    eps = 0.004
+    side = np.array((part * 0.35, 0.18, 0.0))               # part + slight sweep back
+    perp = None
+    for k in range(2, n_pts):
+        sd = float(field.sample_sd(pos[None])[0])
+        g = np.array([(field.sample_sd((pos + e)[None])[0] - field.sample_sd((pos - e)[None])[0]) / (2 * eps)
+                      for e in np.eye(3) * eps])
+        gn = g / max(np.linalg.norm(g), 1e-9)
+        outward = np.array((pos[0] - hc[0], pos[1] - hc[1], 0.0))
+        outward = outward / max(np.linalg.norm(outward), 1e-9)
+        d = down + 0.55 * outward * (1.0 if sd < margin * 2.5 else 0.25) + 0.25 * side
+        if sd < margin * 3.0:
+            d = d - gn * np.dot(d, gn) + gn * 0.25             # slide along the surface, hold clear of it
+        d = d / max(np.linalg.norm(d), 1e-9)
+        if wave:
+            if perp is None:
+                perp = np.cross(d, gn)
+                perp = perp / max(np.linalg.norm(perp), 1e-9)
+            d = d + perp * wave * np.sin(k * 1.1)
+            d = d / np.linalg.norm(d)
+        pos = pos + d * step
+        sd2 = float(field.sample_sd(pos[None])[0])
+        if sd2 < margin:
+            pos = pos + gn * (margin - sd2)
+        pts.append(pos.copy())
+    return np.array(pts)
+
+
+def build_guides(V, N, style, seed=4, field=None):
     cfg = STYLES[style]
     roots, normals = scalp_samples(V, N, n_want=cfg['guides'], seed=seed)
     zmax = float(V[:, 2].max())
     head_mask = V[:, 2] > (zmax - 0.30)
     hc = V[head_mask].mean(axis=0)
     hc = np.array((0.0, 0.02, hc[2]), float)
-    xy = V[head_mask][:, :2] - hc[:2]
-    hr = float(np.percentile(np.linalg.norm(xy, axis=1), 88) + 0.01)
+    hr = 0.1
     rng = np.random.RandomState(seed + 11)
     z_crown = float(roots[:, 2].max())
     strands = []
@@ -452,15 +487,16 @@ def build_guides(V, N, style, seed=4):
         side = np.clip(abs(r[0]) / 0.14, 0, 1)
         length = cfg['base'] * (1.0 - 0.25 * height) + cfg['back'] * back + cfg['side'] * side + 0.03 * rng.rand()
         length = float(np.clip(length, cfg['lo'], cfg['hi']))
-        curl = (0.45 + 0.9 * rng.rand()) * cfg['curl'] * (1.0 if rng.rand() < 0.5 else -1.0)
         nseg = 18 if length > 0.3 else 12
-        strands.append(draped_strand(r, n, length, nseg, hc, hr, part, curl=curl))
+        wave = cfg['curl'] * 0.10 * (0.4 + rng.rand())
+        strands.append(drape_strand(field, r, n, length, nseg, hc, part, wave=wave, rng=rng))
     return HS.pack_strands(strands), hc, hr
 
 
-def make_hair_object(name, V, N, style, seed=4):
+def make_hair_object(name, V, N, T, style, seed=4):
     cfg = STYLES[style]
-    (gP, gOff), hc, hr = build_guides(V, N, style, seed)
+    field = HS.make_collider(V, T, resolution=72, level=1, mode='SOLID')
+    (gP, gOff), hc, hr = build_guides(V, N, style, seed, field=field)
     cP, cOff = HS.generate_children(gP, gOff, per_guide=cfg['kids'], spread=0.011, clump=0.6, clump_power=1.4,
                                     frizz=0.0035, frizz_freq=4.0, tip_spread=0.006, length_jitter=0.07, seed=seed + 3)
     allP, allOff = HS.pack_strands(HS.unpack_strands(gP, gOff) + HS.unpack_strands(cP, cOff))
@@ -562,7 +598,7 @@ def setup_studio():
     bg = world.node_tree.nodes.get('Background')
     if bg is not None:
         bg.inputs[0].default_value = (0.04, 0.05, 0.07, 1.0)
-        bg.inputs[1].default_value = 0.6
+        bg.inputs[1].default_value = 0.25
 
     def area(name, loc, rot, size, energy, color):
         lamp = bpy.data.lights.new(name, 'AREA')
@@ -574,14 +610,14 @@ def setup_studio():
         ob.location = loc
         ob.rotation_euler = rot
         return ob
-    area("TS_Key", (-1.1, -1.5, 2.3), (math.radians(60), 0, math.radians(-35)), 1.2, 260, (1.0, 0.92, 0.82))
-    area("TS_Fill", (1.4, -0.9, 1.6), (math.radians(80), 0, math.radians(55)), 1.6, 90, (0.75, 0.82, 1.0))
-    area("TS_Rim", (0.5, 1.3, 2.2), (math.radians(-35), 0, math.radians(200)), 0.6, 450, (1.0, 0.9, 0.78))
+    area("TS_Key", (-1.1, -1.5, 2.3), (math.radians(60), 0, math.radians(-35)), 1.2, 110, (1.0, 0.92, 0.82))
+    area("TS_Fill", (1.4, -0.9, 1.6), (math.radians(80), 0, math.radians(55)), 1.6, 40, (0.75, 0.82, 1.0))
+    area("TS_Rim", (0.5, 1.3, 2.2), (math.radians(-35), 0, math.radians(200)), 0.6, 260, (1.0, 0.9, 0.78))
     cam = bpy.data.cameras.new("TS_Cam")
     cam.lens = 55
     cob = bpy.data.objects.new("TS_Cam", cam)
     sc.collection.objects.link(cob)
-    cob.location = (0.0, -2.45, 1.62)
+    cob.location = (0.0, -2.1, 1.60)
     tgt = Vector((0.05, 0.0, 1.50))
     cob.rotation_euler = (tgt - cob.location).to_track_quat('-Z', 'Y').to_euler()
     sc.camera = cob
@@ -598,13 +634,17 @@ def build_scene(styles=('long', 'short')):
     bpy.context.view_layer.update()
     glove = make_hand()
     glove.name = "TS_Glove"
+    glove.scale = (1.3, 1.3, 1.3)
+    bpy.context.view_layer.objects.active = glove
+    glove.select_set(True)
+    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
     glove_material(glove)
     glove.matrix_world = glove_pose((0.95, -0.10, 1.95))
     V, N, T = _mesh_world(bust)
     hp = sc.arc_flow_hair
     hairs = {}
     for st in styles:
-        h = make_hair_object("TS_Hair_" + st.title(), V, N, st)
+        h = make_hair_object("TS_Hair_" + st.title(), V, N, T, st)
         hairs[st] = h
     setup_studio()
     # extension wiring: scalp + colliders (the same list the Tessera Hair panel shows)
@@ -623,7 +663,7 @@ def build_scene(styles=('long', 'short')):
     hp.collision_friction = 0.35
     hp.sdf_resolution = 64
     hp.damping = 0.93
-    hp.rest_shape = 0.5
+    hp.rest_shape = 0.35
     hp.rest_shape_root = 0.9
     hp.rest_shape_tip = 0.15
     hp.stiffness_curve = 1.6
