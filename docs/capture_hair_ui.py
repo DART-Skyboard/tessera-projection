@@ -36,7 +36,27 @@ log = lambda *a: print(*a, flush=True)
 def run():
     win = bpy.context.window_manager.windows[0]
     t0 = time.time()
-    yield 0.1
+    import ctypes
+    x11 = ctypes.CDLL('libX11.so.6')
+    xtst = ctypes.CDLL('libXtst.so.6')
+    x11.XOpenDisplay.restype = ctypes.c_void_p
+    x11.XFlush.argtypes = [ctypes.c_void_p]
+    xtst.XTestFakeMotionEvent.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_ulong]
+    xtst.XTestFakeButtonEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
+    xdpy = x11.XOpenDisplay(None)
+
+    def mouse_move(x, y):
+        xtst.XTestFakeMotionEvent(xdpy, -1, int(x), int(y), 0)
+        x11.XFlush(xdpy)
+
+    def mouse_button(b, down):
+        xtst.XTestFakeButtonEvent(xdpy, b, 1 if down else 0, 0)
+        x11.XFlush(xdpy)
+    bpy.context.preferences.view.show_splash = False
+    mouse_move(800, 500)
+    yield 0.5
+    mouse_move(300, 700)
+    yield 1.0
     S = hcs.build_scene(('long', 'short'))
     log("scene built %.1fs" % (time.time() - t0))
     plan = [('long', hcs.glove_track(), 18.0), ('short', hcs.short_track(), 12.0)]
@@ -84,6 +104,17 @@ def run():
                 pass
     state = dict(draws=0)
 
+    def ui_region():
+        a = next(a for a in win.screen.areas if a.type == 'VIEW_3D')
+        return next(r for r in a.regions if r.type == 'UI')
+
+    def set_tab():
+        try:
+            ui_region().active_panel_category = 'Tessera'
+        except Exception as e:
+            log("tab:", e)
+    set_tab()
+
     def on_draw():
         state['draws'] += 1
     bpy.types.SpaceView3D.draw_handler_add(on_draw, (), 'WINDOW', 'POST_PIXEL')
@@ -92,6 +123,23 @@ def run():
         for a in win.screen.areas:
             a.tag_redraw()
 
+    # wait for the first EEVEE shader compile, widen the sidebar (drag its edge), select the Tessera tab
+    for _ in range(25):
+        redraw()
+        yield 0.4
+    set_tab()
+    r = ui_region()
+    edge = r.x - 3 if r.x > 0 else 1200
+    mouse_move(edge, 500); yield 0.4
+    mouse_button(1, True); yield 0.3
+    x = edge
+    while x > 1030:
+        x -= 30
+        mouse_move(x, 500); yield 0.12
+    mouse_button(1, False); yield 0.4
+    mouse_move(700, 880); yield 0.4
+    set_tab()
+    log("sidebar x=%d w=%d" % (ui_region().x, ui_region().width))
     manifest = []
     total = len(caches['long']) + len(caches['short'])
     frames = list(range(0, total, STRIDE))[:MAXG]
@@ -111,6 +159,7 @@ def run():
         sc.frame_current = fr + 1
         sc.arc_flow_hair.status = "Cache playback  %s hair   t = %.1f s" % (style, fr / hcs.FPS)
         d0 = state['draws']
+        set_tab()
         redraw()
         t1 = time.time()
         while state['draws'] <= d0 and time.time() - t1 < 60:

@@ -328,9 +328,9 @@ def scalp_samples(V, N, n_want, seed=3):
     z, y, x = V[:, 2], V[:, 1], V[:, 0]
     zmax = float(z.max())
     # scalp cap: include the front hairline and temples, keep a narrow centre part
-    mask = (z > zmax - 0.26) & (y > -0.13) & (np.abs(x) < 0.18)
+    mask = (z > zmax - 0.26) & (y > -0.045) & (np.abs(x) < 0.18)
     # forehead only gets the upper band so we don't plant hair on the brow
-    forehead = (y < -0.05) & (z < zmax - 0.14)
+    forehead = (y < -0.0) & (z < zmax - 0.10)
     mask = mask & ~forehead
     part = np.abs(x) < 0.007
     mask = mask & ~part
