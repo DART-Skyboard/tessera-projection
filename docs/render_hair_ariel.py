@@ -163,7 +163,7 @@ def configure_hair(S, collide=True):
         c.deforming = False
         c.enabled = bool(collide)
     hp.dt_mode = 'SCENE'
-    hp.substeps = 4
+    hp.substeps = 3
     hp.collision_radius = 0.005
     hp.collision_iterations = 2
     hp.collision_friction = 0.35
@@ -191,9 +191,11 @@ def configure_hair(S, collide=True):
     hp.clumping = 0.0
     hp.strand_radius = 0.0014
     hp.volume = 0.3
+    hp.hair_every = 2
     hp.use_colliders = True
     hp.show_colliders = False
     return hp
+
 
 
 def build_scene(game_dir):
@@ -237,7 +239,7 @@ class Meter:
 
     def capsule_inside(self, P):
         inside = np.zeros(len(P), bool)
-        per = {}
+        near = np.zeros(len(P), bool)
         for (bn, a, b, r) in self.caps:
             M = self.frame_of(bn)
             Wa = M @ np.array([*a, 1.0])
@@ -247,12 +249,16 @@ class Meter:
             d = np.linalg.norm(P - (Wa[:3] + t[:, None] * ab), axis=1)
             hit = d < r
             inside |= hit
+            near |= d < r + 0.04
+        self._near = near
         return inside
 
     def head_inside(self, P):
         M = self.frame_of('Head')
         L = (P - M[:3, 3]) @ np.linalg.inv(M[:3, :3]).T
-        return AI.sample_sdf(self.hd['sdf'], L) < 0.0
+        sd = AI.sample_sdf(self.hd['sdf'], L)
+        self._near = self._near | (sd < 0.04)
+        return sd < 0.0
 
     def mesh_inside(self, P, deps):
         from mathutils.bvhtree import BVHTree
@@ -270,7 +276,7 @@ class Meter:
             finally:
                 ev.to_mesh_clear()
             lo, hi = V.min(0) - 0.01, V.max(0) + 0.01
-            cand = np.flatnonzero(np.all((P >= lo) & (P <= hi), axis=1))
+            cand = np.flatnonzero(np.all((P >= lo) & (P <= hi), axis=1) & self._near)
             n_in = 0
             flag = np.zeros(len(P), bool)
             for i in cand:
@@ -297,7 +303,7 @@ class Meter:
 
 
 # ----------------------------------------------------------------------------- bake
-def bake(S, collide=True, seconds=SECONDS, stride=2, out_prefix=None, progress=None, mesh_every=6, settle=40, f0=0):
+def bake(S, collide=True, seconds=SECONDS, stride=2, out_prefix=None, progress=None, mesh_every=3, settle=40, f0=0):
     """Settle on the body, then run the clip. Returns (frames array [kept, N, 3] float32, metrics list)."""
     hp = sc.arc_flow_hair
     for c in hp.colliders:
@@ -320,17 +326,16 @@ def bake(S, collide=True, seconds=SECONDS, stride=2, out_prefix=None, progress=N
         f = 1 + k
         sc.frame_set(f)
         bpy.context.view_layer.update()
-        HO.step_scene(sc, dt=1.0 / FPS, write=False)
-        full, _ = HO._compose_full(solver)
-        if k % stride == 0:
+        HO.step_scene(sc, dt=1.0 / FPS, write=False, compose=False)
+        m = dict(frame=f, contacts=int(solver.last_contacts))
+        if k % stride == 0:                          # kept (and measured) frames: every `stride`-th sim frame
+            full, _ = HO._compose_full(solver)
             keep.append(full.astype(np.float32))
-        deps = bpy.context.evaluated_depsgraph_get()
-        m = meter.measure(full, deps, with_mesh=(k % mesh_every == 0))
-        m['frame'] = f
-        m['contacts'] = int(solver.last_contacts)
+            deps = bpy.context.evaluated_depsgraph_get()
+            m.update(meter.measure(full, deps, with_mesh=((k // stride) % mesh_every == 0)))
         metrics.append(m)
         if progress and k % 12 == 0:
-            progress(k, nfr, time.time() - t0, m)
+            progress(k, nfr, time.time() - t0, metrics[-1])
     return np.array(keep), metrics
 
 
@@ -350,7 +355,7 @@ def main():
     S = build_scene(game)
 
     def prog(k, n, dt, m):
-        print('  sim %d/%d %.0fs  volumes=%d (cap %d head %d) contacts=%d' % (k, n, dt, m['volumes'], m['capsule'], m['head'], m['contacts']), flush=True)
+        print('  sim %d/%d %.0fs  volumes=%s (cap %s head %s) contacts=%d' % (k, n, dt, m.get('volumes'), m.get('capsule'), m.get('head'), m['contacts']), flush=True)
     if mode == 'bake':
         frames, metrics = bake(S, collide='--no-collide' not in opt, seconds=secs, progress=prog)
         import json

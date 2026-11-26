@@ -218,7 +218,7 @@ def params_from_scene(scene):
         rest_shape_root=float(hp.rest_shape_root),
         rest_shape_tip=float(hp.rest_shape_tip),
         self_collision=bool(getattr(hp, 'self_collision', True)),
-        hair_collision=bool(hp.hair_collision),
+        hair_collision=bool(hp.hair_collision), hair_every=int(hp.hair_every),
         strand_radius=float(hp.strand_radius),
         repel_strength=float(hp.repel_strength),
         volume=float(hp.volume),
@@ -486,7 +486,7 @@ def _compose_full(solver):
     return out, off
 
 
-def step_scene(scene, dt=None, write=True, deps=None):
+def step_scene(scene, dt=None, write=True, deps=None, compose=True):
     """Advance the live solver one tick and optionally write back to the CURVES object."""
     if RT.updating:
         return RT.solver
@@ -506,7 +506,7 @@ def step_scene(scene, dt=None, write=True, deps=None):
                          fluid_coupling=float(hp.fluid_coupling),
                          collision_radius=float(hp.collision_radius),
                          self_collision=bool(getattr(hp, "self_collision", True)),
-                         hair_collision=bool(hp.hair_collision), strand_radius=float(hp.strand_radius),
+                         hair_collision=bool(hp.hair_collision), hair_every=int(hp.hair_every), strand_radius=float(hp.strand_radius),
                          repel_strength=float(hp.repel_strength), volume=float(hp.volume),
                          clumping=float(hp.clumping), strand_friction=float(hp.strand_friction),
                          gravity_scale=float(hp.gravity_scale))

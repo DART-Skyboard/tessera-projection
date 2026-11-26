@@ -126,6 +126,8 @@ class AF_HairScene(PropertyGroup):
     # hair-hair, volume and profiles
     hair_collision: BoolProperty(name="Strand-strand contact", default=True,
                                  description="Hair repels / drags neighbouring strands (vectorised spatial hash) so the groom keeps its volume")
+    hair_every: IntProperty(name="Contact stride", default=1, min=1, max=4,
+                            description="Run strand-strand contact on every N-th substep (2 halves its cost on dense grooms)")
     strand_radius: FloatProperty(name="Strand radius", default=0.004, min=0.0005, max=0.05, unit='LENGTH', precision=4,
                                  description="Fibre radius used for hair-hair contact")
     repel_strength: FloatProperty(name="Repulsion", default=0.5, min=0.0, max=1.0, subtype='FACTOR')

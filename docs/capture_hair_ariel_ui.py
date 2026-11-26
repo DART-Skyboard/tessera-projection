@@ -6,7 +6,7 @@ lights + shadows, sidebar Hair panel visible).  Plays back frames baked by rende
 
 Video plan (30 s at 12 grabs / s of scene time): 0-14.75 s collision ON, collision bodies hidden then shown as a translucent overlay;
 14.75-18.75 s the same motion with Collision OFF (panel switch flipped, bodies still shown); 18.75-22.75 s ON again; then the rest of the clip.
-Env: HA_STRIDE (grabs every N sim frames, default 2), HA_MAX (max grabs), HA_W / HA_H, HA_SHADING (MATERIAL|RENDERED)."""
+Env: HA_TIMES (comma list of video times for a quick look instead of the full run), HA_STRIDE (grabs every N sim frames, default 2), HA_MAX (max grabs), HA_W / HA_H, HA_SHADING (MATERIAL|RENDERED)."""
 import json
 import os
 import subprocess
@@ -92,7 +92,9 @@ def run():
     caches = {'on': np.load(ON_P + '.npy', mmap_mode='r'), 'off': np.load(OFF_P + '.npy', mmap_mode='r')}
     metrics = {'on': json.load(open(ON_P + '.json')), 'off': json.load(open(OFF_P + '.json'))}
     log("caches", {k: v.shape for k, v in caches.items()})
-    HO.build_solver(sc)                                  # the panel reads the solver (contact count); frames come from the bake
+    # the panel shows the solver's last contact count: during playback it carries the count measured in the bake for that frame
+    import types
+    HO.RT.solver = types.SimpleNamespace(last_contacts=0, n_points=int(caches['on'].shape[1]))
     # --- UI
     sc.frame_start, sc.frame_end = 1, 1 + R.SECONDS * FPS
     sc.arc_flow.ui_tab = 'HAIR'
@@ -186,11 +188,12 @@ def run():
     set_tab()
     log("sidebar x=%d w=%d" % (ui_region().x, ui_region().width))
     n_total = int(round(R.SECONDS * FPS / STRIDE))
+    times = [float(x) for x in os.environ['HA_TIMES'].split(',')] if os.environ.get('HA_TIMES') else None
     manifest = []
     tg = time.time()
     last = dict(show=None, coll=None)
-    for gi in range(min(n_total, MAXG)):
-        tv = gi * STRIDE / FPS
+    plan = times if times is not None else [gi * STRIDE / FPS for gi in range(n_total)]
+    for gi, tv in enumerate(plan[:MAXG]):
         name, ts, caption, show, coll = source_for(tv)
         frames = caches[name]
         k = min(int(round(ts * FPS / STRIDE)), len(frames) - 1)

@@ -47,7 +47,7 @@ class HairParams:
         "pinned_prefix", "ground_z", "max_segment_budget", "max_points",
         "gravity_scale", "bend_tip_scale", "stiffness_curve", "max_speed",
         "hair_collision", "strand_radius", "repel_strength", "volume", "clumping",
-        "clump_range", "strand_friction", "max_pairs", "adaptive_substeps",
+        "clump_range", "strand_friction", "max_pairs", "adaptive_substeps", "hair_every",
     )
 
     def __init__(self, **kw):
@@ -94,6 +94,7 @@ class HairParams:
         self.strand_friction = 0.05    # velocity sharing between touching strands
         self.max_pairs = 600000
         self.adaptive_substeps = True  # add substeps when a collider moves fast
+        self.hair_every = 1            # strand-strand contact runs on every N-th substep (2 = half the cost on dense grooms)
         self.update(**kw)
 
     def update(self, **kw):
@@ -1463,7 +1464,8 @@ class HairSolver:
             self._apply_rest_shape(x)
             self._project_stretch(x, p.stretch_compliance, p.stretch_iterations, h)
             self._project_bend(x, p.bend_compliance, p.bend_iterations, h)
-            self._hair_hair(x, prev, h)
+            if _s % max(int(p.hair_every), 1) == 0:
+                self._hair_hair(x, prev, h)
             self._project_stretch(x, p.stretch_compliance, max(2, p.stretch_iterations // 2), h)
             x, prev, contact = self._collide(x, prev, h, frac)
             self._pin_roots(x, prev, h)

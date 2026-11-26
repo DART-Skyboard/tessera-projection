@@ -134,6 +134,7 @@ def _draw_volume(l, hp):
         col.prop(hp, "volume")
         col.prop(hp, "clumping")
         col.prop(hp, "strand_friction")
+        col.prop(hp, "hair_every")
     col.separator()
     col.prop(hp, "gravity_scale")
     col.prop(hp, "stiffness_curve")
