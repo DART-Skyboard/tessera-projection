@@ -95,21 +95,37 @@ def ui(work, blend, cache):
         print("ui_tab", e, flush=True)
 
     # ---- screen set-up: Layout workspace (viewport + N-panel, outliner, properties, timeline)
+    print("STEP: pr = bpy.context.preferences", flush=True)
     pr = bpy.context.preferences
+    print("STEP: pr.view.show_splash = False", flush=True)
     pr.view.show_splash = False
+    print("STEP: pr.view.ui_scale = float(os.environ.get('UI_SCALE', '1.0'))", flush=True)
     pr.view.ui_scale = float(os.environ.get('UI_SCALE', '1.0'))
+    print("STEP: v3d_area = area('VIEW_3D')", flush=True)
     v3d_area = area('VIEW_3D')
+    print("STEP: sp = v3d_area.spaces.active", flush=True)
     sp = v3d_area.spaces.active
+    print("STEP: sp.show_region_ui = True", flush=True)
     sp.show_region_ui = True
+    print("STEP: sp.show_region_toolbar = True", flush=True)
     sp.show_region_toolbar = True
+    print("STEP: sp.overlay.show_stats = False", flush=True)
     sp.overlay.show_stats = False
+    print("STEP: sp.overlay.show_floor = False", flush=True)
     sp.overlay.show_floor = False
+    print("STEP: sp.overlay.show_axis_x = sp.overlay.show_axis_y = False", flush=True)
     sp.overlay.show_axis_x = sp.overlay.show_axis_y = False
+    print("STEP: sp.overlay.show_extras = False", flush=True)
     sp.overlay.show_extras = False
+    print("STEP: sp.overlay.show_relationship_lines = False", flush=True)
     sp.overlay.show_relationship_lines = False
+    print("STEP: sp.show_gizmo = False", flush=True)
     sp.show_gizmo = False
+    print("STEP: sp.clip_start, sp.clip_end = 0.05, 60.0", flush=True)
     sp.clip_start, sp.clip_end = 0.05, 60.0
+    print("STEP: sp.lens = 38", flush=True)
     sp.lens = 38
+    print("STEP: ee = scene.eevee", flush=True)
     ee = scene.eevee
     for k, v in (('use_raytracing', False), ('use_shadows', True), ('taa_samples', int(os.environ.get('UI_SAMPLES', '1'))),
                  ('taa_render_samples', 16), ('use_volumetric_shadows', False), ('shadow_ray_count', 1),
@@ -118,13 +134,16 @@ def ui(work, blend, cache):
             setattr(ee, k, v)
         except Exception as e:
             print("eevee", k, e, flush=True)
+    print("STEP: scene.render.engine = 'BLENDER_EEVEE' if 'BLENDER_EEVEE' in ", flush=True)
     scene.render.engine = 'BLENDER_EEVEE' if 'BLENDER_EEVEE' in [i.identifier for i in
                                                                      scene.render.bl_rna.properties['engine'].enum_items] else 'BLENDER_EEVEE_NEXT'
     try:
         scene.view_settings.view_transform = 'AgX'
     except Exception:
         pass
+    print("STEP: shading_used = SHADING", flush=True)
     shading_used = SHADING
+    print("STEP: sp.shading.type = 'RENDERED' if SHADING == 'RENDERED' else '", flush=True)
     sp.shading.type = 'RENDERED' if SHADING == 'RENDERED' else 'MATERIAL'
     try:
         sp.shading.use_scene_lights_render = True
@@ -206,7 +225,7 @@ def ui(work, blend, cache):
             traceback.print_exc()
             bpy.ops.wm.quit_blender()
             return None
-    bpy.app.timers.register(tick, first_interval=3.0)
+    bpy.app.timers.register(tick, first_interval=3.0, persistent=True)
 
 
 # ------------------------------------------------------------------------------------------------ Cycles frames

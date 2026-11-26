@@ -307,14 +307,14 @@ def mat_iridescent(name):
     m, nt = _mat(name)
     lw = nt.nodes.new('ShaderNodeLayerWeight')
     lw.inputs['Blend'].default_value = 0.45
-    ramp = _ramp(nt, [(0.0, (0.55, 0.18, 0.95, 1)), (0.4, (0.10, 0.45, 0.95, 1)), (0.75, (0.05, 0.80, 0.85, 1)),
-                      (1.0, (0.02, 0.16, 0.45, 1))])
+    ramp = _ramp(nt, [(0.0, (0.35, 0.08, 0.75, 1)), (0.4, (0.04, 0.22, 0.80, 1)), (0.75, (0.02, 0.55, 0.65, 1)),
+                      (1.0, (0.01, 0.06, 0.30, 1))])
     nt.links.new(lw.outputs['Fresnel'], ramp.inputs['Fac'])
     b = _principled(nt, Roughness=0.18, Metallic=0.35, Sheen_Weight=0.8, Specular_IOR_Level=1.0, Coat_Weight=0.5,
                     Coat_Roughness=0.08)
     nt.links.new(ramp.outputs['Color'], b.inputs['Base Color'])
     nt.links.new(ramp.outputs['Color'], b.inputs['Emission Color'])
-    b.inputs['Emission Strength'].default_value = 0.35
+    b.inputs['Emission Strength'].default_value = 0.12
     _out(nt, b)
     return m
 
@@ -481,7 +481,7 @@ def build_room(coll):
         sph.location = (sx * 2.6, 2.4, 1.32)
         sph.data.materials.append(mat_emissive("Orb Glow %d" % sx, (0.2, 0.7, 1.0, 1) if sx < 0 else (1.0, 0.25, 0.8, 1), 3.0))
     # circular rug
-    cyl_obj("Rug", 2.0, 0.012, (0, -0.3, 0.006), coll, mat_plain("Rug", (0.03, 0.05, 0.14, 1), 0.9), n=96)
+    cyl_obj("Rug", 2.0, 0.012, (0, -0.3, 0.006), coll, mat_plain("Rug", (0.012, 0.02, 0.06, 1), 0.9), n=96)
     # pedestal fan on the left (visible source of the breeze)
     cyl_obj("Fan Pole", 0.025, 0.95, (-2.6, -0.3, 0.52), coll, chrome, n=16)
     cyl_obj("Fan Base", 0.2, 0.04, (-2.6, -0.3, 0.02), coll, chrome, n=32)
@@ -599,8 +599,8 @@ def build():
     D = build_dress(COLS)
     dress = new_obj("Nebula Gown", D['verts'], D['quads'], bodyc)
     me = dress.data
-    mats = [mat_satin("Gown Bodice Satin", (0.01, 0.06, 0.42, 1), (0.10, 0.45, 1.0, 1), 1.0),
-            mat_satin("Gown Skirt Satin", (0.015, 0.09, 0.55, 1), (0.12, 0.55, 1.0, 1), 1.0),
+    mats = [mat_satin("Gown Bodice Satin", (0.004, 0.02, 0.22, 1), (0.02, 0.14, 0.70, 1), 0.5),
+            mat_satin("Gown Skirt Satin", (0.006, 0.03, 0.28, 1), (0.03, 0.20, 0.85, 1), 0.5),
             mat_emissive("Gown Hem Glow", (0.15, 0.85, 1.0, 1), 5.0),
             mat_iridescent("Gown Overskirt Iridescent"),
             mat_emissive("Overskirt Hem Glow", (1.0, 0.3, 0.85, 1), 5.0),
@@ -662,11 +662,11 @@ def build():
     world.use_nodes = True
     bg = world.node_tree.nodes['Background']
     bg.inputs['Color'].default_value = (0.02, 0.035, 0.09, 1)
-    bg.inputs['Strength'].default_value = 0.8
+    bg.inputs['Strength'].default_value = 0.5
     lc = bpy.data.collections.new("Lights")
     scene.collection.children.link(lc)
-    add_light("Key Spot", 'SPOT', (-1.4, -3.2, 3.8), (0, 0, 1.0), 900, (1.0, 0.95, 0.9), spot=0.9, coll=lc)
-    add_light("Top Spot", 'SPOT', (0.0, 0.4, 4.0), (0, 0, 0.9), 700, (0.9, 0.95, 1.0), spot=0.7, coll=lc)
+    add_light("Key Spot", 'SPOT', (-1.4, -3.2, 3.8), (0, 0, 1.0), 420, (1.0, 0.95, 0.9), spot=0.9, coll=lc)
+    add_light("Top Spot", 'SPOT', (0.0, 0.4, 4.0), (0, 0, 0.9), 260, (0.9, 0.95, 1.0), spot=0.7, coll=lc)
     add_light("Rim Cyan", 'AREA', (2.4, 2.6, 2.6), (0, 0, 1.1), 500, (0.2, 0.8, 1.0), size=1.5, coll=lc)
     add_light("Rim Magenta", 'AREA', (-2.6, 2.4, 2.4), (0, 0, 1.1), 420, (1.0, 0.25, 0.8), size=1.5, coll=lc)
     add_light("Front Fill", 'AREA', (1.8, -3.5, 1.6), (0, 0, 1.0), 220, (0.8, 0.9, 1.0), size=3.0, coll=lc)
