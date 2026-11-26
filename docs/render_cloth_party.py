@@ -36,11 +36,16 @@ os.makedirs(WORK, exist_ok=True)
 BLEND = os.path.join(WORK, 'party.blend')
 CACHE = os.path.join(WORK, 'party_cache.npz')
 
-COLS = int(os.environ.get('PARTY_COLS', '80'))
+COLS = int(os.environ.get('PARTY_COLS', '44'))
 FRAMES = int(os.environ.get('PARTY_FRAMES', '720'))
 FPS = int(os.environ.get('PARTY_FPS', '24'))
 SUBSTEPS = int(os.environ.get('PARTY_SUBSTEPS', '3'))
 ITERS = int(os.environ.get('PARTY_ITERS', '5'))
+NB = int(os.environ.get('PARTY_BODICE_ROWS', '8'))      # bodice rows
+NS = int(os.environ.get('PARTY_SKIRT_ROWS', '26'))      # skirt rows
+NO = int(os.environ.get('PARTY_OVER_ROWS', '18'))       # overskirt rows
+NC = int(os.environ.get('PARTY_TRAIN_ROWS', '24'))      # train rows
+NCC = int(os.environ.get('PARTY_TRAIN_COLS', '26'))     # train columns
 
 # --------------------------------------------------------------------------------------------- body profile
 # (z, rx, ry, cy) of the torso ellipse; front of the figure faces -Y
@@ -165,8 +170,8 @@ def build_dress(cols=COLS):
         return amp * t * (0.55 * np.sin(9 * theta + seed) + 0.30 * np.sin(15 * theta + 2 * seed) + 0.15 * np.sin(4 * theta))
 
     # ---- layer A: bodice (pinned) + A-line skirt
-    zs_b = np.linspace(Z_TOP, Z_WAIST, 13)
-    zs_s = np.linspace(Z_WAIST, Z_HEM, 41)[1:]
+    zs_b = np.linspace(Z_TOP, Z_WAIST, NB)
+    zs_s = np.linspace(Z_WAIST, Z_HEM, NS + 1)[1:]
     zs = np.concatenate([zs_b, zs_s])
     nA = len(zs)
     base = 0
@@ -181,19 +186,19 @@ def build_dress(cols=COLS):
             V.append(p + rad * d)
             P.append(pat + rad * d * 1.3)
             layer.append(0)
-            pinw.append(1.0 if r < 13 else 0.0)
+            pinw.append(1.0 if r < NB else 0.0)
             uvs.append((i / cols, 1.0 - r / (nA - 1)))
     for r in range(nA - 1):
         for i in range(cols):
             a = base + r * cols + i
             b = base + r * cols + (i + 1) % cols
             Q.append((a, b, b + cols, a + cols))
-            hem = r >= nA - 3
-            mat.append(0 if r < 12 else (2 if hem else 1))
+            hem = r >= nA - 2
+            mat.append(0 if r < NB - 1 else (2 if hem else 1))
     baseA = len(V)
 
     # ---- layer B: high-low iridescent overskirt, pinned at the waist
-    rowsB = 30
+    rowsB = NO
     zw = 1.065
     base = len(V)
     for r in range(rowsB):
@@ -219,10 +224,10 @@ def build_dress(cols=COLS):
             a = base + r * cols + i
             b = base + r * cols + (i + 1) % cols
             Q.append((a, b, b + cols, a + cols))
-            mat.append(4 if r >= rowsB - 3 else 3)
+            mat.append(4 if r >= rowsB - 2 else 3)
 
     # ---- layer C: train / cape from the shoulder blades, falls to the floor behind
-    ccols, crows = 44, 44
+    ccols, crows = NCC, NC
     base = len(V)
     span = 0.95   # +- radians around the back (theta = pi)
     for r in range(crows):
@@ -245,7 +250,7 @@ def build_dress(cols=COLS):
         for i in range(ccols - 1):
             a = base + r * ccols + i
             Q.append((a, a + 1, a + 1 + ccols, a + ccols))
-            mat.append(6 if (i < 2 or i >= ccols - 3 or r >= crows - 3) else 5)
+            mat.append(6 if (i < 1 or i >= ccols - 2 or r >= crows - 2) else 5)
     V, P = np.asarray(V), np.asarray(P)
     return dict(verts=V, pattern=P, quads=Q, layer=np.asarray(layer), mat=mat, pins=np.asarray(pinw), uv=np.asarray(uvs),
                 nA=baseA)
@@ -595,10 +600,10 @@ def build():
         o.matrix_parent_inverse = arm.matrix_world.inverted()
         o.matrix_world = mw
 
-    # ---------------- dress
+    # ---------------- dress: THREE separate objects in ONE collection (a garment group)
     D = build_dress(COLS)
-    dress = new_obj("Nebula Gown", D['verts'], D['quads'], bodyc)
-    me = dress.data
+    gownc = bpy.data.collections.new("Nebula Gown")
+    scene.collection.children.link(gownc)
     mats = [mat_satin("Gown Bodice Satin", (0.004, 0.02, 0.22, 1), (0.02, 0.14, 0.70, 1), 0.5),
             mat_satin("Gown Skirt Satin", (0.006, 0.03, 0.28, 1), (0.03, 0.20, 0.85, 1), 0.5),
             mat_emissive("Gown Hem Glow", (0.15, 0.85, 1.0, 1), 5.0),
@@ -606,33 +611,42 @@ def build():
             mat_emissive("Overskirt Hem Glow", (1.0, 0.3, 0.85, 1), 5.0),
             mat_cape("Gown Train Circuit"),
             mat_emissive("Train Edge Glow", (0.1, 0.8, 1.0, 1), 4.0)]
-    for m in mats:
-        me.materials.append(m)
-    for p, mi in zip(me.polygons, D['mat']):
-        p.material_index = mi
-        p.use_smooth = True
-    uv = me.uv_layers.new(name="UVMap")
-    for poly in me.polygons:
-        for li in poly.loop_indices:
-            vi = me.loops[li].vertex_index
-            uv.data[li].uv = tuple(D['uv'][vi])
-    # vertex groups: the rig bone + pins + layer groups (for the panel's per-layer / ignore controls)
-    pins = np.nonzero(D['pins'] > 0.5)[0]
-    vg = dress.vertex_groups.new(name="Spine")
-    vg.add([int(i) for i in pins], 1.0, 'REPLACE')
-    CO.write_pin_group(dress, pins, "ClothPins")
-    for k, nm in enumerate(("Layer Skirt", "Layer Overskirt", "Layer Train")):
-        g = dress.vertex_groups.new(name=nm)
-        g.add([int(i) for i in np.nonzero(D['layer'] == k)[0]], 1.0, 'REPLACE')
-    dress["tessera_cloth_pattern"] = [float(c) for c in D['pattern'].ravel()]
-    dress["party_layers"] = [int(i) for i in D['layer']]
-    sub = dress.modifiers.new("Gown Subdiv", 'SUBSURF')
-    sub.levels, sub.render_levels = 0, 1
+    layer_names = ("Gown Bodice+Skirt", "Gown Overskirt", "Gown Train")
+    layer_mats = ((0, 1, 2), (3, 4), (5, 6))
+    layer_fabric = ('COTTON', 'SILK', 'CAPE')
+    gown = []
+    quads = D['quads']
+    layer = D['layer']
+    for k, nm in enumerate(layer_names):
+        idx = np.nonzero(layer == k)[0]
+        lo, hi = int(idx.min()), int(idx.max()) + 1
+        qk = [i_ for i_, q in enumerate(quads) if lo <= q[0] < hi]
+        faces = [tuple(int(c) - lo for c in quads[i_]) for i_ in qk]
+        o = new_obj(nm, D['verts'][lo:hi], faces, gownc)
+        me = o.data
+        for m_i in layer_mats[k]:
+            me.materials.append(mats[m_i])
+        for p_, i_ in zip(me.polygons, qk):
+            p_.material_index = D['mat'][i_] - layer_mats[k][0]
+            p_.use_smooth = True
+        uv = me.uv_layers.new(name="UVMap")
+        for poly in me.polygons:
+            for li in poly.loop_indices:
+                uv.data[li].uv = tuple(D['uv'][lo + me.loops[li].vertex_index])
+        pins = np.nonzero(D['pins'][lo:hi] > 0.5)[0]
+        vg = o.vertex_groups.new(name="Spine")
+        vg.add([int(i_) for i_ in pins], 1.0, 'REPLACE')
+        CO.write_pin_group(o, pins, "ClothPins")
+        o["tessera_cloth_pattern"] = [float(c) for c in D['pattern'][lo:hi].ravel()]
+        sub = o.modifiers.new("Gown Subdiv", 'SUBSURF')
+        sub.levels, sub.render_levels = 0, 1
+        gown.append(o)
+    dress = gown[0]
 
-    # ---------------- extension wiring
+    # ---------------- extension wiring: the collection is ONE garment group
     cl = scene.arc_flow_cloth
-    g = CO.assign_garment(scene, dress, preset='SILK', quality='BALANCED', pin_mode='NONE', armature=arm)
-    g.name = "Nebula Gown"
+    g = CO.assign_group(scene, gown, collection=gownc, preset='SILK', quality='BALANCED', pin_mode='NONE', armature=arm,
+                        fabrics=dict(zip(layer_names, layer_fabric)), name="Nebula Gown")
     g.pin_group = "ClothPins"
     g.follow_preset = True
     g.override_quality = True
@@ -640,7 +654,7 @@ def build():
     g.thickness = 0.0035
     g.tessellation_edge, g.tessellation_cap = 0.20, 20000
     g.margin = 0.006
-    g.self_collision = True                 # <- the point of this scene
+    g.self_collision = True                 # <- group-wide: members collide with each other and themselves
     g.self_collision_mode = 'LAYERED'
     g.self_thickness = 0.004
     g.self_friction = 0.35
@@ -653,7 +667,7 @@ def build():
     cl.use_fluid_velocity = False
     cl.air_density = 0.3                    # thin air: the fan gently lifts the silk instead of flagging it
     cl.wind = (1.0, 0.2, 0.1)
-    cl.status = "Nebula Gown: 3 layers, self-collision ON."
+    cl.status = "Nebula Gown: 3 objects in one group, self-collision ON."
     animate(scene, arm, cl)
     scene.frame_set(1)
 
@@ -686,7 +700,7 @@ def build():
     CO.build_solver(scene, g)
     S = CO.RT.solvers[g.name]
     print("garment verts", S.n, "tris", len(S.tris), "pins", int(S.pin_hard.sum()), "self_collision", S.self_collision,
-          S.self_collision_mode, "th", S.self_thickness)
+          S.self_collision_mode, "th", S.self_thickness, "members", len(g.members), "stitches", g.n_stitches)
     bpy.ops.wm.save_as_mainfile(filepath=BLEND)
     print("saved", BLEND)
 
@@ -739,6 +753,16 @@ def sim():
     start = int(os.environ.get('PARTY_START', '1'))
     frames = [S.x.astype(np.float32).copy()]
     ms, sc_ms, pairs, contacts, sdist, pen = [], [], [], [], [], []
+    CROSS_EVERY = int(os.environ.get('PARTY_CROSS_EVERY', '12'))
+    cross_rows = []
+
+    def crossing_row(f):
+        ws = S.self_collider().wrong_side(S.x, labels=S.members)
+        row = dict(frame=f)
+        for (a, b), (c, d) in ws.items():
+            row["%d>%d" % (a, b)] = [int(c), round(float(d), 5)]
+        cross_rows.append(row)
+        return row
     # settle: let the gown fall into shape before the shot starts (no timeline motion)
     cl.wind = (0.0, 0.0, 0.0)
     for k in range(int(os.environ.get('PARTY_SETTLE', '24'))):
@@ -759,6 +783,9 @@ def sim():
             sc_ms.append(sc.stats['ms'])
             pairs.append(sc.stats['pairs'])
             contacts.append(sc.stats['contacts'])
+        if f % CROSS_EVERY == 0 or f == FRAMES:
+            r_ = crossing_row(f)
+            print("  crossings f%d: %s" % (f, {k: v[0] for k, v in r_.items() if k != 'frame'}), flush=True)
         if f % 12 == 0:
             sdist.append((f, float(S.min_self_distance())))
         pen.append(g.last_penetration)
@@ -767,16 +794,19 @@ def sim():
                   % (f, ms[-1], sc_ms[-1] if sc_ms else 0, pairs[-1] if pairs else 0, contacts[-1] if contacts else 0,
                      sdist[-1][1], pen[-1], time.time() - t_wall), flush=True)
             np.savez(CACHE + '.part.npz', x=np.stack(frames))
+            json.dump(cross_rows, open(os.path.join(WORK, 'party_cross.json'), 'w'))
     X = np.stack(frames)
     mind_arr = np.full(len(X), np.nan)
     for f, d in sdist:
         mind_arr[f - 1] = d
-    np.savez_compressed(CACHE, x=X, fps=FPS, ms=np.asarray(ms), contacts=np.asarray(contacts), pairs=np.asarray(pairs), mind=mind_arr)
+    np.savez_compressed(CACHE, x=X, fps=FPS, rest=S.rest, tris=S.tris, members=S.members,
+                        offsets=np.array([[s0, e] for _o, s0, e in CO.RT.layout[g.name]]), ms=np.asarray(ms), contacts=np.asarray(contacts), pairs=np.asarray(pairs), mind=mind_arr)
     stats = dict(verts=int(S.n), frames=len(X), step_ms_mean=float(np.mean(ms)), step_ms_max=float(np.max(ms)),
                  selfcol_ms_mean=float(np.mean(sc_ms)) if sc_ms else 0.0, pairs_mean=float(np.mean(pairs)) if pairs else 0,
                  contacts_mean=float(np.mean(contacts)) if contacts else 0, min_self_distance=sdist,
                  max_body_penetration=float(np.max(pen)), thickness=S.self_thickness or S.thickness,
                  self_intersections_final=int(S.count_self_intersections()))
+    json.dump(cross_rows, open(os.path.join(WORK, 'party_cross.json'), 'w'))
     with open(os.path.join(WORK, 'party_stats.json'), 'w') as fh:
         json.dump(stats, fh, indent=1)
     print("sim done", stats['step_ms_mean'], "ms/step mean", flush=True)

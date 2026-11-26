@@ -23,6 +23,8 @@ class _Runtime:
     def __init__(self):
         self.solvers = {}         # garment name -> ClothSolver
         self.sig = {}             # garment name -> build signature
+        self.layout = {}          # garment name -> [(object, vertex start, vertex end)]
+        self.welds = {}           # garment name -> number of weld constraints
         self.prev_frame = None
         self.live_running = False
         self.last_tick = 0.0
@@ -30,6 +32,8 @@ class _Runtime:
     def reset(self):
         self.solvers.clear()
         self.sig.clear()
+        self.layout.clear()
+        self.welds.clear()
         self.prev_frame = None
 
 
@@ -185,14 +189,19 @@ def _params(g):
     return kw
 
 
-def _signature(g, rest):
-    return (g.obj.name if g.obj else "", len(rest), g.preset, g.quality, g.follow_preset, g.override_quality,
+def _signature(g, rest, mem=None):
+    base = (g.obj.name if g.obj else "", len(rest), g.preset, g.quality, g.follow_preset, g.override_quality,
             g.pin_group, round(float(g.pin_threshold), 4),
             tuple(round(float(getattr(g, k)), 6) for k in ("density", "stretch", "shear", "bend", "damping", "drag",
                                                             "lift", "thickness", "margin", "friction",
                                                             "tessellation_edge")),
             int(g.substeps), int(g.iterations), bool(g.self_collision), bool(g.use_dihedral),
             g.self_collision_mode, round(float(g.self_thickness), 6), round(float(g.self_friction), 4), g.self_ignore_group)
+    if mem:
+        base += (bool(g.use_stitch), round(float(g.stitch_tolerance), 6), round(float(g.stitch_stiffness), 1),
+                 tuple((o.name, m.preset, m.use_preset, m.weld) + tuple(round(float(getattr(m, k)), 6) for k in
+                       ("density", "stretch", "shear", "bend", "damping", "thickness", "friction")) for o, m in mem if m is not None))
+    return base
 
 
 def _armature_pose(arm):
@@ -246,52 +255,248 @@ def _seed_vertical_folds(S, n_pleats=5, amp=0.042):
     S.v[:] = 0.0
 
 
-def build_solver(scene, g):
 
-    """(Re)build the NumPy solver for one garment from the base mesh."""
-    obj = g.obj
-    rest, tris = _rest_world(obj)
-    pw = _pin_weights(obj, g.pin_group)
-    pins = np.nonzero(pw >= g.pin_threshold)[0]
-    if len(pins) == 0 and g.pin_mode != 'NONE':
-        pins = _auto_pin_indices(rest, g.pin_mode)
-        write_pin_group(obj, pins, g.pin_group or "ClothPins")
+# ----------------------------------------------------------------------------- garment groups
+def _is_excluded_member(scene, o):
+    """Objects that must never be a member of a garment group: registered collision bodies and other garments."""
+    cl = cloth(scene)
+    for c in cl.colliders:
+        if c.obj == o and not o.arc_flow_cloth.is_garment:
+            return True
+    return False
+
+
+def collection_meshes(scene, coll):
+    """Mesh objects of ``coll`` (recursive), stable name order, without registered collision bodies."""
+    if coll is None:
+        return []
+    out = [o for o in coll.all_objects if o.type == 'MESH' and not _is_excluded_member(scene, o)]
+    return sorted(out, key=lambda o: o.name)
+
+
+def sync_members(scene, g):
+    """Bring ``g.members`` in line with the group collection (new objects are added with the garment preset's
+    fabric, removed objects dropped).  Returns the number of members."""
+    if g.collection is not None:
+        objs = collection_meshes(scene, g.collection)
+        have = {m.obj.name: i for i, m in enumerate(g.members) if m.obj is not None}
+        for i in reversed(range(len(g.members))):
+            m = g.members[i]
+            if m.obj is None or m.obj not in objs:
+                g.members.remove(i)
+        have = {m.obj.name for m in g.members if m.obj is not None}
+        for o in objs:
+            if o.name not in have:
+                add_member(g, o)
+    g.n_members = len(g.members)
+    return len(g.members)
+
+
+def add_member(g, obj, preset=None):
+    for m in g.members:
+        if m.obj == obj:
+            return m
+    m = g.members.add()
+    m.name = obj.name
+    m.obj = obj
+    m.preset = preset or g.preset
+    pr = CS.PRESETS[m.preset]
+    for k in ("density", "stretch", "shear", "bend", "damping", "thickness", "friction"):
+        setattr(m, k, float(pr[k]))
+    return m
+
+
+def member_fabric(m):
+    """Fabric parameter dict of a member (preset values, or the typed ones)."""
+    if m.use_preset:
+        pr = CS.PRESETS[m.preset]
+        return {k: float(pr[k]) for k in ("density", "stretch", "shear", "bend", "damping", "thickness", "friction")}
+    return {k: float(getattr(m, k)) for k in ("density", "stretch", "shear", "bend", "damping", "thickness", "friction")}
+
+
+def garment_members(scene, g):
+    """[(object, member-or-None)] of garment ``g`` in layer order.  A plain single-object garment has no members."""
+    if g.collection is not None:
+        sync_members(scene, g)
+    if len(g.members):
+        out = [(m.obj, m) for m in g.members if m.enabled and m.obj is not None and m.obj.type == 'MESH']
+        if out:
+            return out
+    return [(g.obj, None)] if g.obj is not None else []
+
+
+def border_vertices(n, tris):
+    """Indices of vertices on a mesh border (edges used by exactly one triangle)."""
+    t = np.asarray(tris, np.int64)
+    e = np.concatenate([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]])
+    e.sort(axis=1)
+    key = e[:, 0] * n + e[:, 1]
+    u, cnt = np.unique(key, return_counts=True)
+    b = u[cnt == 1]
+    return np.unique(np.concatenate([b // n, b % n])) if len(b) else np.zeros(0, np.int64)
+
+
+def detect_welds(rest, tris, member, tol, allowed=None):
+    """Weld constraints between members: every border vertex of a member that lies within ``tol`` of another
+    member's surface is attached to it.  Returns (vert, tri(3), bary(3), distance) arrays.  A vertex-to-vertex
+    weld has ``bary = (1, 0, 0)``.  ``allowed`` is an optional per-member bool array (members that may weld)."""
+    from .core import cloth_selfcol as SC
+    n = len(rest)
+    empty = (np.zeros(0, np.int64), np.zeros((0, 3), np.int64), np.zeros((0, 3)), np.zeros(0))
+    if tol <= 0 or len(np.unique(member)) < 2:
+        return empty
+    bv = border_vertices(n, tris)
+    if allowed is not None:
+        bv = bv[np.asarray(allowed, bool)[member[bv]]]
+    if len(bv) == 0:
+        return empty
+    T = np.asarray(tris, np.int64)
+    A, B, C = rest[T[:, 0]], rest[T[:, 1]], rest[T[:, 2]]
+    lo = np.minimum(np.minimum(A, B), C) - tol
+    hi = np.maximum(np.maximum(A, B), C) + tol
+    tmem = member[T[:, 0]]
+    outv, outt, outb, outd = [], [], [], []
+    best = {}
+    for s0 in range(0, len(bv), 128):
+        ids = bv[s0:s0 + 128]
+        P = rest[ids]
+        near = ((P[:, None, :] >= lo[None]) & (P[:, None, :] <= hi[None])).all(-1) & (member[ids][:, None] != tmem[None])
+        pi, ti = np.nonzero(near)
+        if len(pi) == 0:
+            continue
+        q, bary, _in = SC.closest_point_triangle(P[pi], A[ti], B[ti], C[ti])
+        dist = np.linalg.norm(P[pi] - q, axis=1)
+        ok = dist <= tol
+        for a_, t_, b_, d_ in zip(ids[pi[ok]], ti[ok], bary[ok], dist[ok]):
+            cur = best.get(int(a_))
+            if cur is None or d_ < cur[0] - 1e-12:
+                best[int(a_)] = (float(d_), int(t_), b_)
+    seen = set()
+    for a_, (d_, t_, b_) in sorted(best.items()):
+        tri = T[t_].copy()
+        b_ = np.clip(np.asarray(b_, float), 0.0, 1.0)
+        b_ = b_ / max(b_.sum(), 1e-12)
+        k = int(np.argmax(b_))
+        if b_[k] > 0.85:                       # a vertex-to-vertex weld
+            tri = np.array([tri[k], tri[k], tri[k]])
+            b_ = np.array([1.0, 0.0, 0.0])
+            pair = tuple(sorted((a_, int(tri[0]))))
+            if pair in seen:
+                continue
+            seen.add(pair)
+        outv.append(a_); outt.append(tri); outb.append(b_); outd.append(d_)
+    if not outv:
+        return empty
+    return np.array(outv, np.int64), np.array(outt, np.int64), np.array(outb, float), np.array(outd, float)
+
+
+def garment_vertex_count(scene, g):
+    return sum(len(o.data.vertices) for o, _m in garment_members(scene, g))
+
+
+def build_solver(scene, g):
+    """(Re)build the NumPy solver for one garment (a single object, or a group of objects solved as one system)."""
+    mem = garment_members(scene, g)
+    objs = [o for o, _m in mem]
+    group = len(objs) > 1 or (len(objs) == 1 and mem[0][1] is not None)
+    rests, tris_l, pins_l, offs = [], [], [], []
+    off = 0
+    for k, (o, m) in enumerate(mem):
+        rest_k, tris_k = _rest_world(o)
+        pw = _pin_weights(o, g.pin_group)
+        pk = np.nonzero(pw >= g.pin_threshold)[0]
+        if len(pk) == 0 and g.pin_mode != 'NONE' and k == 0:      # auto-pin the anchor (first) member only
+            pk = _auto_pin_indices(rest_k, g.pin_mode)
+            write_pin_group(o, pk, g.pin_group or "ClothPins")
+        rests.append(rest_k)
+        tris_l.append(tris_k + off)
+        pins_l.append(pk + off)
+        offs.append((o, off, off + len(rest_k)))
+        off += len(rest_k)
+    rest = np.concatenate(rests)
+    tris = np.concatenate(tris_l)
+    pins = np.concatenate(pins_l) if pins_l else np.zeros(0, np.int64)
+    obj = g.obj if g.obj is not None else objs[0]
     wind, grav, rho = _env_wind(scene)
+    kw = _params(g)
+    member_ids = None
+    if group:
+        member_ids = np.concatenate([np.full(e - s0, k, np.int64) for k, (_o, s0, e) in enumerate(offs)])
+        kw['members'] = member_ids
+        kw['member_params'] = [member_fabric(m) if m is not None else {} for _o, m in mem]
     S = CS.ClothSolver(rest, tris, pins=pins, preset=g.preset, quality=g.quality, gravity=grav,
-                       air_density=rho, **_params(g))
+                       air_density=rho, **kw)
+    # a cutting pattern (surplus length) may be stashed on any member object; concatenated, rest where missing
+    pats, have_pat = [], False
+    for (o, s0, e), rk in zip(offs, rests):
+        if "tessera_cloth_pattern" in o:
+            try:
+                pat = np.asarray(o["tessera_cloth_pattern"], float).reshape(-1, 3)
+                if len(pat) == len(rk):
+                    pats.append(pat)
+                    have_pat = True
+                    continue
+            except Exception:
+                pass
+        pats.append(rk)
+    # armature skin: weights per member, concatenated
     pose = _armature_pose(g.armature)
     if pose is not None:
         names, cur, restm = pose
-        idx, w = _skin_arrays(obj, g.armature, names)
-        if idx is not None:
-            S.set_skin(idx, w, restm, threshold=g.pin_threshold)
+        idx_l, w_l, any_skin = [], [], False
+        for (o, s0, e) in offs:
+            idx, w = _skin_arrays(o, g.armature, names)
+            if idx is None:
+                idx = np.full((e - s0, 4), -1, np.int64)
+                w = np.zeros((e - s0, 4), float)
+            else:
+                any_skin = True
+            idx_l.append(idx)
+            w_l.append(w)
+        if any_skin:
+            S.set_skin(np.concatenate(idx_l), np.concatenate(w_l), restm, threshold=g.pin_threshold)
             if len(pins):
                 S.pin_hard[pins] = True
                 S.inv_mass[pins] = 0.0
             S._bone_names = names
     S._collider_sig = None
-    if g.self_ignore_group and obj.vertex_groups.get(g.self_ignore_group) is not None:
-        ign = _pin_weights(obj, g.self_ignore_group) >= 0.5
+    if g.self_ignore_group:
+        ign = np.zeros(S.n, bool)
+        for (o, s0, e) in offs:
+            if o.vertex_groups.get(g.self_ignore_group) is not None:
+                ign[s0:e] = _pin_weights(o, g.self_ignore_group) >= 0.5
         if ign.any():
             S.set_self_layers(np.where(ign, -1, 0))
+    # stitches between members that touch
+    nweld = 0
+    if group and g.use_stitch and g.stitch_tolerance > 0:
+        allowed = np.array([bool(m.weld) if m is not None else True for _o, m in mem])
+        wv, wt, wb, wd = detect_welds(rest, tris, member_ids, float(g.stitch_tolerance), allowed)
+        if len(wv):
+            S.set_stitches(wv, wt, wb, wd, stiffness=float(g.stitch_stiffness))
+            nweld = len(wv)
     RT.solvers[g.name] = S
-    RT.sig[g.name] = _signature(g, rest)
+    RT.layout[g.name] = offs
+    RT.welds[g.name] = nweld
+    RT.sig[g.name] = _signature(g, rest, mem if group else None)
     g.n_verts = S.n
     g.n_pins = int(S.pin_hard.sum())
-    obj.arc_flow_cloth.is_garment = True
-    obj.arc_flow_cloth.garment_name = g.name
-    # a cutting pattern (surplus length) is stashed on the object by the Cape example
-    if "tessera_cloth_pattern" in obj:
+    g.n_members = len(g.members)
+    g.n_stitches = nweld
+    for k, (o, s0, e) in enumerate(offs):
+        o.arc_flow_cloth.is_garment = True
+        o.arc_flow_cloth.garment_name = g.name
+        if mem[k][1] is not None:
+            mem[k][1].n_verts = e - s0
+    if have_pat:
         try:
-            pat = np.asarray(obj["tessera_cloth_pattern"], float).reshape(-1, 3)
-            if len(pat) == S.n:
-                S.set_pattern_rest(pat)
-                _seed_vertical_folds(S)
+            S.set_pattern_rest(np.concatenate(pats))
+            _seed_vertical_folds(S)
         except Exception:
             pass
     try:
         deps = bpy.context.evaluated_depsgraph_get()
-        cv, ct, _names = _collider_mesh(scene, deps, exclude=obj)
+        cv, ct, _names = _collider_mesh(scene, deps, exclude=objs)
         if cv is not None:
             S.set_collider_mesh(cv, ct)
             S._collider_sig = (len(cv), float(cv.sum()), float((cv * cv).sum()))
@@ -304,9 +509,20 @@ def get_solver(scene, g, rebuild=False):
     S = RT.solvers.get(g.name)
     if S is None or rebuild:
         return build_solver(scene, g)
-    if g.obj is not None and S.n != len(g.obj.data.vertices):
+    if g.obj is not None and S.n != garment_vertex_count(scene, g):
         return build_solver(scene, g)
     return S
+
+
+def write_garment(g, X, scene=None):
+    """Write solver positions ``X`` (N,3 world) back into the member objects, one slice per object."""
+    lay = RT.layout.get(g.name)
+    if not lay:
+        return _write_world(g.obj, X) if g.obj is not None else False
+    ok = True
+    for o, s0, e in lay:
+        ok &= _write_world(o, X[s0:e])
+    return ok
 
 
 def _collider_mesh(scene, deps, exclude=None):
@@ -315,10 +531,16 @@ def _collider_mesh(scene, deps, exclude=None):
     vs, ts, off = [], [], 0
     names = []
     seen = set()
+    if exclude is None:
+        skip = set()
+    elif isinstance(exclude, (list, tuple, set)):
+        skip = {id(o) for o in exclude}
+    else:
+        skip = {id(exclude)}
 
     def add(obj):
         nonlocal off
-        if obj is None or obj.type != 'MESH' or obj == exclude or id(obj) in seen:
+        if obj is None or obj.type != 'MESH' or id(obj) in skip or id(obj) in seen:
             return
         seen.add(id(obj))
         v, t = _mesh_world(obj, deps)
@@ -331,9 +553,11 @@ def _collider_mesh(scene, deps, exclude=None):
     for c in cl.colliders:
         if c.enabled:
             add(c.obj)
+    from .cloth_props import garment_objects
     for g in cl.garments:
         if g.enabled:
-            add(g.obj)
+            for o in garment_objects(g):
+                add(o)
     for o in AC.iter_collision_meshes(scene, exclude=exclude):
         add(o)
     if not vs:
@@ -355,8 +579,9 @@ def step_scene(scene, dt, deps=None):
             continue
         S = get_solver(scene, g)
         S.air_density = rho
-        # collider soup: every other projection body and garment, never the garment itself
-        cv, ct, names = _collider_mesh(scene, deps, exclude=g.obj)
+        # collider soup: every other projection body and garment, never the garment's own members
+        own = [o for o, _s, _e in RT.layout.get(g.name, [(g.obj, 0, 0)])]
+        cv, ct, names = _collider_mesh(scene, deps, exclude=own)
         if cv is not None:
             sig = (len(cv), float(cv.sum()), float((cv * cv).sum()))
             if getattr(S, '_collider_sig', None) != sig:
@@ -370,9 +595,10 @@ def step_scene(scene, dt, deps=None):
             if pose is not None:
                 bones = pose[1]
         S.step(dt, wind=wind, gravity=grav, bone_matrices=bones, fluid_velocity=fluid)
-        _write_world(g.obj, S.x)
-        CG.write_attributes(g.obj, tension=S.tension,
-                            speed=np.linalg.norm(S.v, axis=1))
+        write_garment(g, S.x)
+        spd = np.linalg.norm(S.v, axis=1)
+        for o, s0, e in RT.layout.get(g.name, [(g.obj, 0, S.n)]):
+            CG.write_attributes(o, tension=S.tension[s0:e], speed=spd[s0:e])
         g.last_ms = S.last_ms
         g.last_stretch = S.last_stretch
         g.last_penetration = S.max_penetration()
@@ -382,11 +608,20 @@ def step_scene(scene, dt, deps=None):
     return stepped
 
 
+def write_garment_rest(g, S):
+    lay = RT.layout.get(g.name)
+    if not lay:
+        _write_world(g.obj, S.rest)
+        return
+    for o, s0, e in lay:
+        _write_world(o, S.rest[s0:e])
+
+
 def reset_scene(scene):
     for g in cloth(scene).garments:
         S = RT.solvers.get(g.name)
         if S is not None and g.obj is not None:
-            _write_world(g.obj, S.rest)
+            write_garment_rest(g, S)
     RT.reset()
 
 
@@ -418,6 +653,11 @@ class _GOp:
     @classmethod
     def poll(cls, ctx):
         return getattr(ctx.scene, 'arc_flow_cloth', None) is not None
+
+
+def _garment_objs(g):
+    from .cloth_props import garment_objects
+    return garment_objects(g)
 
 
 def _active_garment(scene):
@@ -459,6 +699,70 @@ def assign_garment(scene, obj, preset='CAPE', quality='BALANCED', pin_mode='SHOU
     return g
 
 
+def gather_group(ctx, source='AUTO'):
+    """Objects of a garment group from the selection.  Returns (collection or None, [objects]).
+
+    AUTO: several selected meshes that live in one (non-scene) collection -> that collection, so objects added to it
+    later join the group; several meshes in different collections -> the selected set; one mesh with child meshes ->
+    the object plus its children; a single mesh in a collection holding other meshes -> that collection."""
+    sc = ctx.scene
+    sel = [o for o in ctx.selected_objects if o.type == 'MESH' and not o.arc_flow_cloth.is_collider]
+    act = ctx.object if ctx.object is not None and ctx.object.type == 'MESH' else None
+    if act is not None and act not in sel and not act.arc_flow_cloth.is_collider:
+        sel.append(act)
+    if not sel:
+        return None, []
+    def common_coll(objs):
+        cs = None
+        for o in objs:
+            cc = {c for c in o.users_collection if c != sc.collection}
+            cs = cc if cs is None else (cs & cc)
+        return sorted(cs, key=lambda c: len(c.all_objects)) if cs else []
+    if source in ('AUTO', 'COLLECTION'):
+        cc = common_coll(sel)
+        if cc:
+            ms = collection_meshes(sc, cc[0])
+            if len(ms) > 1 or source == 'COLLECTION':
+                return cc[0], ms
+    if source in ('AUTO', 'SELECTION') and len(sel) > 1:
+        return None, sorted(sel, key=lambda o: o.name)
+    if source in ('AUTO', 'CHILDREN'):
+        base = act or sel[0]
+        kids = [c for c in base.children_recursive if c.type == 'MESH' and not c.arc_flow_cloth.is_collider]
+        if kids:
+            return None, [base] + sorted(kids, key=lambda o: o.name)
+    return None, sel[:1]
+
+
+def assign_group(scene, objs, collection=None, preset='CAPE', quality='BALANCED', pin_mode='NONE', armature=None,
+                 fabrics=None, name=None):
+    """Make ``objs`` ONE garment group (a single self-colliding system).  ``fabrics`` maps object name -> preset."""
+    objs = [o for o in objs if o is not None and o.type == 'MESH']
+    if not objs:
+        return None
+    cl = cloth(scene)
+    first = objs[0]
+    for g0 in cl.garments:
+        if g0.obj == first and (len(g0.members) or collection is not None):
+            return g0
+    g = assign_garment(scene, first, preset=preset, quality=quality, pin_mode=pin_mode, armature=armature)
+    if name:
+        g.name = name
+        first.arc_flow_cloth.garment_name = g.name
+    g.collection = collection
+    g.members.clear()
+    for o in objs:
+        add_member(g, o, preset=(fabrics or {}).get(o.name, preset))
+        o.arc_flow_cloth.is_garment = True
+        o.arc_flow_cloth.garment_name = g.name
+        from . import asset_colliders as AC
+        AC.mark_projection_collider(o)
+        CG.ensure_modifier(o)
+    g.n_members = len(g.members)
+    g.self_collision = True
+    return g
+
+
 def add_collider(scene, obj):
     cl = cloth(scene)
     for c in cl.colliders:
@@ -486,12 +790,88 @@ class ARCFLOW_OT_cloth_assign(_GOp, Operator):
             self.report({'WARNING'}, "Select a mesh to use as the garment")
             return {'CANCELLED'}
         arm = next((o for o in ctx.selected_objects if o.type == 'ARMATURE'), None)
+        # several selected meshes that live in one collection are ONE garment (a group), detected automatically
+        if len(obs) > 1:
+            coll, objs = gather_group(ctx, 'COLLECTION')
+            if coll is not None and len(objs) > 1 and all(o in objs for o in obs):
+                g = assign_group(ctx.scene, objs, collection=coll, armature=arm, name=coll.name)
+                build_solver(ctx.scene, g)
+                cloth(ctx.scene).status = "Group '%s': %d objects, %d stitches. Press Start Live or play the timeline." % (
+                    g.name, len(g.members), g.n_stitches)
+                return {'FINISHED'}
         for o in obs:
             if o.arc_flow_cloth.is_collider:
                 continue
             g = assign_garment(ctx.scene, o, armature=arm)
             build_solver(ctx.scene, g)
         cloth(ctx.scene).status = "Garment assigned. Press Start Live or play the timeline."
+        return {'FINISHED'}
+
+
+class ARCFLOW_OT_cloth_assign_group(_GOp, Operator):
+    bl_idname = "arcflow.cloth_assign_group"
+    bl_label = "Assign Garment Group"
+    bl_description = ("Make several mesh objects ONE garment group: they are solved together as a single self-colliding unit "
+                      "(members collide with each other and with themselves, touching borders are stitched) and the whole group "
+                      "collides with every collision body. Uses the shared collection, else the selected set, else the object and its children")
+    bl_options = {'REGISTER', 'UNDO'}
+    source: EnumProperty(name="From", items=[
+        ('AUTO', "Auto", "Shared collection, else selected set, else object and children"),
+        ('COLLECTION', "Collection", "Every mesh of the collection that holds the active object"),
+        ('SELECTION', "Selection", "The selected meshes"),
+        ('CHILDREN', "Object and children", "The active object and its child meshes")], default='AUTO')
+
+    def execute(self, ctx):
+        coll, objs = gather_group(ctx, self.source)
+        if len(objs) < 2:
+            self.report({'WARNING'}, "Select two or more meshes (or one mesh in a collection with others) to form a group")
+            return {'CANCELLED'}
+        arm = next((o for o in ctx.selected_objects if o.type == 'ARMATURE'), None)
+        g = assign_group(ctx.scene, objs, collection=coll, armature=arm,
+                         name=(coll.name if coll is not None else None))
+        if g is None:
+            return {'CANCELLED'}
+        build_solver(ctx.scene, g)
+        cloth(ctx.scene).status = "Group '%s': %d objects, %d stitches. Self-collision applies to the whole group." % (
+            g.name, len(g.members), g.n_stitches)
+        return {'FINISHED'}
+
+
+class ARCFLOW_OT_cloth_group_refresh(_GOp, Operator):
+    bl_idname = "arcflow.cloth_group_refresh"
+    bl_label = "Refresh Group Members"
+    bl_description = "Re-read the group collection (new objects join with the garment preset's fabric), re-detect stitches and rebuild the solver"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, ctx):
+        g = _active_garment(ctx.scene)
+        if g is None:
+            return {'CANCELLED'}
+        if g.collection is not None:
+            sync_members(ctx.scene, g)
+        for o in _garment_objs(g):
+            o.arc_flow_cloth.is_garment = True
+            o.arc_flow_cloth.garment_name = g.name
+        build_solver(ctx.scene, g)
+        cloth(ctx.scene).status = "Group '%s': %d objects, %d stitches." % (g.name, max(len(g.members), 1), g.n_stitches)
+        return {'FINISHED'}
+
+
+class ARCFLOW_OT_cloth_member_preset(_GOp, Operator):
+    bl_idname = "arcflow.cloth_member_preset"
+    bl_label = "Apply Member Fabric"
+    bl_description = "Copy the fabric preset's values into the active group member"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, ctx):
+        g = _active_garment(ctx.scene)
+        if g is None or not len(g.members):
+            return {'CANCELLED'}
+        m = g.members[max(0, min(g.member_index, len(g.members) - 1))]
+        for k, v in CS.PRESETS[m.preset].items():
+            if k in ("density", "stretch", "shear", "bend", "damping", "thickness", "friction"):
+                setattr(m, k, float(v))
+        RT.solvers.pop(g.name, None)
         return {'FINISHED'}
 
 
@@ -506,11 +886,13 @@ class ARCFLOW_OT_cloth_remove(_GOp, Operator):
         g = _active_garment(ctx.scene)
         if g is None:
             return {'CANCELLED'}
-        S = RT.solvers.pop(g.name, None)
+        S = RT.solvers.get(g.name)
         if S is not None and g.obj is not None:
-            _write_world(g.obj, S.rest)
-        if g.obj is not None:
-            g.obj.arc_flow_cloth.is_garment = False
+            write_garment_rest(g, S)
+        RT.solvers.pop(g.name, None)
+        for o in _garment_objs(g):
+            o.arc_flow_cloth.is_garment = False
+        RT.layout.pop(g.name, None)
         cl.garments.remove(cl.index)
         cl.index = max(0, cl.index - 1)
         return {'FINISHED'}
@@ -529,7 +911,7 @@ class ARCFLOW_OT_cloth_auto_pin(_GOp, Operator):
             return {'CANCELLED'}
         S = RT.solvers.get(g.name)
         if S is not None:
-            _write_world(g.obj, S.rest)
+            write_garment_rest(g, S)
         rest, _t = _rest_world(g.obj)
         mode = g.pin_mode if g.pin_mode != 'NONE' else 'TOP'
         idx = _auto_pin_indices(rest, mode)
@@ -751,6 +1133,11 @@ def bake_shape_keys(obj, S, frames_world, f0):
     return keys
 
 
+def _bake_garment_keys(g, S, frames, f0):
+    for o, s0, e in RT.layout.get(g.name, [(g.obj, 0, S.n)]):
+        bake_shape_keys(o, S, [X[s0:e] for X in frames], f0)
+
+
 def collider_meta(scene):
     out = []
     for c in cloth(scene).colliders:
@@ -813,9 +1200,9 @@ class ARCFLOW_OT_cloth_bake(_GOp, Operator):
             S = RT.solvers[g.name]
             stack = np.stack(frames[g.name]).astype(np.float32)
             if mode == 'SHAPEKEYS':
-                _write_world(g.obj, S.rest)
-                bake_shape_keys(g.obj, S, frames[g.name], f0)
-                written.append("%d shape keys on %s" % (len(stack), g.obj.name))
+                write_garment_rest(g, S)
+                _bake_garment_keys(g, S, frames[g.name], f0)
+                written.append("%d shape keys on %s" % (len(stack), ", ".join(o.name for o in _garment_objs(g))))
             elif mode == 'NPZ':
                 p = os.path.join(d, "%s_%s.npz" % (bpy.path.clean_name(cl.bake_name), bpy.path.clean_name(g.name)))
                 np.savez_compressed(p, frames=np.arange(f0, f0 + len(stack), dtype=np.int32), positions=stack,
@@ -832,15 +1219,15 @@ class ARCFLOW_OT_cloth_bake(_GOp, Operator):
             # shape keys drive the Alembic export, then are removed again
             for g in cl.garments:
                 if g.name in frames:
-                    _write_world(g.obj, RT.solvers[g.name].rest)
-                    bake_shape_keys(g.obj, RT.solvers[g.name], frames[g.name], f0)
+                    write_garment_rest(g, RT.solvers[g.name])
+                    _bake_garment_keys(g, RT.solvers[g.name], frames[g.name], f0)
             p = os.path.join(d, "%s.abc" % bpy.path.clean_name(cl.bake_name))
             sel = [o for o in sc.objects if o.select_get()]
             for o in sc.objects:
                 o.select_set(False)
             for g in cl.garments:
-                if g.obj is not None:
-                    g.obj.select_set(True)
+                for o in _garment_objs(g):
+                    o.select_set(True)
             try:
                 bpy.ops.wm.alembic_export(filepath=p, start=f0, end=f1, selected=True, evaluation_mode='VIEWPORT')
                 written.append(p)
@@ -1305,7 +1692,8 @@ class ARCFLOW_OT_cloth_example(Operator):
 CLASSES = (ARCFLOW_OT_cloth_assign, ARCFLOW_OT_cloth_remove, ARCFLOW_OT_cloth_auto_pin, ARCFLOW_OT_cloth_apply_preset,
            ARCFLOW_OT_cloth_add_collider, ARCFLOW_OT_cloth_remove_collider, ARCFLOW_OT_cloth_step, ARCFLOW_OT_cloth_reset,
            ARCFLOW_OT_cloth_live_start, ARCFLOW_OT_cloth_live_stop, ARCFLOW_OT_cloth_bake, ARCFLOW_OT_cloth_export_package,
-           ARCFLOW_OT_cloth_example)
+           ARCFLOW_OT_cloth_example, ARCFLOW_OT_cloth_assign_group, ARCFLOW_OT_cloth_group_refresh,
+           ARCFLOW_OT_cloth_member_preset)
 
 
 def register():

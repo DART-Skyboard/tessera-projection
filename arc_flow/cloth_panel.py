@@ -18,6 +18,39 @@ def _garment(cl):
     return cl.garments[i]
 
 
+def _draw_group(layout, g):
+    """Garment group: collection picker, member list with a fabric preset per member, stitching."""
+    gp = layout.box()
+    head = gp.row(align=True)
+    head.label(text="Garment group", icon='OUTLINER_COLLECTION')
+    head.operator("arcflow.cloth_group_refresh", icon='FILE_REFRESH', text="Refresh")
+    gp.prop(g, "collection", text="Collection")
+    n = len(g.members)
+    if n > 1:
+        gp.label(text="%d objects solved as ONE self-colliding unit, %d stitches" % (n, g.n_stitches), icon='LINKED')
+    elif n == 0:
+        gp.label(text="Single object. Pick a collection to solve several objects together.", icon='INFO')
+    if n:
+        gp.template_list("AF_UL_cloth_members", "", g, "members", g, "member_index", rows=min(max(n, 2), 5))
+        m = g.members[max(0, min(g.member_index, n - 1))]
+        mb = gp.box()
+        row = mb.row(align=True)
+        row.prop(m, "preset", text="Fabric")
+        row.operator("arcflow.cloth_member_preset", text="", icon='PRESET')
+        mb.prop(m, "use_preset")
+        col = mb.column(align=True)
+        col.enabled = not m.use_preset
+        for k in ("density", "stretch", "shear", "bend", "damping", "thickness", "friction"):
+            col.prop(m, k)
+        mb.prop(m, "weld")
+    st = gp.column(align=True)
+    st.prop(g, "use_stitch")
+    sub = st.column(align=True)
+    sub.enabled = bool(g.use_stitch)
+    sub.prop(g, "stitch_tolerance")
+    sub.prop(g, "stitch_stiffness")
+
+
 def draw_cloth_tab(layout, context):
     """Draw the Cloth category UI.  Mounted on the Tessera N-panel CLOTH tab via ui_tabs.register_tab_drawer."""
     cl = _cl(context)
@@ -56,6 +89,7 @@ def draw_cloth_tab(layout, context):
     row = b.row(align=True)
     row.operator("arcflow.cloth_assign", icon='MOD_CLOTH', text="Assign selected")
     row.operator("arcflow.cloth_auto_pin", icon='PINNED', text="Auto-pin")
+    b.operator("arcflow.cloth_assign_group", icon='OUTLINER_COLLECTION', text="Assign group (collection / selection)")
 
     if g is not None:
         gb = b.box()
@@ -78,8 +112,9 @@ def draw_cloth_tab(layout, context):
         for k in ("density", "stretch", "shear", "bend", "damping", "drag", "lift",
                   "thickness", "margin", "friction"):
             phys.prop(g, k)
+        _draw_group(gb, g)
         sb = gb.box()
-        sb.prop(g, "self_collision")
+        sb.prop(g, "self_collision", text="Self-collision (whole group)" if len(g.members) > 1 else "Self-collision")
         sc = sb.column(align=True)
         sc.enabled = bool(g.self_collision)
         sc.prop(g, "self_collision_mode")
@@ -150,6 +185,17 @@ class AF_UL_cloth_garments(UIList):
         row.prop(item, "enabled", text="")
 
 
+class AF_UL_cloth_members(UIList):
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        row = layout.row(align=True)
+        row.label(text="", icon='MOD_CLOTH')
+        row.prop(item, "name", text="", emboss=False)
+        row.label(text=item.preset.title())
+        if item.n_verts:
+            row.label(text="%d v" % item.n_verts)
+        row.prop(item, "enabled", text="")
+
+
 class AF_UL_cloth_colliders(UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         row = layout.row(align=True)
@@ -169,7 +215,7 @@ class AF_PT_cloth(_Base, Panel):
         draw_cloth_tab(self.layout, ctx)
 
 
-CLASSES = (AF_UL_cloth_garments, AF_UL_cloth_colliders, AF_PT_cloth)
+CLASSES = (AF_UL_cloth_garments, AF_UL_cloth_members, AF_UL_cloth_colliders, AF_PT_cloth)
 
 
 def register():

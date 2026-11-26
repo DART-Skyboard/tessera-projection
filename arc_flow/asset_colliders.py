@@ -41,7 +41,12 @@ def is_projection_collider(obj):
 def iter_collision_meshes(scene, exclude=None):
     """Yield unique mesh objects in ``scene`` that are Tessera collision bodies, skipping ``exclude``."""
     seen = set()
-    skip = {id(exclude)} if exclude is not None else set()
+    if exclude is None:
+        skip = set()
+    elif isinstance(exclude, (list, tuple, set)):
+        skip = {id(o) for o in exclude}
+    else:
+        skip = {id(exclude)}
 
     def _take(o):
         if o is None or id(o) in seen or id(o) in skip or getattr(o, 'type', None) not in _MESH:
@@ -52,9 +57,12 @@ def iter_collision_meshes(scene, exclude=None):
     cl = getattr(scene, 'arc_flow_cloth', None)
     if cl is not None:
         for g in cl.garments:
-            o = g.obj
-            if g.enabled and _take(o):
-                yield o
+            if not g.enabled:
+                continue
+            objs = [m.obj for m in g.members if m.enabled] if len(g.members) else []
+            for o in (objs or [g.obj]):
+                if _take(o):
+                    yield o
         for c in cl.colliders:
             o = c.obj
             if c.enabled and _take(o):

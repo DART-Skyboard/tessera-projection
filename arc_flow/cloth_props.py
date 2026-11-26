@@ -37,6 +37,31 @@ class AF_ClothCollider(PropertyGroup):
     enabled: BoolProperty(name="Enabled", default=True)
 
 
+FABRIC_KEYS = ("density", "stretch", "shear", "bend", "damping", "thickness", "friction")
+
+
+class AF_ClothMember(PropertyGroup):
+    """One mesh object of a garment group (e.g. leather collar, silk pocket, wool body, stitching)."""
+    name: StringProperty(name="Name", default="Member")
+    obj: PointerProperty(name="Object", type=bpy.types.Object, poll=_mesh_poll,
+                         description="Mesh object solved together with the rest of the group")
+    enabled: BoolProperty(name="Enabled", default=True, description="Include this object in the group solve")
+    preset: EnumProperty(name="Fabric", items=PRESET_ITEMS, default='COTTON',
+                         description="Fabric preset of this member (mass, stiffness, damping, thickness, friction)")
+    use_preset: BoolProperty(name="Use fabric preset", default=True,
+                             description="Take the values from the fabric preset; off to type them below")
+    density: FloatProperty(name="Density", default=0.18, min=0.001, description="kg / m² areal density")
+    stretch: FloatProperty(name="Stretch stiffness", default=4.0e4, min=1.0)
+    shear: FloatProperty(name="Shear stiffness", default=1.6e4, min=1.0)
+    bend: FloatProperty(name="Bend stiffness", default=40.0, min=0.01)
+    damping: FloatProperty(name="Damping", default=0.18, min=0.0, max=8.0)
+    thickness: FloatProperty(name="Thickness", default=0.0025, min=0.0001, unit='LENGTH')
+    friction: FloatProperty(name="Friction", default=0.25, min=0.0, max=1.0, subtype='FACTOR')
+    weld: BoolProperty(name="Stitch to neighbours", default=True,
+                       description="Border vertices of this object that touch another member are welded to it")
+    n_verts: IntProperty(name="Vertices", default=0)
+
+
 class AF_ClothGarment(PropertyGroup):
     name: StringProperty(name="Name", default="Garment")
     obj: PointerProperty(name="Garment", type=bpy.types.Object, poll=_mesh_poll,
@@ -50,6 +75,20 @@ class AF_ClothGarment(PropertyGroup):
                                  description="Vertex-group weight at which a vertex becomes a hard pin")
     enabled: BoolProperty(name="Enabled", default=True)
     expand: BoolProperty(default=True)
+    collection: PointerProperty(name="Group collection", type=bpy.types.Collection,
+                                description="Every mesh object of this collection is one member of the garment group; the members are "
+                                            "solved together as ONE self-colliding unit (they collide with each other and with themselves)")
+    members: CollectionProperty(type=AF_ClothMember)
+    member_index: IntProperty(default=0)
+    use_stitch: BoolProperty(name="Auto-stitch", default=True,
+                             description="Border vertices of one member that touch another member (within the tolerance) are welded, "
+                                         "so a pocket or collar stays attached")
+    stitch_tolerance: FloatProperty(name="Stitch tolerance", default=0.01, min=0.0, max=0.5, unit='LENGTH',
+                                    description="Border vertices closer than this to another member are welded to it")
+    stitch_stiffness: FloatProperty(name="Stitch stiffness", default=5.0e4, min=10.0,
+                                    description="Weld stiffness (XPBD, comparable to Stretch stiffness)")
+    n_members: IntProperty(name="Members", default=0)
+    n_stitches: IntProperty(name="Stitches", default=0)
     preset: EnumProperty(name="Preset", items=PRESET_ITEMS, default='CAPE')
     quality: EnumProperty(name="Quality", items=QUALITY_ITEMS, default='BALANCED',
                           description="Substeps, iterations, self-collision and tessellation budget")
@@ -130,7 +169,7 @@ class AF_ClothObject(PropertyGroup):
     garment_name: StringProperty(name="Garment", default="")
 
 
-CLASSES = (AF_ClothCollider, AF_ClothGarment, AF_ClothScene, AF_ClothObject)
+CLASSES = (AF_ClothCollider, AF_ClothMember, AF_ClothGarment, AF_ClothScene, AF_ClothObject)
 
 
 def register():
@@ -145,3 +184,17 @@ def unregister():
     del bpy.types.Scene.arc_flow_cloth
     for c in reversed(CLASSES):
         bpy.utils.unregister_class(c)
+
+
+def garment_objects(g):
+    """Mesh objects solved by garment ``g``: the group members (enabled), or the single garment object."""
+    out = []
+    if g is None:
+        return out
+    if len(g.members):
+        for m in g.members:
+            if m.enabled and m.obj is not None and m.obj.type == 'MESH' and m.obj not in out:
+                out.append(m.obj)
+    if not out and g.obj is not None:
+        out.append(g.obj)
+    return out
