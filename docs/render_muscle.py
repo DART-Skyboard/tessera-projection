@@ -181,15 +181,21 @@ for k in sk.key_blocks:
         k.value = 1.0
 render("_flex_after.png", 800, 1100)
 
-from PIL import Image, ImageDraw
-a, b = Image.open(os.path.join(OUT, "_flex_rest.png")).convert('RGB'), Image.open(os.path.join(OUT, "_flex_after.png")).convert('RGB')
-im = Image.new('RGB', (a.width * 2, a.height))
-im.paste(a, (0, 0))
-im.paste(b, (a.width, 0))
-dr = ImageDraw.Draw(im)
-dr.text((16, 16), "Rest pose, muscle keys at 0", fill=(255, 255, 255))
-dr.text((a.width + 16, 16), "Bent elbows / knees, muscle keys at 1 (Flex slider 2.5)", fill=(255, 255, 255))
-im.save(os.path.join(OUT, "muscle_flex_before_after.png"))
+def _px(path):
+    im = bpy.data.images.load(path)
+    w, h = im.size
+    arr = np.empty(w * h * 4, np.float32)
+    im.pixels.foreach_get(arr)
+    return arr.reshape(h, w, 4)
+
+
+A, B = _px(os.path.join(OUT, "_flex_rest.png")), _px(os.path.join(OUT, "_flex_after.png"))
+both = np.concatenate([A, B], axis=1)
+out = bpy.data.images.new("ba", both.shape[1], both.shape[0], alpha=False)
+out.pixels.foreach_set(both.ravel())
+out.filepath_raw = os.path.join(OUT, "muscle_flex_before_after.png")
+out.file_format = 'PNG'
+out.save()
 for f in ("_flex_rest.png", "_flex_after.png"):
     os.remove(os.path.join(OUT, f))
 print("done", flush=True)

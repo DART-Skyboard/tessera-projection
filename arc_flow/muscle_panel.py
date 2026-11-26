@@ -82,8 +82,8 @@ def draw_muscle_tab(layout, context):
     pb.prop(ms, "brush_radius")
     row = pb.row(align=True)
     row.prop(ms, "brush_erase", toggle=True)
-    row.operator("arcflow.muscle_show_colors", icon='HIDE_OFF', text="Paint").solved = False
-    row.operator("arcflow.muscle_show_colors", icon='HIDE_OFF', text="Solved").solved = True
+    row.operator("arcflow.muscle_show_colors", icon='HIDE_OFF', text="Show paint").solved = False
+    row.operator("arcflow.muscle_show_colors", icon='HIDE_OFF', text="Show solved").solved = True
     row = pb.row(align=True)
     row.scale_y = 1.3
     row.operator("arcflow.muscle_paint", icon='BRUSH_DATA', text="Paint")
