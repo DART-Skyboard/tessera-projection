@@ -642,7 +642,7 @@ def build():
     g.margin = 0.006
     g.self_collision = True                 # <- the point of this scene
     g.self_collision_mode = 'ACCURATE'
-    g.self_thickness = 0.007
+    g.self_thickness = 0.004
     g.self_friction = 0.35
     for o in body_objs:
         CO.add_collider(scene, o)
