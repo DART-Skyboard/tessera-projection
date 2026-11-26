@@ -14,7 +14,7 @@ mannequin / plinth / floor (collision bodies) and are blown by a fan.  Stages:
 ``render`` Cycles frames from the cache (clean render, optional)
 ``ui``     real Blender UI, EEVEE viewport, Tessera Cloth panel visible; replays the cache and grabs the screen
 
-Env: PARTY_COLS (128) PARTY_FRAMES (720) PARTY_FPS (24) PARTY_SUBSTEPS (5) PARTY_ITERS (6).
+Env: PARTY_COLS (80) PARTY_FRAMES (720) PARTY_FPS (24) PARTY_SUBSTEPS (3) PARTY_ITERS (5).
 """
 import json
 import math
@@ -36,11 +36,11 @@ os.makedirs(WORK, exist_ok=True)
 BLEND = os.path.join(WORK, 'party.blend')
 CACHE = os.path.join(WORK, 'party_cache.npz')
 
-COLS = int(os.environ.get('PARTY_COLS', '128'))
+COLS = int(os.environ.get('PARTY_COLS', '80'))
 FRAMES = int(os.environ.get('PARTY_FRAMES', '720'))
 FPS = int(os.environ.get('PARTY_FPS', '24'))
-SUBSTEPS = int(os.environ.get('PARTY_SUBSTEPS', '5'))
-ITERS = int(os.environ.get('PARTY_ITERS', '6'))
+SUBSTEPS = int(os.environ.get('PARTY_SUBSTEPS', '3'))
+ITERS = int(os.environ.get('PARTY_ITERS', '5'))
 
 # --------------------------------------------------------------------------------------------- body profile
 # (z, rx, ry, cy) of the torso ellipse; front of the figure faces -Y
@@ -638,7 +638,7 @@ def build():
     g.override_quality = True
     g.substeps, g.iterations = SUBSTEPS, ITERS
     g.thickness = 0.0035
-    g.tessellation_edge, g.tessellation_cap = 0.12, 30000
+    g.tessellation_edge, g.tessellation_cap = 0.20, 20000
     g.margin = 0.006
     g.self_collision = True                 # <- the point of this scene
     g.self_collision_mode = 'ACCURATE'
@@ -729,6 +729,7 @@ def sim():
     CO.RT.live_running = True
     scene.frame_set(1)
     S = CO.build_solver(scene, g)
+    S.self_collider().iterations = 1       # one response pass per substep keeps the 720-frame solve affordable
     S.ground_z = 0.0                      # the showroom floor is an analytic ground plane
     print("sim:", S.n, "verts, self_collision", S.self_collision, S.self_collision_mode, "substeps", S.substeps,
           "iters", S.iterations, flush=True)
