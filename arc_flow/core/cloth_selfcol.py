@@ -139,69 +139,69 @@ class SelfCollider:
         self._cache = None
 
     # ------------------------------------------------------------------ broad phase
+    def _cells(self, lo, hi, origin, cs, dims, ids):
+        """Expand per-object boxes (lo, hi) into (object id, int64 cell key) rows."""
+        clo = np.floor((lo - origin) / cs).astype(np.int64)
+        chi = np.floor((hi - origin) / cs).astype(np.int64)
+        span = np.maximum(chi - clo + 1, 1)
+        cnt = span[:, 0] * span[:, 1] * span[:, 2]
+        bad = (cnt > self.max_cells_per_tri) | ~np.isfinite(lo).all(1) | ~np.isfinite(hi).all(1)
+        if bad.any():
+            cnt = np.where(bad, 0, cnt)
+            self.stats['dropped'] = int(bad.sum())
+        tot = int(cnt.sum())
+        oid = np.repeat(ids, cnt)
+        base = np.cumsum(cnt) - cnt
+        loc = np.arange(tot, dtype=np.int64) - np.repeat(base, cnt)
+        sx, sy = np.repeat(span[:, 0], cnt), np.repeat(span[:, 1], cnt)
+        cx = np.repeat(clo[:, 0], cnt) + loc % sx
+        cy = np.repeat(clo[:, 1], cnt) + (loc // sx) % sy
+        cz = np.repeat(clo[:, 2], cnt) + loc // (sx * sy)
+        return oid, (cx * dims[1] + cy) * dims[2] + cz
+
     def _candidates(self, x, xp, slack):
+        """Swept broad phase: triangles and vertices both hashed over the box they sweep this substep
+        (current + previous positions) grown by thickness (+ ``slack`` for cached FAST candidates)."""
         tris = self.tris
         th = self.thickness
         if not (np.isfinite(x).all() and np.isfinite(xp).all()):
             self.stats['nonfinite'] = True
             return np.zeros(0, np.int64), np.zeros(0, np.int64)
-        a, b, c = x[tris[:, 0]], x[tris[:, 1]], x[tris[:, 2]]
-        pa, pb, pc = xp[tris[:, 0]], xp[tris[:, 1]], xp[tris[:, 2]]
-        lo = np.minimum(np.minimum(np.minimum(a, b), np.minimum(c, pa)), np.minimum(pb, pc))
-        hi = np.maximum(np.maximum(np.maximum(a, b), np.maximum(c, pa)), np.maximum(pb, pc))
         grow = th + slack
-        lo = lo - grow
-        hi = hi + grow
-        # cell size from the mean triangle bbox extent
-        ext = (hi - lo).max(1)
-        cs = float(np.clip(np.median(ext - 2.0 * grow) * 1.2 + 2.0 * grow, 2.0 * th, 1e3))
-        origin = np.minimum(lo.min(0), x.min(0) - grow)
-        # keep the grid addressable by an int64 key
-        dims_f = (np.maximum(hi.max(0), x.max(0)) - origin) / cs + 3.0
+        P = np.stack([x[tris[:, 0]], x[tris[:, 1]], x[tris[:, 2]], xp[tris[:, 0]], xp[tris[:, 1]], xp[tris[:, 2]]])
+        tlo = P.min(0) - grow
+        thi = P.max(0) + grow
+        vlo = np.minimum(x, xp) - grow
+        vhi = np.maximum(x, xp) + grow
+        ext = (thi - tlo).max(1)
+        cs = float(np.clip(np.median(ext) * 1.1, 2.0 * th, 1e3))
+        origin = np.minimum(tlo.min(0), vlo.min(0)) - cs
+        top = np.maximum(thi.max(0), vhi.max(0))
+        dims_f = (top - origin) / cs + 3.0
         while float(np.prod(dims_f)) > 4.0e18:
             cs *= 2.0
-            dims_f = (np.maximum(hi.max(0), x.max(0)) - origin) / cs + 3.0
+            dims_f = (top - origin) / cs + 3.0
         dims = np.floor(dims_f).astype(np.int64) + 1
-        clo = np.floor((lo - origin) / cs).astype(np.int64)
-        chi = np.floor((hi - origin) / cs).astype(np.int64)
-        span = chi - clo + 1
-        cnt = span[:, 0] * span[:, 1] * span[:, 2]
-        # a runaway (stretched / non-finite) triangle must not explode the table: leave it out of the broad phase
-        bad = (cnt > self.max_cells_per_tri) | ~np.isfinite(lo).all(1) | ~np.isfinite(hi).all(1)
-        if bad.any():
-            cnt = np.where(bad, 0, cnt)
-            self.stats['dropped_tris'] = int(bad.sum())
-        tot = int(cnt.sum())
-        t_idx = np.repeat(np.arange(len(tris), dtype=np.int64), cnt)
-        base = np.cumsum(cnt) - cnt
-        loc = np.arange(tot, dtype=np.int64) - np.repeat(base, cnt)
-        sx, sy = np.repeat(span[:, 0], cnt), np.repeat(span[:, 1], cnt)
-        ix = loc % sx
-        iy = (loc // sx) % sy
-        iz = loc // (sx * sy)
-        cx = np.repeat(clo[:, 0], cnt) + ix
-        cy = np.repeat(clo[:, 1], cnt) + iy
-        cz = np.repeat(clo[:, 2], cnt) + iz
-        tkey = (cx * dims[1] + cy) * dims[2] + cz
-        order = np.argsort(tkey, kind='stable')
-        tkey = tkey[order]
-        t_sorted = t_idx[order]
-        vc = np.floor((x - origin) / cs).astype(np.int64)
-        vkey = (vc[:, 0] * dims[1] + vc[:, 1]) * dims[2] + vc[:, 2]
-        if tot == 0:
+        t_id, tkey = self._cells(tlo, thi, origin, cs, dims, np.arange(len(tris), dtype=np.int64))
+        if len(t_id) == 0:
             return np.zeros(0, np.int64), np.zeros(0, np.int64)
+        order = np.argsort(tkey, kind='stable')
+        tkey, t_sorted = tkey[order], t_id[order]
+        vids = np.nonzero(self.vert_on)[0].astype(np.int64)
+        v_id, vkey = self._cells(vlo[vids], vhi[vids], origin, cs, dims, vids)
         left = np.searchsorted(tkey, vkey, 'left')
-        right = np.searchsorted(tkey, vkey, 'right')
-        vcnt = right - left
-        vcnt = np.where(self.vert_on, vcnt, 0)
+        vcnt = np.searchsorted(tkey, vkey, 'right') - left
         tot2 = int(vcnt.sum())
         if tot2 > self.max_pairs:
             self.stats['overflow'] = tot2
             return np.zeros(0, np.int64), np.zeros(0, np.int64)
-        v_idx = np.repeat(np.arange(self.n, dtype=np.int64), vcnt)
+        v_idx = np.repeat(v_id, vcnt)
         base2 = np.cumsum(vcnt) - vcnt
         loc2 = np.arange(tot2, dtype=np.int64) - np.repeat(base2, vcnt)
         t_of = t_sorted[np.repeat(left, vcnt) + loc2]
+        if len(v_id) > len(vids):           # vertices that sweep several cells can pair twice
+            key = np.unique(v_idx * len(tris) + t_of)
+            v_idx, t_of = key // len(tris), key % len(tris)
         return v_idx, t_of
 
     def _filter_topology(self, v, t):
@@ -325,7 +325,7 @@ class SelfCollider:
                 disp = disp[inv_mass > 0] if (inv_mass > 0).sum() > 100 else disp
                 # robust to a few runaway vertices: the 99th percentile bounds the swept box
                 speed_slack = float(np.percentile(disp, 99.0)) if len(disp) > 100 else float(disp.max())
-            slack = min(speed_slack * (2.0 if fast else 1.5), 0.04)
+            slack = min(speed_slack * 3.0, 0.03) if fast else 0.0
             v, t = self._candidates(x, xp, slack)
             v, t = self._filter_topology(v, t)
             # prefilter: plane distance first (cheap, a lower bound of the true distance), then closest point
