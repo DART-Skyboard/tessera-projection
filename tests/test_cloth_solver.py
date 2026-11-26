@@ -287,6 +287,24 @@ def test_self_collision_layers_on_off():
     ok(g4.min() > -0.0005, "layer ignore of an unrelated pair does not disable layer-vs-layer contact")
 
 
+def test_self_collision_fast_layers_no_crossing():
+    # regression: a fast-moving separate layer (4 m/s down, 1.5 m/s sideways) must not leak through the layer below it
+    for mode, q in (('ACCURATE', 'BALANCED'), ('FAST', 'REALTIME')):
+        v1, t1, _ = CS.grid_mesh(24, 24, 1.2, 1.2, origin=(-0.4, -0.4, 0.0), axis='xy')
+        v2, t2, _ = CS.grid_mesh(13, 13, 0.45, 0.45, origin=(0.02, 0.017, 0.05), axis='xy')
+        v = np.concatenate([v1, v2]); t = np.concatenate([t1, t2 + len(v1)])
+        S = CS.ClothSolver(v, t, pins=np.arange(len(v1)), preset='COTTON', quality=q, self_collision=True,
+                           self_collision_mode=mode, thickness=0.004)
+        S.set_self_layers(np.r_[np.zeros(len(v1), int), np.ones(len(v2), int)], [])
+        S.v[len(v1):, 2] = -4.0
+        S.v[len(v1):, 0] = 1.5
+        worst = 9.0
+        for _ in range(30):
+            S.step(1 / 60.0)
+            worst = min(worst, float(S.x[len(v1):, 2].min() - S.x[:len(v1), 2].max()))
+        ok(worst > -0.002, "fast layer (%s): no crossing of the lower layer (worst gap %.4f m)" % (mode, worst))
+
+
 def test_self_collision_friction():
     # an upper sheet sliding over a pinned one: higher friction slows it more
     def run(mu):
@@ -401,6 +419,7 @@ if __name__ == '__main__':
     test_skin_weights()
     test_self_collision_pushout()
     test_self_collision_layers_on_off()
+    test_self_collision_fast_layers_no_crossing()
     test_self_collision_friction()
     if os.environ.get('CLOTH_BENCH'):
         bench_self_collision()

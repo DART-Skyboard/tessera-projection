@@ -359,13 +359,18 @@ class SelfCollider:
         refresh = (not reuse) and ((not fast) or self._cache is None or (substep_index % max(self.fast_period, 1) == 0))
         if reuse and self._cache is None:
             refresh = True
+        if fast and not refresh and not reuse:
+            # a cached candidate list is only valid while nothing moves much: fast movers force a re-detect
+            d99 = float(np.percentile(np.linalg.norm(x - xp, axis=1), 99.0))
+            if d99 > 0.5 * self.thickness:
+                refresh = True
         if refresh:
             if speed_slack is None:
                 disp = np.linalg.norm(x - xp, axis=1)
                 disp = disp[inv_mass > 0] if (inv_mass > 0).sum() > 100 else disp
                 # robust to a few runaway vertices: the 99th percentile bounds the swept box
                 speed_slack = float(np.percentile(disp, 99.0)) if len(disp) > 100 else float(disp.max())
-            slack = min(speed_slack * 3.0, 0.03) if fast else 0.0
+            slack = min(speed_slack * 3.0, 0.15) if fast else 0.0
             v, t = self._candidates(x, xp, slack)
             v, t = self._filter_topology(v, t)
             # prefilter: plane distance first (cheap, a lower bound of the true distance), then closest point
