@@ -79,7 +79,7 @@ def draw_cloth_tab(layout, context):
                   "thickness", "margin", "friction"):
             phys.prop(g, k)
         sb = gb.box()
-        sb.prop(g, "self_collision", icon='MOD_CLOTH')
+        sb.prop(g, "self_collision")
         sc = sb.column(align=True)
         sc.enabled = bool(g.self_collision)
         sc.prop(g, "self_collision_mode")

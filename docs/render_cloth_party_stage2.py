@@ -95,37 +95,21 @@ def ui(work, blend, cache):
         print("ui_tab", e, flush=True)
 
     # ---- screen set-up: Layout workspace (viewport + N-panel, outliner, properties, timeline)
-    print("STEP: pr = bpy.context.preferences", flush=True)
     pr = bpy.context.preferences
-    print("STEP: pr.view.show_splash = False", flush=True)
     pr.view.show_splash = False
-    print("STEP: pr.view.ui_scale = float(os.environ.get('UI_SCALE', '1.0'))", flush=True)
     pr.view.ui_scale = float(os.environ.get('UI_SCALE', '1.0'))
-    print("STEP: v3d_area = area('VIEW_3D')", flush=True)
     v3d_area = area('VIEW_3D')
-    print("STEP: sp = v3d_area.spaces.active", flush=True)
     sp = v3d_area.spaces.active
-    print("STEP: sp.show_region_ui = True", flush=True)
     sp.show_region_ui = True
-    print("STEP: sp.show_region_toolbar = True", flush=True)
     sp.show_region_toolbar = True
-    print("STEP: sp.overlay.show_stats = False", flush=True)
     sp.overlay.show_stats = False
-    print("STEP: sp.overlay.show_floor = False", flush=True)
     sp.overlay.show_floor = False
-    print("STEP: sp.overlay.show_axis_x = sp.overlay.show_axis_y = False", flush=True)
     sp.overlay.show_axis_x = sp.overlay.show_axis_y = False
-    print("STEP: sp.overlay.show_extras = False", flush=True)
     sp.overlay.show_extras = False
-    print("STEP: sp.overlay.show_relationship_lines = False", flush=True)
     sp.overlay.show_relationship_lines = False
-    print("STEP: sp.show_gizmo = False", flush=True)
     sp.show_gizmo = False
-    print("STEP: sp.clip_start, sp.clip_end = 0.05, 60.0", flush=True)
     sp.clip_start, sp.clip_end = 0.05, 60.0
-    print("STEP: sp.lens = 38", flush=True)
     sp.lens = 38
-    print("STEP: ee = scene.eevee", flush=True)
     ee = scene.eevee
     for k, v in (('use_raytracing', False), ('use_shadows', True), ('taa_samples', int(os.environ.get('UI_SAMPLES', '1'))),
                  ('taa_render_samples', 16), ('use_volumetric_shadows', False), ('shadow_ray_count', 1),
@@ -134,16 +118,13 @@ def ui(work, blend, cache):
             setattr(ee, k, v)
         except Exception as e:
             print("eevee", k, e, flush=True)
-    print("STEP: scene.render.engine = 'BLENDER_EEVEE' if 'BLENDER_EEVEE' in ", flush=True)
     scene.render.engine = 'BLENDER_EEVEE' if 'BLENDER_EEVEE' in [i.identifier for i in
                                                                      scene.render.bl_rna.properties['engine'].enum_items] else 'BLENDER_EEVEE_NEXT'
     try:
         scene.view_settings.view_transform = 'AgX'
     except Exception:
         pass
-    print("STEP: shading_used = SHADING", flush=True)
     shading_used = SHADING
-    print("STEP: sp.shading.type = 'RENDERED' if SHADING == 'RENDERED' else '", flush=True)
     sp.shading.type = 'RENDERED' if SHADING == 'RENDERED' else 'MATERIAL'
     try:
         sp.shading.use_scene_lights_render = True
@@ -151,28 +132,75 @@ def ui(work, blend, cache):
     except Exception:
         pass
     # N-panel: Tessera category, widened
-    try:
-        region(v3d_area, 'UI').active_panel_category = 'Tessera'
-    except Exception as e:
-        print("tab", e, flush=True)
 
     def pick_target():
-        return Vector((0.0, 0.0, 0.95))
+        return Vector((0.0, 0.0, 0.85))
 
     def set_view(f):
         t = f / 24.0
         az = math.radians(-28.0 + 38.0 * math.sin(t * 0.21) + 8.0 * math.sin(t * 0.53))
         el = math.radians(8.0 + 5.0 * math.sin(t * 0.17 + 1.0))
-        dist = 5.2 - 0.8 * (0.5 + 0.5 * math.sin(t * 0.14 + 0.5))
+        dist = 3.9 - 0.7 * (0.5 + 0.5 * math.sin(t * 0.14 + 0.5))
         rv = sp.region_3d
         rv.view_perspective = 'PERSP'
         rv.view_location = pick_target()
         rv.view_distance = dist
         rv.view_rotation = Euler((math.pi / 2 - el, 0.0, az + 0.0), 'XYZ').to_quaternion()
 
-    def widen_sidebar():
+    import ctypes
+    x11 = ctypes.CDLL('libX11.so.6')
+    xtst = ctypes.CDLL('libXtst.so.6')
+    x11.XOpenDisplay.restype = ctypes.c_void_p
+    x11.XFlush.argtypes = [ctypes.c_void_p]
+    xtst.XTestFakeMotionEvent.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_ulong]
+    xtst.XTestFakeButtonEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
+    xdpy = x11.XOpenDisplay(None)
+
+    def mouse_move(x, y):
+        xtst.XTestFakeMotionEvent(xdpy, -1, int(x), int(y), 0)
+        x11.XFlush(xdpy)
+
+    def mouse_button(b, down):
+        xtst.XTestFakeButtonEvent(xdpy, b, 1 if down else 0, 0)
+        x11.XFlush(xdpy)
+
+    def click(x, y):
+        mouse_move(x, y)
+        yield 0.4
+        mouse_button(1, True)
+        yield 0.2
+        mouse_button(1, False)
+        yield 0.6
+
+    def widen_sidebar(target_left):
         r = region(v3d_area, 'UI')
-        print("sidebar", r.x, r.width, flush=True)
+        edge = r.x - 3
+        print("sidebar region x=%d w=%d" % (r.x, r.width), flush=True)
+        mouse_move(edge, 600)
+        yield 0.4
+        mouse_button(1, True)
+        yield 0.3
+        x = edge
+        while x > target_left:
+            x -= 40
+            mouse_move(x, 600)
+            yield 0.15
+        mouse_button(1, False)
+        yield 0.4
+        mouse_move(900, 900)
+        yield 0.4
+        print("sidebar now x=%d w=%d" % (region(v3d_area, 'UI').x, region(v3d_area, 'UI').width), flush=True)
+
+    def scroll_sidebar(clicks):
+        r = region(v3d_area, 'UI')
+        mouse_move(r.x + 150, 600)
+        yield 0.3
+        for _ in range(abs(clicks)):
+            mouse_button(5 if clicks > 0 else 4, True)
+            mouse_button(5 if clicks > 0 else 4, False)
+            yield 0.15
+        mouse_move(900, 900)
+        yield 0.3
 
     manifest = []
     frames = list(range(FIRST, LAST + 1, STEP))
@@ -182,6 +210,13 @@ def ui(work, blend, cache):
         # warm-up: first redraw compiles the EEVEE shaders (can take minutes under llvmpipe)
         set_view(1)
         yield from settle(0.5, timeout=900.0)
+        tx, ty = [int(v) for v in os.environ.get('UI_TAB_XY', '1562,328').split(',')]
+        yield from click(tx, ty)                      # the 'Tessera' tab of the N-panel
+        yield from settle(0.5)
+        yield from widen_sidebar(int(os.environ.get('UI_SIDEBAR_X', '1130')))
+        yield from settle(0.5)
+        yield from scroll_sidebar(int(os.environ.get('UI_SCROLL', '0')))
+        yield from settle(0.5)
         t_all = time.time()
         for k, f in enumerate(frames):
             t0 = time.time()
