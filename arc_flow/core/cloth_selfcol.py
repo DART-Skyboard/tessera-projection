@@ -330,14 +330,17 @@ class SelfCollider:
             v, t = self._filter_topology(v, t)
             # prefilter: plane distance first (cheap, a lower bound of the true distance), then closest point
             if len(v):
-                lim = self.thickness + slack * (3.0 if fast else 2.0) + 1e-6
                 T = self.tris
+                dall = np.linalg.norm(x - xp, axis=1)
+                dtri = np.maximum(np.maximum(dall[T[:, 0]], dall[T[:, 1]]), dall[T[:, 2]])
+                # a pair can only touch during the step if it is within thickness + both parties' travel
+                lim = self.thickness + (2.0 if fast else 1.0) * (dall[v] + dtri[t]) + 1e-6
                 A0, B0, C0 = x[T[:, 0]], x[T[:, 1]], x[T[:, 2]]
                 N = np.cross(B0 - A0, C0 - A0)
                 N /= np.maximum(np.linalg.norm(N, axis=1), 1e-14)[:, None]
                 pd = np.abs(((x[v] - A0[t]) * N[t]).sum(1))
                 k = pd < lim
-                v, t = v[k], t[k]
+                v, t, lim = v[k], t[k], lim[k]
                 if len(v):
                     tr = T[t]
                     q, _bary, _in = closest_point_triangle(x[v], x[tr[:, 0]], x[tr[:, 1]], x[tr[:, 2]])
