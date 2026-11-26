@@ -33,6 +33,11 @@ PRESETS = {
         density=0.18, stretch=4.0e4, shear=1.6e4, bend=40.0, damping=0.18,
         thickness=0.0025, margin=0.005, drag=1.05, lift=0.35, friction=0.25,
     ),
+    'WOOL': dict(
+        label="Wool / Coat",
+        density=0.30, stretch=5.5e4, shear=2.2e4, bend=90.0, damping=0.22,
+        thickness=0.0035, margin=0.0055, drag=0.95, lift=0.28, friction=0.40,
+    ),
     'DENIM': dict(
         label="Denim / Jacket",
         density=0.42, stretch=8.0e4, shear=3.5e4, bend=180.0, damping=0.24,
