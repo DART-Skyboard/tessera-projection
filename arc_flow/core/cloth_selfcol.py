@@ -152,6 +152,10 @@ class SelfCollider:
         self.max_cells_per_tri = 64
         self.max_pairs = 6_000_000
         self.stats = dict(pairs=0, contacts=0, ms=0.0, last_depth=0.0)
+        self.edge_contacts = False     # edge-edge contact (open hems sliding through each other); on for ACCURATE / LAYERED
+        self.edge_every = 1
+        self._edges = None
+        self.max_edge_pairs = 3_000_000
 
     # ------------------------------------------------------------------ configuration
     def set_layers(self, layer_ids, ignore_pairs=()):
@@ -469,6 +473,8 @@ class SelfCollider:
         if len(v):
             for _ in range(int(passes) if passes else (1 if fast else max(1, self.iterations))):
                 total += self._respond(x, xp, inv_mass, v, t)
+        if self.edge_contacts and substep_index % max(int(self.edge_every), 1) == 0:
+            total += self.edge_correct(x, xp, inv_mass)
         if self.layered and (substep_index + 1) % max(int(self.layer_period), 1) == 0:
             total += self.layered_correct(x, xp, inv_mass)
         self.stats['ms'] = 1000.0 * (_t.perf_counter() - t0)
@@ -605,11 +611,140 @@ class SelfCollider:
                 out[(int(p), q)] = (cnt[q], worst[q])
         return out
 
-    def crossings(self, x, labels=None, chunk=400, eps=1e-9, same=True, extra=None):
+    # ------------------------------------------------------------------ edge-edge contact
+    def _edge_list(self):
+        if self._edges is None:
+            T = self.tris
+            self._edges = np.unique(np.sort(np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]]), axis=1), axis=0)
+        return self._edges
+
+    def _edge_candidates(self, x, xp, thick):
+        E = self._edge_list()
+        if not (np.isfinite(x).all() and np.isfinite(xp).all()):
+            return np.zeros(0, np.int64), np.zeros(0, np.int64)
+        P = np.stack([x[E[:, 0]], x[E[:, 1]], xp[E[:, 0]], xp[E[:, 1]]])
+        lo = P.min(0) - thick
+        hi = P.max(0) + thick
+        ext = (hi - lo).max(1)
+        cs = float(np.clip(np.median(ext) * 1.2, 2.0 * thick, 1e3))
+        origin = lo.min(0) - cs
+        top = hi.max(0)
+        dims_f = (top - origin) / cs + 3.0
+        while float(np.prod(dims_f)) > 4.0e18:
+            cs *= 2.0
+            dims_f = (top - origin) / cs + 3.0
+        dims = np.floor(dims_f).astype(np.int64) + 1
+        eid, key = self._cells(lo, hi, origin, cs, dims, np.arange(len(E), dtype=np.int64))
+        if len(eid) == 0:
+            return np.zeros(0, np.int64), np.zeros(0, np.int64)
+        order = np.argsort(key, kind='stable')
+        key_s, id_s = key[order], eid[order]
+        left = np.searchsorted(key_s, key, 'left')
+        cnt = np.searchsorted(key_s, key, 'right') - left
+        tot = int(cnt.sum())
+        if tot > 6 * self.max_edge_pairs:
+            self.stats['edge_overflow'] = tot
+            return np.zeros(0, np.int64), np.zeros(0, np.int64)
+        ii = np.repeat(eid, cnt)
+        base = np.cumsum(cnt) - cnt
+        loc = np.arange(tot, dtype=np.int64) - np.repeat(base, cnt)
+        jj = id_s[np.repeat(left, cnt) + loc]
+        k = ii < jj
+        ii, jj = ii[k], jj[k]
+        pk = np.unique(ii * len(E) + jj)
+        return pk // len(E), pk % len(E)
+
+    @staticmethod
+    def _seg_seg(a, b, c, d):
+        """Closest points between segments ab and cd (vectorised, Ericson).  Returns s, t in [0,1]."""
+        d1, d2, r = b - a, d - c, a - c
+        A_ = (d1 * d1).sum(1)
+        E_ = (d2 * d2).sum(1)
+        F_ = (d2 * r).sum(1)
+        C_ = (d1 * r).sum(1)
+        B_ = (d1 * d2).sum(1)
+        den = A_ * E_ - B_ * B_
+        with np.errstate(divide='ignore', invalid='ignore'):
+            s = np.where(den > 1e-18, np.clip((B_ * F_ - C_ * E_) / np.where(den > 1e-18, den, 1.0), 0.0, 1.0), 0.0)
+            t = (B_ * s + F_) / np.where(E_ > 1e-18, E_, 1.0)
+            lo_ = t < 0.0
+            hi_ = t > 1.0
+            s = np.where(lo_, np.clip(-C_ / np.where(A_ > 1e-18, A_, 1.0), 0.0, 1.0), s)
+            s = np.where(hi_, np.clip((B_ - C_) / np.where(A_ > 1e-18, A_, 1.0), 0.0, 1.0), s)
+            t = np.clip(np.where(lo_, 0.0, np.where(hi_, 1.0, t)), 0.0, 1.0)
+        return s, t
+
+    def edge_correct(self, x, xp, w):
+        """Edge-edge contact with continuity: two edges of the cloth (open hems sliding past each other, a fold
+        edge through a fold edge) are kept ``thickness`` apart, and pushed back to the side they were on at the
+        start of the substep when they crossed.  Complements the vertex-vs-face contacts, which cannot see a hem
+        edge cutting through a face while all four end points are still outside."""
+        E = self._edge_list()
+        th = self._thmax()
+        i, j = self._edge_candidates(x, xp, th)
+        if len(i) == 0:
+            return 0
+        n = self.n
+        ring = self.ring
+        keep = np.ones(len(i), bool)
+        for ka in (0, 1):
+            for kb in (0, 1):
+                key = E[i, ka] * n + E[j, kb]
+                pos = np.minimum(np.searchsorted(ring, key), len(ring) - 1)
+                keep &= ring[pos] != key
+        keep &= self.vert_on[E[i, 0]] & self.vert_on[E[i, 1]] & self.vert_on[E[j, 0]] & self.vert_on[E[j, 1]]
+        if self.allow.shape[0] > 1:
+            keep &= self.allow[self.layer[E[i, 0]], self.layer[E[j, 0]]]
+        i, j = i[keep], j[keep]
+        if len(i) == 0:
+            return 0
+        a, b, c, d = E[i, 0], E[i, 1], E[j, 0], E[j, 1]
+        s, t = self._seg_seg(x[a], x[b], x[c], x[d])
+        P = x[a] + (x[b] - x[a]) * s[:, None]
+        Q = x[c] + (x[d] - x[c]) * t[:, None]
+        diff = P - Q
+        dist = np.linalg.norm(diff, axis=1)
+        P0 = xp[a] + (xp[b] - xp[a]) * s[:, None]
+        Q0 = xp[c] + (xp[d] - xp[c]) * t[:, None]
+        ref = P0 - Q0
+        rl = np.linalg.norm(ref, axis=1)
+        have = rl > 1e-7
+        flipped = have & ((diff * ref).sum(1) < 0.0)
+        near = dist < th
+        m = near | flipped
+        if not m.any():
+            return 0
+        a, b, c, d, s, t, diff, dist, ref, rl, have, flipped = (v[m] for v in (a, b, c, d, s, t, diff, dist, ref, rl, have, flipped))
+        nrm = np.where((dist > 1e-9)[:, None], diff / np.maximum(dist, 1e-12)[:, None], ref / np.maximum(rl, 1e-12)[:, None])
+        nrm = np.where(flipped[:, None], -nrm, nrm)
+        depth = np.where(flipped, th + dist, th - dist)
+        w1 = (1.0 - s) ** 2 * w[a] + s ** 2 * w[b]
+        w2 = (1.0 - t) ** 2 * w[c] + t ** 2 * w[d]
+        den = w1 + w2
+        ok = (den > 0.0) & (depth > 1e-9)
+        if not ok.any():
+            return 0
+        a, b, c, d, s, t, nrm, depth, den = (v[ok] for v in (a, b, c, d, s, t, nrm, depth, den))
+        lam = depth / den
+        dx = np.zeros((n, 3))
+        cn = np.zeros(n)
+        for idx, coef, sg in ((a, 1.0 - s, 1.0), (b, s, 1.0), (c, 1.0 - t, -1.0), (d, t, -1.0)):
+            vec = (sg * w[idx] * coef * lam)[:, None] * nrm
+            for k in range(3):
+                dx[:, k] += np.bincount(idx, weights=vec[:, k], minlength=n)
+            cn += np.bincount(idx, weights=(coef > 1e-3).astype(float), minlength=n)
+        tch = cn > 0
+        x[tch] += dx[tch] / np.maximum(cn[tch], 1.0)[:, None] * np.minimum(cn[tch], 2.0)[:, None]
+        self.stats['edge_contacts'] = int(len(a))
+        return int(len(a))
+
+    def crossings(self, x, labels=None, chunk=400, eps=1e-9, same=True, extra=None, depth=0.001):
         """Ground-truth interpenetration: number of mesh EDGES of piece P that pierce a TRIANGLE of piece Q
         (segment-triangle test, Moeller-Trumbore, AABB prefiltered).  Needs no rest pose and no ordering assumption.
         Returns {(p, q): count} for every ordered pair; with ``same`` also (p, p) = self-intersections of one piece
-        (triangles that share a vertex with the edge are ignored).  ``extra`` = (verts, tris) of an outside body
+        (triangles that share a vertex with the edge are ignored).  A pierce only counts when both end points are
+        more than ``depth`` (default 1 mm) from the triangle plane, so surfaces that merely touch / lie within a
+        millimetre of each other (a sash laid on a dress) are not reported as crossings.  ``extra`` = (verts, tris) of an outside body
         (e.g. the dress form): edges of every piece against it, reported as (p, 'ext')."""
         T = self.tris
         lab = self.comp if labels is None else np.asarray(labels, np.int64)
@@ -652,6 +787,12 @@ class SelfCollider:
                 v = (D * qv).sum(1) * inv
                 t = (E2 * qv).sum(1) * inv
                 hit = ok & (u > 1e-7) & (v > 1e-7) & (u + v < 1 - 1e-7) & (t > 1e-7) & (t < 1 - 1e-7)
+                if depth > 0.0 and hit.any():
+                    nn = np.cross(E1, E2)
+                    nn /= np.maximum(np.linalg.norm(nn, axis=1), 1e-14)[:, None]
+                    d0 = (sv * nn).sum(1)
+                    d1 = ((P0 + D - V0) * nn).sum(1)
+                    hit &= (np.abs(d0) > depth) & (np.abs(d1) > depth)
                 cnt += int(hit.sum())
             return cnt
 

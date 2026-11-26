@@ -301,6 +301,7 @@ class ClothSolver:
         self.self_thickness = float(pr.get('self_thickness', 0.0))
         self.self_inloop = False
         self.self_friction = float(pr.get('self_friction', -1.0))
+        self.self_edge_contacts = bool(pr.get('self_edge_contacts', True))
         self.self_layers = None
         self.self_ignore_pairs = ()
         self._selfcol = None
@@ -945,6 +946,7 @@ class ClothSolver:
         _m = str(self.self_collision_mode).upper()
         sc.mode = 'FAST' if _m == 'FAST' else 'ACCURATE'
         sc.layered = (_m == 'LAYERED')
+        sc.edge_contacts = bool(self.self_edge_contacts) and _m != 'FAST'
         sc.layer_period = 1   # every substep: last-substep-only measured clearly worse (27-36 vs 4-8 crossings)
         if sc.rest is None:
             sc.set_rest(self.rest)

@@ -117,11 +117,20 @@ def sim():
         start = len(frames) + 1
         print("resumed at frame", start, flush=True)
     sc2 = S.self_collider()
+    from arc_flow.core import sdf
+    EDG = S.stretch_edges
 
     def sample(f):
         ws = sc2.wrong_side(S.x, labels=mem)
-        cr = sc2.crossings(S.x, labels=mem, extra=(fv, ft))
-        row = dict(frame=f, wrong={"%d>%d" % k: [int(v[0]), round(float(v[1]), 5)] for k, v in ws.items()},
+        cr = sc2.crossings(S.x, labels=mem)
+        pts = np.concatenate([S.x, 0.5 * (S.x[EDG[:, 0]] + S.x[EDG[:, 1]])])
+        if S.collider is not None:
+            _cp, sdv, _ti = sdf.closest_surface(S.collider, pts)
+            nin = int((sdv[:S.n] < -0.001).sum()); nin_e = int((sdv[S.n:] < -0.001).sum())
+            deep = float(-min(sdv.min(), 0.0))
+        else:
+            nin = nin_e = 0; deep = 0.0
+        row = dict(frame=f, form=dict(verts_inside=nin, edge_mid_inside=nin_e, deepest=round(deep, 5)), wrong={"%d>%d" % k: [int(v[0]), round(float(v[1]), 5)] for k, v in ws.items()},
                    cross={"%s>%s" % k: int(v) for k, v in cr.items()}, pen=float(g.last_penetration))
         cross.append(row)
         return row
@@ -137,7 +146,7 @@ def sim():
         if f % EVERY == 0 or f == last:
             r = sample(f)
             print("frame %d step %.0f ms [%.0f s] crossings %s wrong %s pen %.4f" % (
-                f, g.last_ms, time.time() - t_wall, {k: v for k, v in r['cross'].items() if v}, {k: v[0] for k, v in r['wrong'].items() if v[0]}, r['pen']), flush=True)
+                f, g.last_ms, time.time() - t_wall, {k: v for k, v in r['cross'].items() if v}, {k: v[0] for k, v in r['wrong'].items() if v[0]}, r['pen']) + " form %s" % (r['form'],), flush=True)
         if f % SAVE == 0 or f == last:
             np.savez(PART, x=np.stack(frames), ms=np.asarray(ms), sx=S.x, sxp=S.x_prev, sv=S.v)
             json.dump(cross, open(os.path.join(WORK, 'sf_cross.json'), 'w'))
