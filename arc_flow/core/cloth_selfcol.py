@@ -154,7 +154,7 @@ class SelfCollider:
         hi = hi + grow
         # cell size from the mean triangle bbox extent
         ext = (hi - lo).max(1)
-        cs = float(np.clip(np.median(ext) * 1.15, 2.0 * th, 1e3))
+        cs = float(np.clip(np.median(ext - 2.0 * grow) * 1.2 + 2.0 * grow, 2.0 * th, 1e3))
         origin = np.minimum(lo.min(0), x.min(0) - grow)
         # keep the grid addressable by an int64 key
         dims_f = (np.maximum(hi.max(0), x.max(0)) - origin) / cs + 3.0
@@ -321,19 +321,28 @@ class SelfCollider:
         refresh = (not fast) or self._cache is None or (substep_index % max(self.fast_period, 1) == 0)
         if refresh:
             if speed_slack is None:
-                speed_slack = float(np.linalg.norm(x - xp, axis=1).max())
-            slack = speed_slack * (3.0 if fast else 1.5)
-            slack = min(slack, 0.25)
+                disp = np.linalg.norm(x - xp, axis=1)
+                disp = disp[inv_mass > 0] if (inv_mass > 0).sum() > 100 else disp
+                # robust to a few runaway vertices: the 99th percentile bounds the swept box
+                speed_slack = float(np.percentile(disp, 99.0)) if len(disp) > 100 else float(disp.max())
+            slack = min(speed_slack * (2.0 if fast else 1.5), 0.04)
             v, t = self._candidates(x, xp, slack)
             v, t = self._filter_topology(v, t)
-            # prefilter by exact distance to the tris' swept slab so later passes stay small
+            # prefilter: plane distance first (cheap, a lower bound of the true distance), then closest point
             if len(v):
-                tr = self.tris[t]
-                q, _bary, _in = closest_point_triangle(x[v], x[tr[:, 0]], x[tr[:, 1]], x[tr[:, 2]])
-                dist = np.linalg.norm(x[v] - q, axis=1)
                 lim = self.thickness + slack * (3.0 if fast else 2.0) + 1e-6
-                k = dist < lim
+                T = self.tris
+                A0, B0, C0 = x[T[:, 0]], x[T[:, 1]], x[T[:, 2]]
+                N = np.cross(B0 - A0, C0 - A0)
+                N /= np.maximum(np.linalg.norm(N, axis=1), 1e-14)[:, None]
+                pd = np.abs(((x[v] - A0[t]) * N[t]).sum(1))
+                k = pd < lim
                 v, t = v[k], t[k]
+                if len(v):
+                    tr = T[t]
+                    q, _bary, _in = closest_point_triangle(x[v], x[tr[:, 0]], x[tr[:, 1]], x[tr[:, 2]])
+                    k = np.linalg.norm(x[v] - q, axis=1) < lim
+                    v, t = v[k], t[k]
             self._cache = (v, t)
         else:
             v, t = self._cache

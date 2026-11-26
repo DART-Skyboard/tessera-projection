@@ -638,6 +638,7 @@ def build():
     g.override_quality = True
     g.substeps, g.iterations = SUBSTEPS, ITERS
     g.thickness = 0.0035
+    g.tessellation_edge, g.tessellation_cap = 0.12, 30000
     g.margin = 0.006
     g.self_collision = True                 # <- the point of this scene
     g.self_collision_mode = 'ACCURATE'
@@ -646,7 +647,7 @@ def build():
     for o in body_objs:
         CO.add_collider(scene, o)
     # plinth + floor are environment colliders
-    for nm in ("Stage Plinth", "Showroom Floor"):
+    for nm in ("Stage Plinth",):
         CO.add_collider(scene, bpy.data.objects[nm])
     cl.use_scene_wind = False
     cl.use_fluid_velocity = False
@@ -728,6 +729,7 @@ def sim():
     CO.RT.live_running = True
     scene.frame_set(1)
     S = CO.build_solver(scene, g)
+    S.ground_z = 0.0                      # the showroom floor is an analytic ground plane
     print("sim:", S.n, "verts, self_collision", S.self_collision, S.self_collision_mode, "substeps", S.substeps,
           "iters", S.iterations, flush=True)
     start = int(os.environ.get('PARTY_START', '1'))
