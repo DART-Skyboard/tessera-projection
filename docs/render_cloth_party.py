@@ -735,8 +735,12 @@ def sim():
     ms, sc_ms, pairs, contacts, sdist, pen = [], [], [], [], [], []
     # settle: let the gown fall into shape before the shot starts (no timeline motion)
     cl.wind = (0.0, 0.0, 0.0)
-    for _ in range(int(os.environ.get('PARTY_SETTLE', '24'))):
+    for k in range(int(os.environ.get('PARTY_SETTLE', '24'))):
         CO.step_scene(scene, 1.0 / FPS)
+        if os.environ.get('PARTY_DEBUG'):
+            print("settle %d  %.0f ms  max|x| %.2f  maxv %.2f  selfcol %s" % (
+                k, g.last_ms, float(np.abs(S.x).max()), float(np.linalg.norm(S.v, axis=1).max()),
+                S._selfcol.stats if S._selfcol else None), flush=True)
     fps = FPS
     t_wall = time.time()
     for f in range(2, FRAMES + 1):

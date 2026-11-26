@@ -114,6 +114,8 @@ class SelfCollider:
         self.vert_on = np.ones(self.n, bool)
         self._cache = None
         self.touched_idx = np.zeros(0, np.int64)
+        self.max_cells_per_tri = 64
+        self.max_pairs = 6_000_000
         self.stats = dict(pairs=0, contacts=0, ms=0.0, last_depth=0.0)
 
     # ------------------------------------------------------------------ configuration
@@ -140,6 +142,9 @@ class SelfCollider:
     def _candidates(self, x, xp, slack):
         tris = self.tris
         th = self.thickness
+        if not (np.isfinite(x).all() and np.isfinite(xp).all()):
+            self.stats['nonfinite'] = True
+            return np.zeros(0, np.int64), np.zeros(0, np.int64)
         a, b, c = x[tris[:, 0]], x[tris[:, 1]], x[tris[:, 2]]
         pa, pb, pc = xp[tris[:, 0]], xp[tris[:, 1]], xp[tris[:, 2]]
         lo = np.minimum(np.minimum(np.minimum(a, b), np.minimum(c, pa)), np.minimum(pb, pc))
@@ -149,7 +154,7 @@ class SelfCollider:
         hi = hi + grow
         # cell size from the mean triangle bbox extent
         ext = (hi - lo).max(1)
-        cs = float(np.clip(np.mean(ext) * 1.1, 2.0 * th, 1e3))
+        cs = float(np.clip(np.median(ext) * 1.15, 2.0 * th, 1e3))
         origin = np.minimum(lo.min(0), x.min(0) - grow)
         # keep the grid addressable by an int64 key
         dims_f = (np.maximum(hi.max(0), x.max(0)) - origin) / cs + 3.0
@@ -161,6 +166,11 @@ class SelfCollider:
         chi = np.floor((hi - origin) / cs).astype(np.int64)
         span = chi - clo + 1
         cnt = span[:, 0] * span[:, 1] * span[:, 2]
+        # a runaway (stretched / non-finite) triangle must not explode the table: leave it out of the broad phase
+        bad = (cnt > self.max_cells_per_tri) | ~np.isfinite(lo).all(1) | ~np.isfinite(hi).all(1)
+        if bad.any():
+            cnt = np.where(bad, 0, cnt)
+            self.stats['dropped_tris'] = int(bad.sum())
         tot = int(cnt.sum())
         t_idx = np.repeat(np.arange(len(tris), dtype=np.int64), cnt)
         base = np.cumsum(cnt) - cnt
@@ -178,11 +188,16 @@ class SelfCollider:
         t_sorted = t_idx[order]
         vc = np.floor((x - origin) / cs).astype(np.int64)
         vkey = (vc[:, 0] * dims[1] + vc[:, 1]) * dims[2] + vc[:, 2]
+        if tot == 0:
+            return np.zeros(0, np.int64), np.zeros(0, np.int64)
         left = np.searchsorted(tkey, vkey, 'left')
         right = np.searchsorted(tkey, vkey, 'right')
         vcnt = right - left
         vcnt = np.where(self.vert_on, vcnt, 0)
         tot2 = int(vcnt.sum())
+        if tot2 > self.max_pairs:
+            self.stats['overflow'] = tot2
+            return np.zeros(0, np.int64), np.zeros(0, np.int64)
         v_idx = np.repeat(np.arange(self.n, dtype=np.int64), vcnt)
         base2 = np.cumsum(vcnt) - vcnt
         loc2 = np.arange(tot2, dtype=np.int64) - np.repeat(base2, vcnt)
