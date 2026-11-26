@@ -17,6 +17,7 @@ from . import cloth_props, cloth_ops, cloth_panel  # real-time fluid-coupled clo
 from .cloth_panel import draw_cloth_tab  # noqa: F401  (mounted by the vertical-tab UI)
 from . import muscle_props, muscle_ops, muscle_panel, muscle_gn  # muscle projection solver
 from .muscle_panel import draw_muscle_tab  # noqa: F401  (mounted by the vertical-tab UI)
+from . import cloth_trim_props, cloth_trim_ops, cloth_trim_panel  # Cloth Trim, Accents, Seam Seal Control Solving
 from . import ui_tabs  # vertical N-panel tab rail (Remesh / Fluid / Combustion / Hair / Cloth / Examples)
 
 
@@ -36,12 +37,14 @@ def register():
     hair_props.register(); hair_ops.register(); hair_panel.register(); hair_gn.register()
     cloth_props.register(); cloth_ops.register(); cloth_panel.register()
     muscle_props.register(); muscle_ops.register(); muscle_panel.register(); muscle_gn.register()
+    cloth_trim_props.register(); cloth_trim_ops.register(); cloth_trim_panel.register()
     ui_tabs.register()  # last so hosted panel polls can be wrapped after every category is registered
 
 
 def unregister():
     ui_tabs.unregister()
     muscle_gn.unregister(); muscle_panel.unregister(); muscle_ops.unregister(); muscle_props.unregister()
+    cloth_trim_panel.unregister(); cloth_trim_ops.unregister(); cloth_trim_props.unregister()
     cloth_panel.unregister(); cloth_ops.unregister(); cloth_props.unregister()
     hair_gn.unregister(); hair_panel.unregister(); hair_ops.unregister(); hair_props.unregister()
     shader_ops.unregister()
