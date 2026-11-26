@@ -13,7 +13,7 @@
   <img alt="Blender 5.2.3+" src="https://img.shields.io/badge/Blender-5.2.3%2B-orange">
   <img alt="Tested on 5.3.0" src="https://img.shields.io/badge/tested-5.2.3%20LTS%20%7C%205.3.0-blue">
   <img alt="License GPL-3.0-or-later" src="https://img.shields.io/badge/license-GPL--3.0--or--later-green">
-  <img alt="Version 0.6.1" src="https://img.shields.io/badge/version-0.6.1-informational">
+  <img alt="Version 0.7.0" src="https://img.shields.io/badge/version-0.7.0-informational">
 </p>
 
 <p align="center">
@@ -32,6 +32,8 @@ Tessera Projection is built around one idea: **a mesh can be projected against i
 | **Boolean Projection** | Cavities that intersect become one continuous through-cavity, with optional Boolean joint cuts in the walls. |
 | **Arc Flow** | A computational fluid dynamics engine: self-initialising fluid and combustion simulation through those connected cavities: containers, channels, chambers and nozzles that start empty and only conduct, finite fills, leaks, plugs, thermal and stress colouring. Fluid mode adds liquids, gases, mixing, transmutation (steam, crystals, burning, rust), viscosity and emission surfaces, fluid volumes, a wind tunnel with thermal readback, 22 shader presets and Geometry Nodes sockets. |
 | **Hair** | Real-time physics for Blender's Empty Hair Curves: paint and style a groom with the native curves tools, then let Tessera drive collision-body physics, live armature reactivity and game-engine baking. |
+| **Cloth** | Real-time XPBD cloth with self-collision, collision with every other Tessera body, Cloth Trim, decorative trim accents and Seam Seal Control Solving (zips, seams). |
+| **Muscles** | Muscle deformation on top of normal skin weights: region cards (head, arms, torso, legs, tail), a Muscle Pencil to mark each muscle with a few lines, Biped / Quadruped / Custom creature presets from cartoon to cinematic detail, Flex and Accent intensity per muscle and per card, shape keys driven by the skeleton, a Geometry Nodes group, a control rig, and GLB / FBX export for game engines. |
 
 <p align="center">
   <img src="docs/renders/retopo_input_tris.png" width="46%" alt="Triangulated input mesh">
@@ -39,6 +41,16 @@ Tessera Projection is built around one idea: **a mesh can be projected against i
 </p>
 <p align="center"><i>Projection Remesh: triangulated input (left), symmetric quads with crease-driven density (right).</i></p>
 
+
+## Tessera Projection Muscles
+
+Extended skin weighting for character rigs, on top of Blender's normal weight painting. Open the **Muscle** tab in the Tessera sidebar:
+
+1. **Skin and skeleton**, then a preset: **Biped** (default), **Quadruped** or **Custom creature** (heads, arms, legs, tails, fingers, toes, joints per limb), plus Human male / female and Feline variants, at **Cartoon**, **Standard** or **Cinematic** detail.
+2. **Region cards**: *Head and face*, *Arms and hands*, *Torso and back*, *Legs and feet*, *Tail and custom*. Each muscle has a fixed colour on every character. Pick a muscle, draw a few **Muscle Pencil** lines along it over the skin (the line ends are the tendon / joint attachments), or fill-paint it, or assign real muscle / bone geometry, then press **Complete** to add it to its card.
+3. **Solve** projects the marks over the whole skin, splits left / right and multi-limb muscles, keeps the attachments still and flexes the belly, and blends the regions so they move together. **Resolution factor** 1.0 follows the skin tessellation (0.85 soft ... 10 very fine).
+4. **Flex intensity** and **Accent intensity** (which attachment end the flex leans toward) per muscle and per card, an **Initial emphasis** per card, and Rest / Walk / Run intensity for the animation speed.
+5. **Outputs**: shape keys driven by the bones, **Create Geometry Nodes** (adds the *Tessera Muscles* node group), **Build control rig** (FK circles + IK handles), and **Export GLB / FBX** with morph targets, skin weights and the muscle rig as custom properties, plus a JSON sidecar for engine runtimes. Everything is saved in the .blend. See `docs/MUSCLES.md`.
 
 ## Tessera Projection Hair
 
@@ -183,7 +195,7 @@ The fluid solver is NumPy on the CPU: frame times grow with particle count and i
 
 ## Install
 
-1. Download `tessera_projection-0.6.1.zip` from this repository's Releases (or, once approved, from extensions.blender.org: **Edit > Preferences > Get Extensions**, search *Tessera Projection*). Do not unzip it.
+1. Download `tessera_projection-0.7.0.zip` from this repository's Releases (or, once approved, from extensions.blender.org: **Edit > Preferences > Get Extensions**, search *Tessera Projection*). Do not unzip it.
 2. In Blender 5.2.3 or newer: **Edit > Preferences > Get Extensions > (v) menu, top right > Install from Disk**, pick the zip.
 3. Open the 3D Viewport sidebar (**N**), tab **Tessera**. Inside it, use the vertical tab rail (Remesh, Fluid, Combustion, Hair, Cloth, Examples) to switch category; other categories stay active.
 

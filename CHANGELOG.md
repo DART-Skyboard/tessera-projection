@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.0
+- **Muscles (new Muscle tab).** Region category cards (Head and face, Arms and hands, Torso and back, Legs and feet, Tail and custom), each with a colour strip of its muscles, its own Initial emphasis / Flex intensity / Accent intensity sliders and an Add menu for that body region's catalog muscles. Muscle Pencil (draw a few lines along a muscle over the skin contour; line ends are the tendon / joint attachments) with a **Complete** step that books the muscle into its card. Biped default with one-click Quadruped / Custom creature switch, Human male / female and Feline presets, Cartoon / Standard / Cinematic detail. Optional muscle and bone geometry per muscle. Projection solve with left / right and multi-limb splitting, still attachments and flexing bellies, region blending. Resolution factor 0.85 to 10 relative to the skin tessellation (finer detail no longer weakens the muscle). Shape keys driven by joint rotation with Rest / Walk / Run intensity, Create Geometry Nodes, control rig (FK + IK), GLB / FBX export with morph targets, skin weights and the muscle rig in glTF extras / FBX user properties (`tp_muscles`), JSON sidecar. Tests: `tests/test_muscle_solver.py`, `tests/test_muscle_bpy.py`.
+- **Hair collision rewrite.** Swept moving colliders with collider velocity transfer, working contact friction, per-collider thickness and friction, a colliders list (Add Selected, Auto), vectorised hair-hair contact, root-to-tip stiffness, children generation and fast child skinning, Principled Hair preset and fixed tube radius.
+- **Cloth Trim, decorative trim accents and Seam Seal Control Solving** (zips and seams) in the Cloth tab. The cloth-side "Accents" section is now labelled *Trim Accents (decorative)*; flex accents belong to the muscle solver.
+- Known limit: multi-layer garment self-collision (layers drifting through each other on long sims) and garment-group solving are still in progress and not part of this build.
+
 ## 0.6.1
 Package imported from the build served on extensions.blender.org (`outside-updates/0.6.1/`).
 - **Shared collision-body registry** (`asset_colliders.py`): Cloth garments, Hair colliders / scalps, Fluid / Combustion colliders and Wind-tunnel bodies are all Tessera collision bodies that collide with themselves in their own solver and with every other solver's bodies.

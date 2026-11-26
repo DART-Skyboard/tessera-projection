@@ -169,6 +169,15 @@ def main():
     j = MS.result_to_json([ins], MS.regions_for('BIPED', 'STANDARD'))
     ins2, meta = MS.instances_from_json(j)
     ok(len(ins2) == 1 and np.allclose(ins2[0].bulge, ins.bulge, atol=1e-5) and meta['version'] == 1, "solve data round-trips through JSON")
+    # rig naming conventions map onto the catalog keywords (Mixamo / Meshy, Rigify, UE)
+    lb2, _ = MS.auto_seed(pts, np.array(nrm), ['LeftArm'], [[0, 0, 0]], [[0, 0, 1.0]], Wt, reg2)
+    ok((lb2 == lb).all(), "Mixamo / Meshy 'LeftArm' seeds the same biceps / triceps as 'upper_arm.L'")
+    want = {'LeftForeArm': 'forearm', 'LeftUpLeg': 'thigh', 'RightLeg': 'shin', 'Spine02': 'chest', 'Hips': 'pelvis',
+            'DEF-upper_arm.L': 'upper_arm', 'calf_r': 'shin', 'lowerarm_l': 'forearm', 'LeftToeBase': 'toe'}
+    bad = [k for k, w in want.items() if w not in MS.bone_search_name(k)]
+    ok(not bad, "bone aliases for common rigs (%s)" % (bad or "all ok"))
+    ok('upper_arm' not in MS.bone_search_name('LeftForeArm') and 'thigh' not in MS.bone_search_name('LeftLeg'),
+       "forearm / lower leg are not mistaken for the upper bones")
     print("FAILS", fails[0])
     sys.exit(1 if fails[0] else 0)
 

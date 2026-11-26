@@ -113,7 +113,7 @@ def region_color(key_or_index):
 
 DETAIL_ITEMS = (('CARTOON', "Cartoon", "A few big muscles: biceps, triceps, neck, chest, thighs, calves", 1),
                 ('STANDARD', "Standard", "Common game muscle set", 2),
-                ('CINEMATIC', "Cinematic", "Full set including facial, finger and foot muscles", 3))
+                ('CINEMATIC', "Cinematic / scientific", "Every catalog muscle: facial, finger and foot muscles included (research and cinematic)", 3))
 DETAIL_TIER = {d[0]: d[3] for d in DETAIL_ITEMS}
 
 # preset id -> dict(body, gender, label, per-region emphasis multipliers)
@@ -319,6 +319,45 @@ def vertex_normals_from_faces(verts, faces):
 _FACE = {'front': (0, -1, 0), 'back': (0, 1, 0), 'top': (0, 0, 1), 'bottom': (0, 0, -1)}
 
 
+
+import re as _re
+
+_SIDE_RE = _re.compile(r'(^|[._\-:\s])(l|r|left|right)(?=$|[._\-:\s])|^(left|right)|(left|right)$')
+
+
+def bone_search_name(name):
+    """Lower-case bone name plus canonical aliases, so the catalog keywords (upper_arm, forearm, thigh, shin, chest,
+    pelvis, toe ...) also match common rig conventions: Mixamo / Meshy (LeftArm, LeftForeArm, LeftUpLeg, LeftLeg, Hips,
+    Spine02, LeftToeBase, mixamorig:...), Rigify (DEF-upper_arm.L, DEF-thigh.R, DEF-shin.L) and UE (upperarm_l,
+    lowerarm_r, thigh_l, calf_r, ball_l, spine_03, pelvis)."""
+    low = str(name).lower()
+    core = low.split(':')[-1]
+    for pre in ('mixamorig', 'def-', 'org-', 'mch-', 'cc_base_', 'bip01_', 'bip01 '):
+        if core.startswith(pre):
+            core = core[len(pre):]
+    core = _SIDE_RE.sub(' ', core).strip(' ._-')
+    core = core.replace(' ', '').replace('_', '').replace('.', '').replace('-', '')
+    al = []
+    if 'forearm' in core or 'lowerarm' in core or 'elbow' in core:
+        al += ['forearm', 'arm_low']
+    elif core in ('arm', 'upperarm', 'uparm', 'humerus') or core.startswith('upperarm') or core.startswith('arm'):
+        al += ['upper_arm', 'arm_up']
+    if 'upleg' in core or 'upperleg' in core or 'thigh' in core:
+        al += ['thigh', 'leg_up']
+    elif core in ('leg', 'lowerleg', 'calf', 'shin', 'knee') or core.startswith('lowerleg') or core.startswith('calf'):
+        al += ['shin', 'leg_low']
+    if core in ('hips', 'hip', 'pelvis', 'root_hips'):
+        al += ['hips', 'pelvis']
+    m = _re.match(r'spine0*(\d+)$', core)
+    if m and int(m.group(1)) >= 2:
+        al += ['chest']
+    if 'toe' in core or core.startswith('ball'):
+        al += ['toe']
+    if 'collar' in core or 'clavicle' in core:
+        al += ['clavicle', 'shoulder']
+    return low + (' ' + ' '.join(al) if al else '')
+
+
 def auto_seed(verts, normals, bone_names, heads, tails, weights, regions, min_dot=0.25, dominance=0.45):
     """Label vertices with a region index from the skeleton.  weights is (n, nbones) skin weights.
     A region claims a vertex when the vertex is dominated by a bone whose name contains one of the region's keywords,
@@ -327,7 +366,7 @@ def auto_seed(verts, normals, bone_names, heads, tails, weights, regions, min_do
     v = np.asarray(verts, np.float64)
     n = len(v)
     W = np.asarray(weights, np.float64)
-    names = [str(b).lower() for b in bone_names]
+    names = [bone_search_name(b) for b in bone_names]
     H = np.asarray(heads, np.float64)
     T = np.asarray(tails, np.float64)
     seg = T - H
@@ -595,7 +634,7 @@ def solve(verts, edges, normals, seed_labels, regions, strokes=None, attachments
             bone, acc_end = None, 'B'
             if bi and len(bi.get('names', [])):
                 W = np.asarray(bi['weights'])[idx]
-                names = [str(x).lower() for x in bi['names']]
+                names = [bone_search_name(x) for x in bi['names']]
                 cand = [i for i, nm in enumerate(names) if any(k in nm for k in reg['bones'])]
                 if not cand:
                     cand = list(range(len(names)))

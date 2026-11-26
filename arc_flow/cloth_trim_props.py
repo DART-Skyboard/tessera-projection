@@ -116,7 +116,7 @@ class AF_ClothTrimScene(PropertyGroup):
     seams: CollectionProperty(type=AF_ClothSeam)
     seam_index: IntProperty(default=0)
     show_trim: BoolProperty(name="Cloth Trim", default=True)
-    show_accents: BoolProperty(name="Accents", default=True)
+    show_accents: BoolProperty(name="Trim Accents (decorative)", default=True)
     show_seams: BoolProperty(name="Seam Seal Control Solving", default=True)
     status: StringProperty(default="")
 

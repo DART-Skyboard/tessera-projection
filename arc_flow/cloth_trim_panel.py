@@ -77,7 +77,7 @@ def draw_trim_section(layout, ts):
 
 
 def draw_accent_section(layout, ts):
-    box, open_ = _head(layout, ts, "show_accents", "Accents", 'OUTLINER_OB_POINTCLOUD')
+    box, open_ = _head(layout, ts, "show_accents", "Trim Accents (decorative)", 'OUTLINER_OB_POINTCLOUD')
     if not open_:
         return
     row = box.row()

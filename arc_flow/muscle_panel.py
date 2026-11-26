@@ -31,6 +31,11 @@ def _draw_muscle_detail(box, ms, g):
     box.label(text="%d lines, %d painted vertices, %d solved" % (g.n_strokes, g.n_painted, g.n_instances))
 
 
+def _marked(rg):
+    """A muscle counts as assigned once it is Completed or has paint / pencil lines / geometry on it."""
+    return bool(rg.completed or rg.n_painted or rg.n_strokes or rg.muscle_obj or rg.bone_obj)
+
+
 def _draw_cards(layout, ms):
     """Stacked region category cards: each shows its muscles' colour strokes, card sliders and the muscle list."""
     from .core import muscle_solver as MS
@@ -44,8 +49,8 @@ def _draw_cards(layout, ms):
         box = layout.box()
         head = box.row(align=True)
         head.prop(card, "expanded", text="", icon='TRIA_DOWN' if card.expanded else 'TRIA_RIGHT', emboss=False)
-        done = sum(1 for i in idx if ms.regions[i].completed)
-        head.label(text="%s  (%d/%d complete)" % (card.label, done, len(idx)), icon=icons.get(card.key, 'GROUP_VERTEX'))
+        done = sum(1 for i in idx if _marked(ms.regions[i]))
+        head.label(text="%s  (%d/%d marked)" % (card.label, done, len(idx)), icon=icons.get(card.key, 'GROUP_VERTEX'))
         # colour-coded muscle strokes of this region (one swatch per muscle, static catalog colours)
         if idx:
             strip = box.row(align=True)
@@ -65,7 +70,7 @@ def _draw_cards(layout, ms):
             row.prop(rg, "color", text="")
             is_act = active is not None and rg.key == active.key
             op = row.operator("arcflow.muscle_select", text=rg.label, depress=is_act,
-                              icon='CHECKMARK' if rg.completed else 'GREASEPENCIL')
+                              icon='CHECKMARK' if _marked(rg) else 'GREASEPENCIL')
             op.index = i
             row.prop(rg, "flex", text="", slider=True)
             row.prop(rg, "enabled", text="")
@@ -130,8 +135,8 @@ def draw_muscle_tab(layout, context):
         hdr.label(text="Muscle Pencil: %s" % g.label, icon='GREASEPENCIL')
     else:
         pb.label(text="Muscle Pencil", icon='GREASEPENCIL')
-    pb.label(text="Draw a few lines along the muscle over the skin contour;")
-    pb.label(text="the line ends are the tendon / joint attachments.")
+    pb.label(text="Pick a muscle on a card, then paint its colour or draw")
+    pb.label(text="a few lines along it; line ends = tendon attachments.")
     row = pb.row(align=True)
     row.scale_y = 1.3
     row.operator("arcflow.muscle_contour", icon='GREASEPENCIL', text="Muscle Pencil")
