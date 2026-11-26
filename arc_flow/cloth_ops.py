@@ -184,6 +184,7 @@ def _params(g):
     kw['self_collision_mode'] = mode
     kw['self_thickness'] = float(getattr(g, 'self_thickness', 0.004))
     kw['self_friction'] = float(getattr(g, 'self_friction', 0.3))
+    kw['self_edge_contacts'] = bool(getattr(g, 'self_edge_contacts', False))
     kw.setdefault('thickness', float(g.thickness))
     kw.setdefault('margin', float(g.margin))
     return kw
@@ -196,7 +197,7 @@ def _signature(g, rest, mem=None):
                                                             "lift", "thickness", "margin", "friction",
                                                             "tessellation_edge")),
             int(g.substeps), int(g.iterations), bool(g.self_collision), bool(g.use_dihedral),
-            g.self_collision_mode, round(float(g.self_thickness), 6), round(float(g.self_friction), 4), g.self_ignore_group)
+            g.self_collision_mode, round(float(g.self_thickness), 6), round(float(g.self_friction), 4), g.self_ignore_group, bool(g.self_edge_contacts))
     if mem:
         base += (bool(g.use_stitch), round(float(g.stitch_tolerance), 6), round(float(g.stitch_stiffness), 1),
                  tuple((o.name, m.preset, m.use_preset, m.weld) + tuple(round(float(getattr(m, k)), 6) for k in

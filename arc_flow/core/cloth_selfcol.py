@@ -708,9 +708,15 @@ class SelfCollider:
         Q0 = xp[c] + (xp[d] - xp[c]) * t[:, None]
         ref = P0 - Q0
         rl = np.linalg.norm(ref, axis=1)
-        have = rl > 1e-7
-        flipped = have & ((diff * ref).sum(1) < 0.0)
-        near = dist < th
+        # only edges that cross at an angle are handled: nearly parallel / coincident edges (a sash laid on a dress, two
+        # hems lying together) have no stable edge-edge normal and are left to the vertex-face contacts
+        d1 = x[b] - x[a]
+        d2 = x[d] - x[c]
+        sin = np.linalg.norm(np.cross(d1, d2), axis=1) / np.maximum(np.linalg.norm(d1, axis=1) * np.linalg.norm(d2, axis=1), 1e-12)
+        angled = sin > 0.35
+        have = (rl > 0.5 * th) & angled
+        flipped = have & ((diff * ref).sum(1) < 0.0) & (rl > 0.5 * th)
+        near = (dist < th) & have
         m = near | flipped
         if not m.any():
             return 0

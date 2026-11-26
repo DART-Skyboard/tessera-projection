@@ -301,7 +301,7 @@ class ClothSolver:
         self.self_thickness = float(pr.get('self_thickness', 0.0))
         self.self_inloop = False
         self.self_friction = float(pr.get('self_friction', -1.0))
-        self.self_edge_contacts = bool(pr.get('self_edge_contacts', True))
+        self.self_edge_contacts = bool(pr.get('self_edge_contacts', False))
         self.self_layers = None
         self.self_ignore_pairs = ()
         self._selfcol = None

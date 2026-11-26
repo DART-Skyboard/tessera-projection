@@ -120,6 +120,7 @@ def draw_cloth_tab(layout, context):
         sc.prop(g, "self_collision_mode")
         sc.prop(g, "self_thickness")
         sc.prop(g, "self_friction")
+        sc.prop(g, "self_edge_contacts")
         sc.prop_search(g, "self_ignore_group", g.obj, "vertex_groups") if g.obj is not None else None
         gb.prop(g, "override_quality")
         q = gb.column(align=True)

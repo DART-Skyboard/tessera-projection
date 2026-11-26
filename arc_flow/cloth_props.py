@@ -118,6 +118,8 @@ class AF_ClothGarment(PropertyGroup):
                                   description="Layers are kept at least this far apart (vertex against triangle)")
     self_friction: FloatProperty(name="Contact friction", default=0.3, min=0.0, max=1.0, subtype='FACTOR',
                                  description="Coulomb friction between touching cloth layers")
+    self_edge_contacts: BoolProperty(name="Edge contacts (experimental)", default=False,
+                                     description="Edge-against-edge contact for open hems and fold edges cutting through each other while every vertex is still outside. Experimental: it made the storefront dress worse in measurement, so it is off by default")
     self_ignore_group: StringProperty(name="Ignore group", default="",
                                       description="Vertex group whose vertices are left out of self-collision (e.g. a lining stitched to the shell)")
     use_dihedral: BoolProperty(name="Dihedral bend", default=True)
