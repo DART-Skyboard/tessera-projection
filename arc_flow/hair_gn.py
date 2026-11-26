@@ -124,7 +124,7 @@ def apply_hair_gn(obj, radius=0.004, sides=5, as_tubes=True, taper=0.8):
 HAIR_PRESETS = {
     'BLACK':      (0.95, 0.10, (1.0, 1.0, 1.0), 0.20, 0.30, 0.10, 0.04, (0.018, 0.015, 0.014)),
     'DARK_BROWN': (0.80, 0.25, (1.0, 0.96, 0.92), 0.26, 0.30, 0.15, 0.08, (0.075, 0.040, 0.025)),
-    'CHESTNUT':   (0.62, 0.55, (1.0, 0.92, 0.85), 0.28, 0.32, 0.20, 0.10, (0.16, 0.075, 0.035)),
+    'CHESTNUT':   (0.62, 0.55, (1.0, 0.92, 0.85), 0.28, 0.32, 0.20, 0.10, (0.09, 0.04, 0.02)),
     'AUBURN':     (0.55, 0.95, (1.0, 0.85, 0.75), 0.30, 0.32, 0.25, 0.12, (0.30, 0.095, 0.035)),
     'BLONDE':     (0.22, 0.30, (1.0, 0.95, 0.85), 0.30, 0.30, 0.30, 0.08, (0.55, 0.38, 0.17)),
     'PLATINUM':   (0.05, 0.10, (1.0, 0.98, 0.95), 0.32, 0.30, 0.30, 0.05, (0.78, 0.70, 0.52)),
@@ -221,7 +221,7 @@ def apply_hair_material(obj, color=None, name="Tessera Hair", preset='CHESTNUT',
     prin = nt.nodes.new('ShaderNodeBsdfPrincipled'); prin.location = (160, -240)
     mix = nt.nodes.new('ShaderNodeMix'); mix.data_type = 'RGBA'; mix.location = (-120, -300)
     dark = tuple(c * (1.0 - root_dark * 0.45) for c in base) + (1.0,)
-    light = tuple(min(1.0, c * (1.0 + tip_light * 1.8) + 0.02) for c in base) + (1.0,)
+    light = tuple(min(1.0, c * (1.0 + tip_light * 0.9) + 0.01) for c in base) + (1.0,)
     _mixin(mix, 'A').default_value = dark
     _mixin(mix, 'B').default_value = light
     L.new(info.outputs['Intercept'], _mixin(mix, 'Factor'))
@@ -230,8 +230,7 @@ def apply_hair_material(obj, color=None, name="Tessera Hair", preset='CHESTNUT',
     L.new(_mixout(mix), _mixin(mixr, 'A'))
     L.new(rnd.outputs[0], _mixin(mixr, 'B'))
     L.new(_mixout(mixr), prin.inputs['Base Color'])
-    for n, v in (('Roughness', 0.36), ('Metallic', 0.0), ('Coat Weight', coat * 0.5), ('Specular IOR Level', 0.6),
-                 ('Anisotropic', 0.6)):
+    for n, v in (('Roughness', 0.45), ('Metallic', 0.0), ('Coat Weight', 0.0), ('Specular IOR Level', 0.35)):
         if n in prin.inputs:
             prin.inputs[n].default_value = v
     L.new(prin.outputs[0], out_e.inputs['Surface'])

@@ -72,8 +72,16 @@ def run():
     log("scene built %.1fs" % (time.time() - t0))
     plan = [('long', hcs.glove_track(), 18.0), ('short', hcs.short_track(), 12.0)]
     caches = {}
-    for st, track, secs in plan:
-        caches[st] = hcs.bake_style(S, st, secs, track, progress=lambda s, f, n, dt: log("  sim %s %d/%d %.0fs" % (s, f, n, dt)))
+    import pickle
+    cpath = os.environ.get('HC_CACHE', '')
+    if cpath and os.path.isfile(cpath):
+        caches = pickle.load(open(cpath, 'rb'))
+        log("loaded bake cache", cpath)
+    else:
+        for st, track, secs in plan:
+            caches[st] = hcs.bake_style(S, st, secs, track, progress=lambda s, f, n, dt: log("  sim %s %d/%d %.0fs" % (s, f, n, dt)))
+        if cpath:
+            pickle.dump(caches, open(cpath, 'wb'))
     log("baked %.1fs" % (time.time() - t0))
     # --- UI
     sc.frame_start, sc.frame_end = 1, 18 * 24 + 12 * 24
@@ -95,7 +103,7 @@ def run():
     else:
         sp.shading.type = 'SOLID'
     ee = sc.eevee
-    for k, v in (('use_shadows', True), ('taa_samples', 4), ('taa_render_samples', 4), ('use_raytracing', False),
+    for k, v in (('use_shadows', True), ('taa_samples', 12), ('taa_render_samples', 4), ('use_raytracing', False),
                  ('use_volumetric_shadows', False), ('use_gtao', False), ('use_bloom', False), ('use_shadow_jitter_viewport', False)):
         if hasattr(ee, k):
             try:
@@ -147,15 +155,19 @@ def run():
         yield 0.4
     set_tab()
     r = ui_region()
-    edge = r.x - 3 if r.x > 0 else 1200
-    mouse_move(edge, 500); yield 0.4
-    mouse_button(1, True); yield 0.3
-    x = edge
-    while x > 1030:
-        x -= 30
-        mouse_move(x, 500); yield 0.12
-    mouse_button(1, False); yield 0.4
-    mouse_move(700, 880); yield 0.4
+    for dx in (1, 0, -2, 3, -4, 6):
+        if ui_region().width > 420:
+            break
+        edge = ui_region().x + dx
+        mouse_move(edge, 420); yield 0.5
+        mouse_button(1, True); yield 0.4
+        x = edge
+        while x > 760:
+            x -= 25
+            mouse_move(x, 420); yield 0.15
+        mouse_button(1, False); yield 0.5
+        mouse_move(700, 880); yield 0.5
+        log("drag try dx=%d -> x=%d w=%d" % (dx, ui_region().x, ui_region().width))
     set_tab()
     log("sidebar x=%d w=%d" % (ui_region().x, ui_region().width))
     manifest = []
