@@ -130,6 +130,9 @@ class SelfCollider:
         self.ring = _ring_keys(self.n, edges, 1)
         self.comp = mesh_components(self.n, edges)   # disconnected pieces (garment layers) keep their rest-pose order
         self.rest = None
+        self.layered = False       # 'LAYERED' mode: rest-side corrector for ordered pieces
+        self.layer_radius = 0.025
+        self.layer_period = 1      # run the rest-side corrector every N-th substep (the last of each step)
         self.rest_nrm = None       # (v,u) with u in 1-ring(v) or u == v
         self.layer = np.zeros(self.n, np.int32)
         self.allow = np.ones((1, 1), bool)
@@ -399,8 +402,76 @@ class SelfCollider:
         if len(v):
             for _ in range(int(passes) if passes else (1 if fast else max(1, self.iterations))):
                 total += self._respond(x, xp, inv_mass, v, t)
+        if self.layered and (substep_index + 1) % max(int(self.layer_period), 1) == 0:
+            total += self.layered_correct(x, xp, inv_mass)
         self.stats['ms'] = 1000.0 * (_t.perf_counter() - t0)
         return total
+
+    def layered_correct(self, x, xp, w):
+        """Rest-side corrector for ordered pieces (garment layers).  A vertex of an upper piece must stay on the side
+        of every lower piece's nearest face that it had at rest, at >= thickness.  It is projected there whatever
+        way it got across (vertex-face, edge-edge, tunnelling).  Pieces are ordered by their lowest vertex index."""
+        if self.rest is None:
+            return 0
+        labels = np.unique(self.comp)
+        if len(labels) < 2:
+            return 0
+        rank = np.searchsorted(labels, self.comp)
+        th = self.thickness
+        R = max(float(self.layer_radius), 2.0 * th)
+        save_th, save_on = self.thickness, self.vert_on
+        try:
+            self.vert_on = save_on & (rank > 0)
+            for _try in range(3):             # a huge search radius can overflow the pair budget: shrink it
+                self.thickness = R
+                self.stats.pop('overflow', None)
+                v, t = self._candidates(x, xp, 0.0)
+                if 'overflow' not in self.stats or R <= 2.0 * th:
+                    break
+                R = max(0.5 * R, 2.0 * th)
+        finally:
+            self.thickness, self.vert_on = save_th, save_on
+        if len(v) == 0:
+            return 0
+        tr = self.tris[t]
+        k = rank[v] > rank[tr[:, 0]]
+        v, t, tr = v[k], t[k], tr[k]
+        if len(v) == 0:
+            return 0
+        a, b, c = x[tr[:, 0]], x[tr[:, 1]], x[tr[:, 2]]
+        p = x[v]
+        nrm = np.cross(b - a, c - a)
+        nl = np.linalg.norm(nrm, axis=1)
+        good = nl > 1e-14
+        nrm = nrm / np.where(good, nl, 1.0)[:, None]
+        q, bary, inside = closest_point_triangle(p, a, b, c)
+        d = ((p - a) * nrm).sum(1)
+        dr = ((self.rest[v] - self.rest[tr[:, 0]]) * self.rest_nrm[t]).sum(1)
+        s0 = np.where(dr < 0.0, -1.0, 1.0)
+        sd = s0 * d
+        diff = p - q
+        dist = np.linalg.norm(diff, axis=1)
+        face = inside & good & (np.abs(d) < R) & (sd < th)
+        edge = (~inside) & good & (dist < th) & (sd >= 0.0)
+        m = face | edge
+        if not m.any():
+            return 0
+        v, t, tr, nrm, s0, sd, diff, dist, face = v[m], t[m], tr[m], nrm[m], s0[m], sd[m], diff[m], dist[m], face[m]
+        direction = np.where(face[:, None], s0[:, None] * nrm, diff / np.maximum(dist, 1e-12)[:, None])
+        need = np.where(face, th - sd, th - dist)
+        order = np.argsort(-need, kind='stable')
+        v, tr, direction, need = v[order], tr[order], direction[order], need[order]
+        _u, first = np.unique(v, return_index=True)
+        v, tr, direction, need = v[first], tr[first], direction[first], need[first]
+        push = need[:, None] * direction
+        free = w[v] > 0.0
+        x[v[free]] += push[free]
+        pin = ~free
+        if pin.any():                      # the vertex cannot move: carry the lower face away instead
+            for kk in range(3):
+                x[tr[pin, kk]] -= push[pin] * (w[tr[pin, kk]] > 0.0)[:, None]
+        self.stats['layered_fixed'] = int(len(v))
+        return int(len(v))
 
     def min_distance(self, x, limit=None):
         """Smallest vertex-to-triangle distance over all non-excluded pairs (diagnostic, unsigned)."""

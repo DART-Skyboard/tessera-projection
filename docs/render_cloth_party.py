@@ -641,7 +641,7 @@ def build():
     g.tessellation_edge, g.tessellation_cap = 0.20, 20000
     g.margin = 0.006
     g.self_collision = True                 # <- the point of this scene
-    g.self_collision_mode = 'ACCURATE'
+    g.self_collision_mode = 'LAYERED'
     g.self_thickness = 0.004
     g.self_friction = 0.35
     for o in body_objs:
@@ -730,6 +730,7 @@ def sim():
     CO.RT.live_running = True
     scene.frame_set(1)
     S = CO.build_solver(scene, g)
+    S.self_collision_mode = os.environ.get("PARTY_SC_MODE", "LAYERED")
     S.self_inloop = os.environ.get("PARTY_INLOOP", "0") == "1"
     S.self_collider().iterations = int(os.environ.get("PARTY_SC_PASSES", "4"))   # response passes per substep
     S.ground_z = 0.0                      # the showroom floor is an analytic ground plane

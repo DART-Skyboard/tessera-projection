@@ -176,7 +176,7 @@ def _params(g):
     kw['self_collision'] = bool(getattr(g, 'self_collision', True))
     mode = getattr(g, 'self_collision_mode', 'AUTO')
     if mode == 'AUTO':
-        mode = 'FAST' if g.quality == 'REALTIME' else 'ACCURATE'
+        mode = 'FAST' if g.quality == 'REALTIME' else 'LAYERED'
     kw['self_collision_mode'] = mode
     kw['self_thickness'] = float(getattr(g, 'self_thickness', 0.004))
     kw['self_friction'] = float(getattr(g, 'self_friction', 0.3))

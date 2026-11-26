@@ -816,7 +816,10 @@ class ClothSolver:
             self._selfcol = sc
         sc.thickness = max(float(self.self_thickness if self.self_thickness > 0 else self.thickness), 1e-4)
         sc.friction = float(self.self_friction if self.self_friction >= 0 else self.friction)
-        sc.mode = 'FAST' if str(self.self_collision_mode).upper() == 'FAST' else 'ACCURATE'
+        _m = str(self.self_collision_mode).upper()
+        sc.mode = 'FAST' if _m == 'FAST' else 'ACCURATE'
+        sc.layered = (_m == 'LAYERED')
+        sc.layer_period = max(1, int(self.substeps))
         if sc.rest is None:
             sc.set_rest(self.rest)
         return sc

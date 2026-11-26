@@ -305,6 +305,34 @@ def test_self_collision_fast_layers_no_crossing():
         ok(worst > -0.002, "fast layer (%s): no crossing of the lower layer (worst gap %.4f m)" % (mode, worst))
 
 
+def test_self_collision_layered_rest_side():
+    # 'LAYERED' mode: a vertex that is already on the wrong side of a lower layer (6 mm below it, however it got there)
+    # is projected back to its rest side at >= thickness
+    v1, t1, _ = CS.grid_mesh(16, 16, 0.5, 0.5, origin=(0, 0, 0.0), axis='xy')
+    v2, t2, _ = CS.grid_mesh(13, 13, 0.45, 0.45, origin=(0.02, 0.017, 0.03), axis='xy')
+    v = np.concatenate([v1, v2]); t = np.concatenate([t1, t2 + len(v1)])
+    S = CS.ClothSolver(v, t, pins=np.arange(len(v1)), preset='COTTON', quality='BALANCED', self_collision=True,
+                       self_collision_mode='LAYERED', thickness=0.004, gravity=(0, 0, 0))
+    n1 = len(v1)
+    S.x[n1:, 2] = -0.006                       # upper sheet tunnelled below the pinned lower sheet
+    S.x_prev = S.x.copy()
+    S._self_collide(ref=S.x_prev, passes=1, substep_index=S.substeps - 1)
+    gap = float(S.x[n1:, 2].min() - S.x[:n1, 2].max())
+    ok(gap >= 0.9 * S.thickness, "LAYERED: tunnelled layer projected back above its lower layer (gap %.4f >= 0.9*%.4f)" % (gap, S.thickness))
+    # ACCURATE alone does not restore a layer that is already through (documents why the mode exists)
+    S2 = CS.ClothSolver(v, t, pins=np.arange(len(v1)), preset='COTTON', quality='BALANCED', self_collision=True,
+                        self_collision_mode='ACCURATE', thickness=0.004, gravity=(0, 0, 0))
+    S2.x[n1:, 2] = -0.006
+    S2.x_prev = S2.x.copy()
+    for _ in range(3):
+        S2._self_collide(ref=S2.x_prev, passes=1, substep_index=S2.substeps - 1)
+    gap2 = float(S2.x[n1:, 2].min() - S2.x[:n1, 2].max())
+    print("info: ACCURATE after the same tunnelling: gap %.4f" % gap2)
+    # fast drop with LAYERED never crosses
+    S3, g3 = two_layer_drop(sc=True, mode='LAYERED', layers='two', steps=40)
+    ok(g3.min() > -0.0005, "LAYERED: fast-thrown sheet never crosses (worst gap %.4f)" % g3.min())
+
+
 def test_self_collision_friction():
     # an upper sheet sliding over a pinned one: higher friction slows it more
     def run(mu):
@@ -420,6 +448,7 @@ if __name__ == '__main__':
     test_self_collision_pushout()
     test_self_collision_layers_on_off()
     test_self_collision_fast_layers_no_crossing()
+    test_self_collision_layered_rest_side()
     test_self_collision_friction()
     if os.environ.get('CLOTH_BENCH'):
         bench_self_collision()

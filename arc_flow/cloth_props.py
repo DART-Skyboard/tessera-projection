@@ -70,9 +70,10 @@ class AF_ClothGarment(PropertyGroup):
                                  description="The garment is a collision body that cannot pass through itself (vertex and triangle, spatial hash, thickness). On by default")
     self_collision_mode: EnumProperty(
         name="Self-collision mode",
-        items=[('AUTO', "Auto", "Real-time preset uses the cheaper variant, every other preset the accurate one"),
+        items=[('AUTO', "Auto", "Real-time preset uses the cheaper variant, every other preset the layered (rest-side) one"),
                ('FAST', "Fast (real-time)", "Cached candidate pairs refreshed every few substeps, one response pass"),
-               ('ACCURATE', "Accurate", "Re-detect every substep with two response passes")],
+               ('ACCURATE', "Accurate", "Re-detect every substep with two response passes"),
+               ('LAYERED', "Layered (rest-side)", "Accurate, plus separate pieces (layers) are held on the side of each lower layer that they had at rest, at least the contact thickness away, however they got across")],
         default='AUTO')
     self_thickness: FloatProperty(name="Contact thickness", default=0.004, min=0.0005, max=0.05, unit='LENGTH',
                                   description="Layers are kept at least this far apart (vertex against triangle)")
