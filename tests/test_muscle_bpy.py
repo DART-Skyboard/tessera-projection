@@ -121,6 +121,37 @@ chain2 = MO.selected_vertex_chain(grid)
 ok(chain2 == [5, 6, 7, 8, 9], "selected edge chain is ordered along the line: %s" % chain2)
 bpy.data.objects.remove(grid)
 
+# ---- region category cards + Muscle Pencil "Complete" workflow
+ok([c.key for c in ms.cards] == [c[0] for c in MS.CARDS], "region cards created: %s" % [c.label for c in ms.cards])
+card_of = {r.key: MS.card_of(r.group) for r in ms.regions}
+ok(card_of['zygomaticus'] == 'HEAD' and card_of['biceps'] == 'ARM' and card_of['pectoralis'] == 'TORSO'
+   and card_of['quadriceps'] == 'LEG', "muscles land on the head / arm / torso / leg cards")
+ok(all(MS.card_of(g) in {c[0] for c in MS.CARDS} for g in MS.GROUPS), "every catalog group belongs to a card")
+MO.refresh_stroke_counts(skin, ms)
+ok(reg['quadriceps'].n_strokes == 1, "Muscle Pencil line counted on the quadriceps (%d)" % reg['quadriceps'].n_strokes)
+qi = [r.key for r in ms.regions].index('quadriceps')
+ms.index = qi
+ok(bpy.ops.arcflow.muscle_complete() == {'FINISHED'} and reg['quadriceps'].completed, "Complete books the marked quadriceps into its card")
+ok(MS.card_of(ms.regions[ms.index].group) == 'LEG' and ms.index != qi and not ms.regions[ms.index].completed,
+   "after Complete the next unmarked muscle of the Legs card is active: %s" % ms.regions[ms.index].label)
+# a muscle with no marks at all cannot be completed
+nk = 'brachialis'
+bi = MO.add_catalog_region(ms, nk)
+ids_ = MO.read_ids(skin)
+ok((ids_ == ms.regions[bi].cid).sum() == 0, "freshly added %s has no paint" % nk)
+ms.index = bi
+ok(bpy.ops.arcflow.muscle_complete() == {'CANCELLED'} and not ms.regions[bi].completed, "Complete refuses an unmarked muscle")
+arm_card = next(c for c in ms.cards if c.key == 'ARM')
+items = [i['key'] for i in MS.CATALOG if MS.card_of(i['group']) == 'ARM' and i['key'] not in {r.key for r in ms.regions}]
+if items:
+    arm_card.pick = items[0]
+    n0 = len(ms.regions)
+    ok(bpy.ops.arcflow.muscle_card_add(card='ARM') == {'FINISHED'} and len(ms.regions) == n0 + 1
+       and ms.regions[ms.index].key == items[0], "card Add menu adds %s to the Arms card" % items[0])
+    ms.regions.remove(ms.index)
+ms.regions.remove(bi)
+ms.index = qi
+
 # ---- solve
 t0 = time.time()
 r = bpy.ops.arcflow.muscle_solve()
@@ -144,6 +175,10 @@ ok(len(MO.get_instances(sc)) == len(insts), "solve data reloads from the text bl
 
 # ---- resolution factor is a real knob
 ms.resolution = 0.3
+ok(abs(ms.resolution - 0.85) < 1e-6, "resolution factor clamps at 0.85 (spec range 0.85 .. 10)")
+ms.resolution = 12.0
+ok(abs(ms.resolution - 10.0) < 1e-6, "resolution factor clamps at 10.0")
+ms.resolution = 0.85
 MO.run_solve(sc)
 coarse = MO.get_instances(sc)
 ms.resolution = 3.0
@@ -160,7 +195,14 @@ def roughness(ins):
         t += float(np.abs(full[g.edges[:, 0]] - full[g.edges[:, 1]]).sum())
     return t
 rc, rf_ = roughness(coarse), roughness(fine)
-ok(rf_ > rc, "resolution 3.0 has more weight detail than 0.3 (%.1f vs %.1f)" % (rf_, rc))
+ok(rf_ > rc, "resolution 3.0 has more weight detail than 0.85 (%.1f vs %.1f)" % (rf_, rc))
+ms.resolution = 10.0
+MO.run_solve(sc)
+r10 = roughness(MO.get_instances(sc))
+ok(r10 > rf_, "resolution 10.0 adds more detail than 3.0 (%.1f vs %.1f)" % (r10, rf_))
+mass = lambda ins: sum(float(i.w.sum()) for i in ins)
+ok(mass(MO.get_instances(sc)) >= 0.9 * mass(coarse), "finer resolution does not weaken the muscles (weight mass %.0f vs %.0f)"
+   % (mass(MO.get_instances(sc)), mass(coarse)))
 ms.resolution = 1.0
 MO.run_solve(sc)
 insts = MO.get_instances(sc)
@@ -182,6 +224,20 @@ bpy.ops.arcflow.muscle_bake()
 d2 = key_disp(MO.KEY_PREFIX + 'quadriceps.L').max()
 ok(d1 > 0.002 and abs(d2 / d1 - 2.0) < 0.05, "key displacement follows the Flex slider: %.4f m -> %.4f m" % (d1, d2))
 reg['quadriceps'].flex = 1.0
+leg = next(c for c in ms.cards if c.key == 'LEG')
+leg.flex = 2.0
+bpy.ops.arcflow.muscle_bake()
+d3 = key_disp(MO.KEY_PREFIX + 'quadriceps.L').max()
+ok(abs(d3 / d1 - 2.0) < 0.05, "Legs card Flex intensity scales its muscles: %.4f m -> %.4f m" % (d1, d3))
+d_arm = key_disp(MO.KEY_PREFIX + 'biceps.L').max()
+leg.flex = 1.0
+bpy.ops.arcflow.muscle_bake()
+ok(abs(key_disp(MO.KEY_PREFIX + 'biceps.L').max() - d_arm) < 1e-6, "Legs card slider leaves the Arms card alone")
+leg.emphasis = 0.5
+bpy.ops.arcflow.muscle_bake()
+d4 = key_disp(MO.KEY_PREFIX + 'quadriceps.L').max()
+ok(abs(d4 / d1 - 0.5) < 0.05, "Legs card Initial emphasis scales its muscles: %.4f m -> %.4f m" % (d1, d4))
+leg.emphasis = 1.0
 reg['quadriceps'].accent = 0.0
 bpy.ops.arcflow.muscle_bake()
 d_a0 = key_disp(MO.KEY_PREFIX + 'quadriceps.L')
@@ -359,6 +415,15 @@ ok(len(prim.get('targets', [])) == len(kn), "GLB carries %d morph targets (shape
 ok(set(tn) >= {MO.KEY_PREFIX + 'biceps.L'} and len(tn) == len(kn), "GLB morph target names preserved")
 ok('JOINTS_0' in prim['attributes'] and 'WEIGHTS_0' in prim['attributes'] and gj.get('skins'), "GLB carries skin weights and the skeleton")
 ok('COLOR_0' in prim['attributes'], "GLB carries the region vertex colours (COLOR_0)")
+nd_ = next((nd for nd in gj['nodes'] if nd.get('mesh') == 0), {})
+ex_ = nd_.get('extras', {})
+try:
+    tpm = json.loads(ex_.get('tp_muscles', '{}'))
+except Exception:
+    tpm = {}
+ok(tpm.get('format') == 'tessera-muscles' and len(tpm.get('muscles', [])) == len(kn)
+   and all(m['shape_key'] for m in tpm['muscles']) and set(tpm.get('cards', {})) == {c[0] for c in MS.CARDS},
+   "GLB node extras carry the muscle rig (%d muscles -> shape keys, bones, card sliders)" % len(tpm.get('muscles', [])))
 
 # ---- FBX export
 ms.export_format = 'FBX'
@@ -367,6 +432,7 @@ fp = os.path.join(TMP, "biped.fbx")
 blob = open(fp, 'rb').read()
 ok(os.path.getsize(fp) > 10000 and b'Kaydara FBX Binary' in blob[:30], "FBX written (%d bytes)" % os.path.getsize(fp))
 ok(blob.count(b'BlendShape') >= 3 or blob.count(b'Shape') >= 3, "FBX contains blend shape data")
+ok(b'tp_muscles' in blob, "FBX carries the muscle rig as a user property (tp_muscles)")
 
 # ---- save / reload keeps the data
 blend = os.path.join(TMP, "muscle.blend")

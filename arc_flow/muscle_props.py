@@ -73,6 +73,35 @@ class AF_MuscleRegion(PropertyGroup):
                            description="Set the region's shape keys directly (drivers are overridden while non-zero)")
     n_painted: IntProperty(default=0)
     n_instances: IntProperty(default=0)
+    n_strokes: IntProperty(default=0)
+    completed: BoolProperty(name="Complete", default=False,
+                            description="The artist marked this muscle (pencil lines, paint or geometry) and pressed Complete: "
+                                        "it is listed on its region card")
+
+
+def _card_pick_items(self, ctx):
+    """Muscles of this card's body region that are not in the scene list yet (for the card's Add menu)."""
+    ms = getattr(ctx.scene, 'arc_flow_muscle', None) if ctx is not None else None
+    have = {r.key for r in ms.regions} if ms is not None else set()
+    items = [(r['key'], r['label'], "Add %s to this card" % r['label'])
+             for r in MS.CATALOG if MS.card_of(r['group']) == self.key and r['key'] not in have]
+    _card_pick_items.cache = items or [('NONE', "All catalog muscles added", "")]
+    return _card_pick_items.cache
+
+
+class AF_MuscleCard(PropertyGroup):
+    """One region category card (Head and face / Arms and hands / Torso and back / Legs and feet / Tail and custom)."""
+    key: StringProperty(name="Key", default="")
+    label: StringProperty(name="Name", default="")
+    expanded: BoolProperty(name="Expanded", default=True)
+    emphasis: FloatProperty(name="Initial emphasis", default=1.0, min=0.0, max=3.0, subtype='FACTOR',
+                            description="Initial emphasis of every muscle on this card (multiplies each muscle's emphasis)")
+    flex: FloatProperty(name="Flex intensity", default=1.0, min=0.0, max=3.0, subtype='FACTOR',
+                        description="Flex intensity of every muscle on this card (multiplies each muscle's flex)")
+    accent: FloatProperty(name="Accent intensity", default=1.0, min=0.0, max=3.0, subtype='FACTOR',
+                          description="How far the flex leans toward one attachment end, for every muscle on this card")
+    pick: EnumProperty(name="Add muscle", items=_card_pick_items,
+                       description="Catalog muscles of this body region that are not listed yet")
 
 
 class AF_MuscleScene(PropertyGroup):
@@ -91,10 +120,13 @@ class AF_MuscleScene(PropertyGroup):
     toes: IntProperty(name="Toes per foot", default=0, min=0, max=12)
     joints_per_limb: IntProperty(name="Joints per limb", default=2, min=1, max=12)
     regions: CollectionProperty(type=AF_MuscleRegion)
+    cards: CollectionProperty(type=AF_MuscleCard)
     index: IntProperty(default=0)
-    resolution: FloatProperty(name="Resolution factor", default=1.0, min=0.1, max=10.0, step=10, precision=2,
-                              description="Muscle projection resolution, like the Remesh multiplier. Below 1 is coarser and smoother "
-                                          "(cartoon), above 1 adds finer region blending and fibre bundles (cinematic)")
+    resolution: FloatProperty(name="Resolution factor", default=1.0, min=MS.RESOLUTION_MIN, max=MS.RESOLUTION_MAX, step=5,
+                              precision=2,
+                              description="Muscle projection resolution relative to the skin's own tessellation (1.0 = one to one). "
+                                          "0.85-0.99 is softer (cartoon), 1.1-10 adds finer region blending and fibre bundles "
+                                          "(cinematic)")
     brush_radius: FloatProperty(name="Brush radius", default=0.05, min=0.002, max=2.0, unit='LENGTH',
                                 description="Radius of the region pencil in the skin's local units")
     brush_erase: BoolProperty(name="Erase", default=False, description="Paint with the eraser instead of the active region colour")
@@ -120,7 +152,7 @@ class AF_MuscleScene(PropertyGroup):
     last_ms: FloatProperty(default=0.0)
 
 
-CLASSES = (AF_MuscleRegion, AF_MuscleScene)
+CLASSES = (AF_MuscleRegion, AF_MuscleCard, AF_MuscleScene)
 
 
 def register():

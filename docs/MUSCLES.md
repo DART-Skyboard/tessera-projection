@@ -18,6 +18,29 @@ Where it lives: the **Muscle** tab in the Tessera Projection sidebar (vertical t
 | Jiggle | **Not simulated in Blender.** The spring parameters are written to the sidecar for the engine runtime; `muscle_solver.jiggle_step` is the reference implementation. |
 | Animation-state intensity (rest / walk / run) | In Blender it is a scene setting (Animation state) that scales the driver. Inside an engine it is driven by the joint's angular speed through the speed curve in the sidecar. Blender drivers cannot read speed, so a baked animation uses the state you picked. |
 
+## Region cards and the Muscle Pencil (0.7.0)
+
+The Muscle tab is laid out as stacked **region category cards**: *Head and face*, *Arms and hands*, *Torso and back*,
+*Legs and feet* and *Tail and custom*. Each card shows a strip of its muscles' static colours, its own
+**Initial emphasis**, **Flex intensity** and **Accent intensity** sliders (they multiply the per-muscle sliders of every
+muscle on the card), and the list of its muscles. Click a muscle to make it active; its detail box has the per-muscle
+Flex / Accent intensity, the accent direction (*Toward* end A / end B / auto = joint end), rest tone, joint range,
+driving bone, and the optional **Muscle geometry** and **Bone geometry** objects. The card's *Add* menu lists the catalog
+muscles of that body region that are not in the list yet.
+
+Per muscle: press **Muscle Pencil** and draw a few lines along the muscle over the skin contour (the line ends are the
+tendon / joint attachments: no flex there, the belly flexes in between), or fill-paint it, or assign muscle / bone
+geometry, then press **Complete**. Complete books the muscle into its card (check mark, counted in the card header) and
+makes the next unmarked muscle of the same card active. Complete refuses a muscle that has no lines, paint or geometry.
+
+**Resolution factor**: 1.0 = the skin's own tessellation; 0.85 is the softest (cartoon), up to 10.0 adds finer fibre
+bundles (cinematic). A higher factor adds detail without weakening the muscle (the fibre striation is mean-preserving).
+
+**Export**: *Bake to shape keys* and *Export GLB / FBX* also write the muscle rig to the skin object's custom property
+`tp_muscles` (JSON: preset, detail, resolution, speed gains, card sliders and per muscle: shape key name, driving bone,
+accent end, flex, accent, tone, joint range). glTF carries it in the node `extras`, FBX as a user property, next to the
+morph targets / blend shapes and skin weights.
+
 ## Workflow
 
 1. **Skin and skeleton.** Select the skin mesh (and its armature) and press *Use selected*, or press *Example biped*

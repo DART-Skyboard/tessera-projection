@@ -135,6 +135,45 @@ PRESET_ITEMS = tuple((k, v['label'], "") for k, v in PRESETS.items())
 
 CREATURE_DEFAULT = dict(heads=1, arms=2, legs=2, tails=0, fingers=0, toes=0, spine_segments=3, joints_per_limb=2)
 
+# Region category CARDS (the stacked cards in the Muscle tab).  Every catalog group belongs to exactly one card; a card
+# lists the muscles of its body region with their static colours and has its own Emphasis / Flex / Accent sliders that
+# multiply the per-muscle values.  fields: key, label, icon, groups
+CARDS = (
+    ('HEAD', "Head and face", 'MONKEY', ("Head and face", "Neck")),
+    ('ARM', "Arms and hands", 'BONE_DATA', ("Shoulders", "Arms", "Forearms", "Hands")),
+    ('TORSO', "Torso and back", 'ARMATURE_DATA', ("Chest", "Back", "Abdomen")),
+    ('LEG', "Legs and feet", 'CON_KINEMATIC', ("Hips and glutes", "Thighs", "Calves", "Feet")),
+    ('TAIL', "Tail and custom", 'OUTLINER_OB_ARMATURE', ("Tail", "Custom")),
+)
+CARD_OF_GROUP = {g: c[0] for c in CARDS for g in c[3]}
+CARD_LABEL = {c[0]: c[1] for c in CARDS}
+RESOLUTION_MIN, RESOLUTION_MAX = 0.85, 10.0
+
+
+def card_of(group):
+    """Card key for a catalog group (unknown / user groups land on the custom card)."""
+    return CARD_OF_GROUP.get(group, 'TAIL')
+
+
+def card_regions(regions, card):
+    """Subset of region dicts (or objects with .group) on one card, catalog order kept."""
+    out = []
+    for r in regions:
+        g = r['group'] if isinstance(r, dict) else getattr(r, 'group', '')
+        if card_of(g) == card:
+            out.append(r)
+    return out
+
+
+def effective_params(region, card=None):
+    """Per-muscle flex / accent / emphasis after the card multipliers (card = dict(flex, accent, emphasis) or None)."""
+    c = card or {}
+    return dict(flex=float(region['flex']) * float(c.get('flex', 1.0)),
+                accent=float(region['accent']) * float(c.get('accent', 1.0)),
+                emphasis=float(region['emphasis']) * float(c.get('emphasis', 1.0)),
+                enabled=bool(region.get('enabled', True)))
+
+
 _ARM_GROUPS = {"Arms", "Forearms"}
 _HAND_KEYS = {"thenar", "palm"}
 _LEG_GROUPS = {"Thighs", "Calves", "Hips and glutes"}
@@ -547,7 +586,9 @@ def solve(verts, edges, normals, seed_labels, regions, strokes=None, attachments
                 side_vec /= np.linalg.norm(side_vec)
                 s_coord = (P - c) @ side_vec / max(2 * hw, 1e-9)
                 depth = min(1.0, 0.25 * (res - 1.0) + 0.1)
-                prof = prof * (1.0 - depth + depth * 0.5 * (1.0 + np.cos(2 * np.pi * nb * s_coord)))
+                # mean of the striation factor is (1 - depth / 2): divide it out so a finer resolution adds detail
+                # without making the muscle weaker overall (strength stays the artist's Flex / Emphasis choice)
+                prof = prof * (1.0 - depth + depth * 0.5 * (1.0 + np.cos(2 * np.pi * nb * s_coord))) / (1.0 - 0.5 * depth)
             w_full = np.zeros(g.n)
             w_full[idx] = prof * lat * m[idx, ri]
             # accent end: the end nearest the driving bone's head (the joint it crosses)

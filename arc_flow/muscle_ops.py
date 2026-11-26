@@ -168,18 +168,123 @@ def cid_to_index(ms):
 
 def region_dicts(ms):
     out = []
+    eff = region_params(ms)
     for r in ms.regions:
         cat = MS.CATALOG[MS.CATALOG_INDEX[r.key]] if r.key in MS.CATALOG_INDEX else {}
+        e = eff[r.key]
         out.append(dict(key=r.key, label=r.label, group=r.group, cid=r.cid, color=tuple(r.color), enabled=r.enabled,
-                        flex=r.flex, accent=r.accent, emphasis=r.emphasis, tone=r.tone, range=r.joint_range,
+                        flex=e['flex'], accent=e['accent'], emphasis=e['emphasis'], tone=r.tone, range=r.joint_range,
                         bones=tuple(cat.get('bones', ())) or ((r.bone,) if r.bone else ()),
                         pair=bool(cat.get('pair', False)), t=cat.get('t', (0, 1)), facing=cat.get('facing', 'any'), sub=cat.get('sub', 1),
                         driver_bone=r.bone))
     return out
 
 
+def ensure_cards(ms):
+    """Create the region category cards once (Head and face, Arms and hands, Torso and back, Legs and feet, Tail and
+    custom).  Existing cards keep their sliders."""
+    have = {c.key for c in ms.cards}
+    for key, label, _icon, _groups in MS.CARDS:
+        if key not in have:
+            c = ms.cards.add()
+            c.key, c.label = key, label
+    return ms.cards
+
+
+def card_params(ms):
+    """{card key: dict(flex, accent, emphasis)} from the card sliders (missing cards = 1.0)."""
+    return {c.key: dict(flex=c.flex, accent=c.accent, emphasis=c.emphasis) for c in ms.cards}
+
+
+def region_card(r):
+    return MS.card_of(r.group)
+
+
 def region_params(ms):
-    return {r.key: dict(flex=r.flex, accent=r.accent, emphasis=r.emphasis, enabled=r.enabled) for r in ms.regions}
+    """Per-muscle slider values with the region-card multipliers applied (what the solve outputs are built from)."""
+    cards = card_params(ms)
+    return {r.key: MS.effective_params(dict(flex=r.flex, accent=r.accent, emphasis=r.emphasis, enabled=r.enabled),
+                                       cards.get(region_card(r)))
+            for r in ms.regions}
+
+
+def refresh_stroke_counts(obj, ms):
+    st = load_strokes(obj) if obj is not None else []
+    for r in ms.regions:
+        r.n_strokes = sum(1 for x in st if x.get('cid') == r.cid)
+
+
+def muscle_marked(ms, r):
+    """True when the artist gave this muscle something to solve from: pencil lines, painted vertices or geometry."""
+    if ms.skin is not None:
+        refresh_painted_counts(ms.skin, ms)
+        refresh_stroke_counts(ms.skin, ms)
+    return r.n_strokes > 0 or r.n_painted > 0 or r.muscle_obj is not None or r.bone_obj is not None
+
+
+def complete_muscle(scene, index=None):
+    """'Complete' in the Muscle Pencil workflow: book the active muscle into its region card's list.  Returns the card key.
+    Raises RuntimeError when the muscle has no marks yet."""
+    ms = _ms(scene)
+    ensure_cards(ms)
+    i = ms.index if index is None else index
+    r = ms.regions[i]
+    if not muscle_marked(ms, r):
+        raise RuntimeError("Mark %s first: draw a few pencil lines, paint it, or assign muscle / bone geometry" % r.label)
+    r.completed = True
+    r.enabled = True
+    card = region_card(r)
+    done = [x for x in ms.regions if region_card(x) == card and x.completed]
+    nxt = next((j for j, x in enumerate(ms.regions) if region_card(x) == card and not x.completed and j != i), None)
+    if nxt is not None:
+        ms.index = nxt
+    _log(scene, "%s added to %s (%d muscles complete%s)." % (r.label, MS.CARD_LABEL[card], len(done),
+                                                            (", next: " + ms.regions[nxt].label) if nxt is not None else ""))
+    return card
+
+
+def add_catalog_region(ms, key):
+    """Add one catalog muscle to the scene list (used by Add Region and the card Add menu).  Returns its index."""
+    for j, r in enumerate(ms.regions):
+        if r.key == key:
+            return j
+    d = next(r for r in MS.CATALOG if r['key'] == key)
+    r = ms.regions.add()
+    r.key, r.label, r.group, r.cid = d['key'], d['label'], d['group'], MS.catalog_cid(d['key'])
+    r.color = MS.region_color(d['key'])
+    r.emphasis, r.tone, r.joint_range = d['emphasis'], d['tone'], d['range']
+    r.accent = 0.6
+    ensure_cards(ms)
+    return len(ms.regions) - 1
+
+
+def write_export_properties(scene):
+    """Store the muscle rig as custom properties on the skin object so glTF (extras) and FBX (user properties) carry it
+    into a game engine together with the shape keys (morph targets) and the bone weights."""
+    ms = _ms(scene)
+    skin = ms.skin
+    if skin is None:
+        return None
+    params = region_params(ms)
+    keys = skin.data.shape_keys.key_blocks if skin.data.shape_keys is not None else ()
+    muscles = []
+    for inst in get_instances(scene):
+        p = params.get(inst.key)
+        if p is None or not p['enabled']:
+            continue
+        r = next((x for x in ms.regions if x.key == inst.key), None)
+        muscles.append(dict(name=inst.name, key=inst.key, shape_key=key_name(inst) if key_name(inst) in keys else "",
+                            card=MS.card_of(r.group) if r else "", bone=inst.bone or "", accent_end=inst.accent_end,
+                            flex=round(p['flex'] * p['emphasis'], 4), accent=round(p['accent'], 4),
+                            tone=round(r.tone, 4) if r else 0.06, joint_range=round(r.joint_range, 4) if r else 1.2))
+    data = dict(format="tessera-muscles", version=1, preset=ms.preset, detail=ms.detail,
+                resolution=round(ms.resolution, 4), speed_gains=[ms.gain_rest, ms.gain_walk, ms.gain_run],
+                speed_curve_rad_per_s=list(MS.STATE_SPEEDS),
+                cards={c.key: dict(flex=c.flex, accent=c.accent, emphasis=c.emphasis) for c in ms.cards},
+                muscles=muscles)
+    skin["tp_muscles"] = json.dumps(data, separators=(',', ':'))
+    skin["tp_muscle_count"] = len(muscles)
+    return data
 
 
 # --------------------------------------------------------------------------------------------------------------------
@@ -235,6 +340,7 @@ def apply_preset(scene):
         r.flex, r.accent = keep.get(d['key'], (1.0, d['accent']))
     ms.index = 0
     ms.solved = False
+    ensure_cards(ms)
     _log(scene, "%s, %s detail: %d muscle regions." % (MS.PRESETS[ms.preset]['label'], ms.detail.title(), len(ms.regions)))
     return len(ms.regions)
 
@@ -563,6 +669,7 @@ def bake_shape_keys(scene, drivers=None):
         made += 1
     use_drivers = ms.use_drivers if drivers is None else drivers
     nd = setup_drivers(scene) if use_drivers else 0
+    write_export_properties(scene)
     _log(scene, "Baked %d shape keys%s." % (made, (", %d driven by joint rotation" % nd) if use_drivers else ""))
     return made
 
@@ -647,8 +754,10 @@ def build_sidecar(scene):
     params = region_params(ms)
     keys, regions = [], []
     for r in ms.regions:
-        regions.append(dict(key=r.key, label=r.label, group=r.group, id=r.cid, color=[round(c, 4) for c in r.color],
-                            flex=r.flex, accent=r.accent, emphasis=r.emphasis, enabled=r.enabled, rest_tone=r.tone,
+        regions.append(dict(key=r.key, label=r.label, group=r.group, card=MS.card_of(r.group), id=r.cid,
+                            color=[round(c, 4) for c in r.color], completed=bool(r.completed),
+                            flex=params[r.key]['flex'], accent=params[r.key]['accent'], emphasis=params[r.key]['emphasis'],
+                            enabled=r.enabled, rest_tone=r.tone,
                             joint_range_rad=r.joint_range, instances=r.n_instances))
     for inst in insts:
         p = params.get(inst.key)
@@ -702,16 +811,19 @@ def export_game(scene, base_path, fmt):
     if arm is not None:
         arm.select_set(True)
     bpy.context.view_layer.objects.active = skin
+    write_export_properties(scene)
     path = bpy.path.abspath(base_path)
+    os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
     if fmt == 'GLB':
         path = path if path.lower().endswith('.glb') else path + '.glb'
         kw = dict(filepath=path, export_format='GLB', use_selection=True, export_morph=True, export_skins=True,
-                  export_vertex_color='ACTIVE', export_apply=False, export_animations=False)
+                  export_vertex_color='ACTIVE', export_apply=False, export_animations=False, export_extras=True)
         bpy.ops.export_scene.gltf(**kw)
     else:
         path = path if path.lower().endswith('.fbx') else path + '.fbx'
         bpy.ops.export_scene.fbx(filepath=path, use_selection=True, add_leaf_bones=False, colors_type='SRGB',
-                                 object_types={'ARMATURE', 'MESH'}, use_mesh_modifiers=False, bake_anim=False)
+                                 object_types={'ARMATURE', 'MESH'}, use_mesh_modifiers=False, bake_anim=False,
+                                 use_custom_props=True)
     return path
 
 
@@ -991,13 +1103,7 @@ class AF_OT_muscle_region_add(_Op, Operator):
         ms = _ms(ctx.scene)
         if any(r.key == self.key for r in ms.regions):
             return {'CANCELLED'}
-        d = next(r for r in MS.CATALOG if r['key'] == self.key)
-        r = ms.regions.add()
-        r.key, r.label, r.group, r.cid = d['key'], d['label'], d['group'], MS.catalog_cid(d['key'])
-        r.color = MS.region_color(d['key'])
-        r.emphasis, r.tone, r.joint_range = d['emphasis'], d['tone'], d['range']
-        r.accent = 0.6
-        ms.index = len(ms.regions) - 1
+        ms.index = add_catalog_region(ms, self.key)
         return {'FINISHED'}
 
 
@@ -1218,7 +1324,9 @@ class AF_OT_muscle_contour(AF_OT_muscle_paint):
             st.append(dict(cid=ms.regions[ms.index].cid, verts=[int(i) for i in self._pts]))
             save_strokes(ms.skin, st)
             update_contour_curve(ctx.scene, ms.skin)
-            _log(ctx.scene, "Contour stroke added (%d strokes)." % len(st))
+            refresh_stroke_counts(ms.skin, ms)
+            _log(ctx.scene, "Muscle Pencil line added to %s (%d lines). Press Complete when the muscle is marked."
+                 % (ms.regions[ms.index].label, ms.regions[ms.index].n_strokes))
         self._pts = []
 
     def invoke(self, ctx, event):
@@ -1243,6 +1351,7 @@ class AF_OT_muscle_contour_selection(_Op, Operator):
         st.append(dict(cid=ms.regions[ms.index].cid, verts=[int(i) for i in chain]))
         save_strokes(ms.skin, st)
         update_contour_curve(ctx.scene, ms.skin)
+        refresh_stroke_counts(ms.skin, ms)
         _log(ctx.scene, "Contour stroke added (%d strokes)." % len(st))
         return {'FINISHED'}
 
@@ -1376,7 +1485,70 @@ class AF_OT_muscle_control_rig(_Op, Operator):
         return {'FINISHED'}
 
 
-CLASSES = (AF_OT_muscle_assign, AF_OT_muscle_apply_preset, AF_OT_muscle_region_add, AF_OT_muscle_region_remove,
+class AF_OT_muscle_complete(_Op, Operator):
+    bl_idname = "arcflow.muscle_complete"
+    bl_label = "Complete Muscle"
+    bl_description = ("Book the active muscle into its region card's list once it is marked (a few Muscle Pencil lines, "
+                      "paint, or muscle / bone geometry). The next unmarked muscle of the card becomes active")
+
+    index: IntProperty(name="Muscle", default=-1, options={'SKIP_SAVE'})
+
+    def execute(self, ctx):
+        ms = _need_skin(self, ctx)
+        if ms is None or not ms.regions:
+            return {'CANCELLED'}
+        try:
+            complete_muscle(ctx.scene, None if self.index < 0 else self.index)
+        except RuntimeError as ex:
+            self.report({'WARNING'}, str(ex))
+            return {'CANCELLED'}
+        self.report({'INFO'}, ms.status)
+        return {'FINISHED'}
+
+
+class AF_OT_muscle_select(_Op, Operator):
+    bl_idname = "arcflow.muscle_select"
+    bl_label = "Make Active"
+    bl_description = "Make this muscle the active one for the Muscle Pencil, paint and Complete"
+    bl_options = {'INTERNAL'}
+
+    index: IntProperty(default=0, options={'SKIP_SAVE'})
+
+    def execute(self, ctx):
+        ms = _ms(ctx.scene)
+        if 0 <= self.index < len(ms.regions):
+            ms.index = self.index
+        return {'FINISHED'}
+
+
+class AF_OT_muscle_card_add(_Op, Operator):
+    bl_idname = "arcflow.muscle_card_add"
+    bl_label = "Add Muscle to Card"
+    bl_description = "Add the chosen catalog muscle of this body region and make it active for the Muscle Pencil"
+
+    card: StringProperty(default="", options={'SKIP_SAVE'})
+
+    def execute(self, ctx):
+        ms = _ms(ctx.scene)
+        ensure_cards(ms)
+        c = next((c for c in ms.cards if c.key == self.card), None)
+        if c is None or c.pick in ('', 'NONE'):
+            return {'CANCELLED'}
+        ms.index = add_catalog_region(ms, c.pick)
+        return {'FINISHED'}
+
+
+class AF_OT_muscle_cards_init(_Op, Operator):
+    bl_idname = "arcflow.muscle_cards_init"
+    bl_label = "Create Region Cards"
+    bl_description = "Create the region category cards (Head and face, Arms and hands, Torso and back, Legs and feet, Tail)"
+
+    def execute(self, ctx):
+        ensure_cards(_ms(ctx.scene))
+        return {'FINISHED'}
+
+
+CLASSES = (AF_OT_muscle_complete, AF_OT_muscle_select, AF_OT_muscle_card_add, AF_OT_muscle_cards_init, AF_OT_muscle_assign, AF_OT_muscle_apply_preset, AF_OT_muscle_region_add, AF_OT_muscle_region_remove,
            AF_OT_muscle_example, AF_OT_muscle_paint_selected, AF_OT_muscle_paint_clear, AF_OT_muscle_auto_seed,
            AF_OT_muscle_show_colors, AF_OT_muscle_paint, AF_OT_muscle_contour, AF_OT_muscle_contour_selection,
            AF_OT_muscle_contour_clear, AF_OT_muscle_solve, AF_OT_muscle_bake, AF_OT_muscle_gn,
