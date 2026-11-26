@@ -1216,6 +1216,26 @@ class AF_OT_muscle_show_colors(_Op, Operator):
         return {'FINISHED'}
 
 
+def _view_under_mouse(ctx, event):
+    """(region, rv3d, (x, y)) of the 3D viewport WINDOW region under the mouse, or None.  The pencil is usually started from
+    the sidebar button, so ctx.region is the UI region: look the main region up from window coordinates instead."""
+    area = ctx.area
+    if area is None or area.type != 'VIEW_3D':
+        return None
+    rv3d = area.spaces.active.region_3d
+    for r in area.regions:
+        if r.type == 'WINDOW':
+            x, y = event.mouse_x - r.x, event.mouse_y - r.y
+            if 0 <= x < r.width and 0 <= y < r.height:
+                # the sidebar overlaps the WINDOW region when region overlap is on: exclude it
+                for u in area.regions:
+                    if u.type in {'UI', 'TOOLS', 'HEADER', 'TOOL_HEADER'} and u.width > 1 and u.height > 1:
+                        if u.x <= event.mouse_x < u.x + u.width and u.y <= event.mouse_y < u.y + u.height:
+                            return None
+                return r, rv3d, (x, y)
+    return None
+
+
 class AF_OT_muscle_paint(Operator):
     bl_idname = "arcflow.muscle_paint"
     bl_label = "Paint Regions"
@@ -1232,8 +1252,10 @@ class AF_OT_muscle_paint(Operator):
         from bpy_extras import view3d_utils
         ms = _ms(ctx.scene)
         skin = ms.skin
-        region, rv3d = ctx.region, ctx.region_data
-        co = (event.mouse_region_x, event.mouse_region_y)
+        hit = _view_under_mouse(ctx, event)
+        if hit is None:
+            return None
+        region, rv3d, co = hit
         origin = view3d_utils.region_2d_to_origin_3d(region, rv3d, co)
         direction = view3d_utils.region_2d_to_vector_3d(region, rv3d, co)
         inv = skin.matrix_world.inverted()
@@ -1249,7 +1271,7 @@ class AF_OT_muscle_paint(Operator):
 
     def modal(self, ctx, event):
         ms = _ms(ctx.scene)
-        if event.type in {'RIGHTMOUSE', 'ESC'}:
+        if event.type in {'RIGHTMOUSE', 'ESC'} and event.value == 'PRESS':
             ctx.window.cursor_modal_restore()
             _log(ctx.scene, "Region paint finished.")
             return {'FINISHED'}
@@ -1257,6 +1279,8 @@ class AF_OT_muscle_paint(Operator):
             ms.brush_radius *= 0.85
         elif event.type == 'RIGHT_BRACKET' and event.value == 'PRESS':
             ms.brush_radius /= 0.85
+        elif event.type == 'LEFTMOUSE' and event.value == 'PRESS' and _view_under_mouse(ctx, event) is None:
+            return {'PASS_THROUGH'}
         elif event.type == 'LEFTMOUSE':
             self._down = event.value == 'PRESS' or (event.value != 'RELEASE' and self._down)
             if event.value == 'RELEASE':
@@ -1288,50 +1312,111 @@ class AF_OT_muscle_paint(Operator):
 
 class AF_OT_muscle_contour(AF_OT_muscle_paint):
     bl_idname = "arcflow.muscle_contour"
-    bl_label = "Draw Contour"
-    bl_description = ("Draw a few contour lines across the surface for the active region. The line is the fibre axis; "
-                      "the solve puts the tendon ends just beyond its two ends. Right click or Esc to finish")
+    bl_label = "Muscle Pencil"
+    bl_description = ("Muscle Pencil: drag a few lines along the skin for the active muscle, in its colour. Each line follows "
+                      "the surface contour and gives the fibre direction; its two ends are the tendon attachments. "
+                      "Backspace removes the last line, right click or Esc finishes")
+
+    def _hit_local(self, ctx, event):
+        """Surface point under the mouse in skin-local space (None when the skin is missed)."""
+        from bpy_extras import view3d_utils
+        skin = _ms(ctx.scene).skin
+        hit = _view_under_mouse(ctx, event)
+        if hit is None:
+            return None
+        region, rv3d, co = hit
+        origin = view3d_utils.region_2d_to_origin_3d(region, rv3d, co)
+        direction = view3d_utils.region_2d_to_vector_3d(region, rv3d, co)
+        inv = skin.matrix_world.inverted()
+        o, d = inv @ origin, (inv.to_3x3() @ direction).normalized()
+        ok, loc, _nrm, _fi = skin.ray_cast(o, d)
+        return tuple(loc) if ok else None
+
+    def _header(self, ctx, text=None):
+        try:
+            ctx.area.header_text_set(text)
+        except Exception:
+            pass
+
+    def _end(self, ctx):
+        from . import muscle_ui_ops as MUI
+        MUI.LIVE['skin'], MUI.LIVE['pts'] = None, []
+        self._header(ctx, None)
+        ctx.window.cursor_modal_restore()
+        ctx.area.tag_redraw()
 
     def modal(self, ctx, event):
+        from . import muscle_ui_ops as MUI
         ms = _ms(ctx.scene)
-        if event.type in {'RIGHTMOUSE', 'ESC'}:
+        if ms.skin is None or not ms.regions:
+            self._end(ctx)
+            return {'CANCELLED'}
+        if event.type in {'RIGHTMOUSE', 'ESC'} and event.value == 'PRESS':
             self._finish(ctx)
-            ctx.window.cursor_modal_restore()
+            self._end(ctx)
+            _log(ctx.scene, "Muscle Pencil finished: %s has %d lines." % (ms.regions[ms.index].label, ms.regions[ms.index].n_strokes))
             return {'FINISHED'}
+        if event.type == 'BACK_SPACE' and event.value == 'PRESS':
+            MUI.undo_stroke(ctx.scene)
+            ctx.area.tag_redraw()
+            return {'RUNNING_MODAL'}
+        if event.type == 'LEFTMOUSE' and event.value == 'PRESS' and _view_under_mouse(ctx, event) is None:
+            return {'PASS_THROUGH'}
         if event.type == 'LEFTMOUSE':
             if event.value == 'PRESS':
                 self._pts = []
+                self._down = True
+                p = self._hit_local(ctx, event)
+                if p is not None:
+                    self._pts.append(p)
             elif event.value == 'RELEASE':
+                self._down = False
                 self._finish(ctx)
-            self._down = event.value == 'PRESS'
+            MUI.LIVE['pts'] = list(self._pts)
+            ctx.area.tag_redraw()
             return {'RUNNING_MODAL'}
-        if event.type == 'MOUSEMOVE' and self._down:
-            p = self._hit_vertex(ctx, event)
-            if p is not None:
-                v = basis_coords(ms.skin)
-                k = int(np.argmin(np.linalg.norm(v - p, axis=1)))
-                if not self._pts or self._pts[-1] != k:
-                    self._pts.append(k)
+        if event.type in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'} and self._down:
+            p = self._hit_local(ctx, event)
+            if p is not None and (not self._pts or p != self._pts[-1]):
+                self._pts.append(p)
+                MUI.LIVE['pts'] = list(self._pts)
+                ctx.area.tag_redraw()
             return {'RUNNING_MODAL'}
-        if event.type in {'WHEELUPMOUSE', 'WHEELDOWNMOUSE', 'MIDDLEMOUSE'} or event.alt:
+        if event.type in {'WHEELUPMOUSE', 'WHEELDOWNMOUSE', 'MIDDLEMOUSE', 'TRACKPADPAN', 'TRACKPADZOOM'} or event.alt:
             return {'PASS_THROUGH'}
         return {'RUNNING_MODAL'}
 
     def _finish(self, ctx):
+        from . import muscle_ui_ops as MUI
         ms = _ms(ctx.scene)
-        if len(getattr(self, '_pts', [])) >= 2:
-            st = load_strokes(ms.skin)
-            st.append(dict(cid=ms.regions[ms.index].cid, verts=[int(i) for i in self._pts]))
-            save_strokes(ms.skin, st)
-            update_contour_curve(ctx.scene, ms.skin)
-            refresh_stroke_counts(ms.skin, ms)
-            _log(ctx.scene, "Muscle Pencil line added to %s (%d lines). Press Complete when the muscle is marked."
-                 % (ms.regions[ms.index].label, ms.regions[ms.index].n_strokes))
+        pts = getattr(self, '_pts', [])
         self._pts = []
+        MUI.LIVE['pts'] = []
+        if len(pts) < 2:
+            return
+        chain = MUI.points_to_chain(ms.skin, pts, True)
+        if len(chain) >= 2:
+            MUI.commit_stroke(ctx.scene, chain)
+            g = ms.regions[ms.index]
+            self._header(ctx, "Muscle Pencil: %s  |  %d lines  |  drag to draw, Backspace remove last, Esc / right click done"
+                         % (g.label, g.n_strokes))
 
     def invoke(self, ctx, event):
+        from . import muscle_ui_ops as MUI
         self._pts = []
-        return super().invoke(ctx, event)
+        self._down = False
+        ms = _ms(ctx.scene)
+        if not ms.regions:
+            self.report({'ERROR'}, "Apply a preset first")
+            return {'CANCELLED'}
+        g = ms.regions[max(0, min(ms.index, len(ms.regions) - 1))]
+        MUI.LIVE['skin'], MUI.LIVE['pts'], MUI.LIVE['color'] = ms.skin.name, [], tuple(g.color)
+        ctx.window.cursor_modal_set('PAINT_BRUSH')
+        ctx.window_manager.modal_handler_add(self)
+        self._header(ctx, "Muscle Pencil: %s  |  %d lines  |  drag to draw, Backspace remove last, Esc / right click done"
+                     % (g.label, g.n_strokes))
+        _log(ctx.scene, "Muscle Pencil on %s: drag a few lines along the muscle, Esc when done." % g.label)
+        return {'RUNNING_MODAL'}
 
 
 class AF_OT_muscle_contour_selection(_Op, Operator):
