@@ -429,7 +429,7 @@ class Trim:
             s.solve(S, h, omega=0.9)
 
     # ---- visual strip
-    def strip(self, x, tris, inward=None):
+    def strip(self, x, tris, inward=None, lift=0.0):
         """Ribbon of (2n) vertices: the chain and a copy offset ``width`` along the surface,
         away from the boundary.  Returns ``(verts, faces)``."""
         ch = self.chain
@@ -451,6 +451,7 @@ class Trim:
         sgn[sgn == 0] = 1.0
         if n > 2:
             sgn = np.full(n, np.sign(np.median(sgn)) or 1.0)
+        p = p + nrm * lift
         q = p + side * sgn[:, None] * self.width
         verts = np.concatenate([p, q])
         faces = []
@@ -923,6 +924,20 @@ class AccentSet:
         if S.ground_z is not None:
             low = pts[:, 2] < S.ground_z + r
             pts[low, 2] = S.ground_z + r
+        # stay on the outer side of the garment the accent hangs on (face-normal side of its anchor)
+        tri, bary, cpc, _d = closest_on_triangles(pts, S.x, S.tris)
+        T = S.tris[tri]
+        p3 = S.x[T]
+        fn = np.cross(p3[:, 1] - p3[:, 0], p3[:, 2] - p3[:, 0])
+        fn /= np.maximum(np.linalg.norm(fn, axis=1, keepdims=True), 1e-12)
+        side = ((pts - cpc) * fn).sum(axis=1)
+        ref = np.repeat(self.F[:, :, 2], self.M, axis=0)       # outward normal at each anchor
+        flip = np.sign((fn * ref).sum(axis=1))
+        flip = np.where(flip == 0, 1.0, flip)
+        sd_side = side * flip
+        low = sd_side < r
+        if low.any():
+            pts[low] = cpc[low] + fn[low] * flip[low, None] * r
         if S.collider is not None:
             from . import sdf
             cp, sd, _ti = sdf.closest_surface(S.collider, pts)

@@ -291,24 +291,31 @@ def _ensure_instances(scene, a, K):
 
 
 def _line_object(scene, name, V, E, thickness):
-    me = bpy.data.meshes.get(name)
+    """Polyline object (chains) drawn with a Skin modifier so loose edges get thickness."""
+    import bmesh
     ob = bpy.data.objects.get(name)
+    fresh = False
     if ob is None:
         me = bpy.data.meshes.new(name)
         ob = bpy.data.objects.new(name, me)
         _accent_collection(scene).objects.link(ob)
-        ob.modifiers.new("Wire", 'WIREFRAME')
+        sk = ob.modifiers.new("Skin", 'SKIN')
+        sk.use_smooth_shade = True
+        fresh = True
     me = ob.data
-    if len(me.vertices) != len(V) or len(me.edges) != len(E):
+    if fresh or len(me.vertices) != len(V) or len(me.edges) != len(E):
         me.clear_geometry()
         me.from_pydata(V.tolist(), [tuple(map(int, e)) for e in E], [])
+        bm = bmesh.new()
+        bm.from_mesh(me)
+        lay = bm.verts.layers.skin.verify()
+        for v in bm.verts:
+            v[lay].radius = (float(thickness), float(thickness))
+        bm.to_mesh(me)
+        bm.free()
     else:
         me.vertices.foreach_set('co', V.astype(np.float32).ravel())
     me.update()
-    m = ob.modifiers.get("Wire")
-    if m is not None:
-        m.thickness = float(thickness)
-        m.use_even_offset = True
     return ob
 
 
@@ -333,7 +340,7 @@ def _strip_object(scene, t, verts, faces):
     m = ob.modifiers.get("Thickness")
     if m is not None:
         m.thickness = float(t.thickness)
-        m.offset = 0.0
+        m.offset = 1.0
     if t.material is not None and (len(me.materials) == 0 or me.materials[0] != t.material):
         me.materials.clear()
         me.materials.append(t.material)
@@ -350,7 +357,7 @@ def refresh_objects(scene, g, S):
     for t in ts.trims:
         o = B.trims.get(t.name)
         if o is not None and t.show_strip and t.enabled:
-            v, f = o.strip(S.x, S.tris)
+            v, f = o.strip(S.x, S.tris, lift=0.5 * float(t.thickness))
             _strip_object(scene, t, v, f)
     for a in ts.accents:
         o = B.accents.get(a.name)

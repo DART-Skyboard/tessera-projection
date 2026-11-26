@@ -57,13 +57,13 @@ def studio():
     w.use_nodes = True
     bg = w.node_tree.nodes.get("Background")
     bg.inputs["Color"].default_value = (0.045, 0.05, 0.06, 1)
-    bg.inputs["Strength"].default_value = 1.0
+    bg.inputs["Strength"].default_value = 0.35
     bpy.ops.mesh.primitive_plane_add(size=14, location=(0, 0, 0.0))
     fl = bpy.context.active_object
     fl.name = "Studio Floor"
     m = bpy.data.materials.new("Studio Floor")
     m.use_nodes = True
-    m.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value = (0.32, 0.31, 0.30, 1)
+    m.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value = (0.16, 0.155, 0.15, 1)
     m.node_tree.nodes["Principled BSDF"].inputs["Roughness"].default_value = 0.6
     fl.data.materials.append(m)
     # backdrop wall behind the figure (+Y)
@@ -72,12 +72,12 @@ def studio():
     wl.name = "Studio Wall"
     m2 = bpy.data.materials.new("Studio Wall")
     m2.use_nodes = True
-    m2.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value = (0.20, 0.23, 0.27, 1)
+    m2.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value = (0.10, 0.115, 0.135, 1)
     m2.node_tree.nodes["Principled BSDF"].inputs["Roughness"].default_value = 0.9
     wl.data.materials.append(m2)
-    area("Key", (-2.0, -2.2, 2.8), (0, 0, 1.15), 380, 1.6, (1.0, 0.95, 0.88))
-    area("Fill", (2.4, -1.6, 1.6), (0, 0, 1.1), 150, 2.0, (0.80, 0.88, 1.0))
-    area("Rim", (0.8, 2.0, 2.6), (0, 0, 1.2), 260, 1.0, (1.0, 1.0, 1.0))
+    area("Key", (-2.0, -2.2, 2.8), (0, 0, 1.15), 110, 1.6, (1.0, 0.95, 0.88))
+    area("Fill", (2.4, -1.6, 1.6), (0, 0, 1.1), 40, 2.0, (0.80, 0.88, 1.0))
+    area("Rim", (0.8, 2.0, 2.6), (0, 0, 1.2), 80, 1.0, (1.0, 1.0, 1.0))
     cam = bpy.data.cameras.new("Cam")
     cam.lens = 50
     co = bpy.data.objects.new("Cam", cam)
