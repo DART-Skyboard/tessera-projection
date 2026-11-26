@@ -224,14 +224,30 @@ def test_skin_weights():
     ok(S.x[~S.pin_hard, 2].mean() < v[:, 2].mean(), "unskinned vertices still drape under gravity")
 
 
+def two_layer_drop(n1=16, n2=13, w=0.5, sc=True, mode='ACCURATE', quality='BALANCED', steps=60, vz=-2.0,
+                   thickness=0.004, layers=None, ignore=()):
+    """A free sheet thrown at 2 m/s onto a pinned sheet 3 cm below.  Returns (solver, gap history)."""
+    v1, t1, _ = CS.grid_mesh(n1, n1, w, w, origin=(0, 0, 0.0), axis='xy')
+    v2, t2, _ = CS.grid_mesh(n2, n2, w * 0.9, w * 0.9, origin=(0.021, 0.017, 0.03), axis='xy')
+    v = np.concatenate([v1, v2])
+    t = np.concatenate([t1, t2 + len(v1)])
+    S = CS.ClothSolver(v, t, pins=np.arange(len(v1)), preset='COTTON', quality=quality,
+                       self_collision=sc, self_collision_mode=mode, thickness=thickness)
+    if layers == 'two':
+        S.set_self_layers(np.r_[np.zeros(len(v1), int), np.ones(len(v2), int)], ignore)
+    S.v[len(v1):, 2] = vz
+    gap = []
+    for _ in range(steps):
+        S.step(1 / 60.0)
+        gap.append(float(S.x[len(v1):, 2].min() - S.x[:len(v1), 2].max()))
+    return S, np.array(gap)
+
+
 def test_self_collision_pushout():
-    # two layers of a folded sheet that start closer than 2*thickness
+    # a vertex squashed onto a topologically distant face is pushed out to >= thickness
     v, t, _q = CS.grid_mesh(6, 6, 0.3, 0.3, axis='xy')
-    S = CS.ClothSolver(v, t, preset='COTTON', quality='REALTIME',
-                       self_collision=True, thickness=0.02, gravity=(0, 0, 0),
-                       use_dihedral=False)
-    # squash a non-adjacent vertex onto another
-    # pick vertex 0 and a vertex not in its 2-ring
+    S = CS.ClothSolver(v, t, preset='COTTON', quality='BALANCED', self_collision=True, thickness=0.02,
+                       gravity=(0, 0, 0), use_dihedral=False)
     a = 0
     skip = set()
     for j in S.neighbors[a]:
@@ -239,10 +255,126 @@ def test_self_collision_pushout():
         skip.update(S.neighbors[j])
     skip.add(a)
     b = next(i for i in range(S.n) if i not in skip)
-    S.x[b] = S.x[a] + np.array([0.002, 0.0, 0.0])
-    S._self_collide()
-    sep = float(np.linalg.norm(S.x[b] - S.x[a]))
-    ok(sep >= 2 * S.thickness - 1e-6, "self-collision push-out separates overlapping verts (%.4f >= %.4f)" % (sep, 2 * S.thickness))
+    S.x[b] = S.x[a] + np.array([0.002, 0.0, 0.003])
+    for _ in range(3):
+        S._self_collide()
+    d = S.min_self_distance()
+    ok(d >= 0.9 * S.thickness, "self-collision push-out separates overlapping parts (%.4f >= 0.9*%.4f)" % (d, S.thickness))
+    # a flat sheet at rest has no contacts at all (topological exclusion works)
+    v, t, _q = CS.grid_mesh(12, 12, 0.5, 0.5, axis='xy')
+    S = CS.ClothSolver(v, t, preset='COTTON', quality='BALANCED', self_collision=True, thickness=0.004)
+    x0 = S.x.copy()
+    n = S._self_collide()
+    ok(n == 0 and np.allclose(S.x, x0), "flat sheet: no self-contacts, nothing moves (neighbour exclusion)")
+
+
+def test_self_collision_layers_on_off():
+    S0, g0 = two_layer_drop(sc=False)
+    ok(g0.min() < -0.5, "self-collision OFF: sheet thrown onto another passes straight through (min gap %.3f m)" % g0.min())
+    S1, g1 = two_layer_drop(sc=True, mode='ACCURATE')
+    dmin = S1.min_self_distance()
+    ok(g1.min() > -0.0005, "ON / accurate: never crosses the lower sheet (worst gap %.4f m)" % g1.min())
+    ok(g1[-1] >= 0.0035 and dmin >= 0.9 * S1.thickness,
+       "ON / accurate: rests on it, vertex-triangle distance %.4f >= ~thickness %.4f" % (dmin, S1.thickness))
+    ok(S1.count_self_intersections() == 0, "ON / accurate: zero vertex-through-triangle penetrations")
+    S2, g2 = two_layer_drop(sc=True, mode='FAST', quality='REALTIME')
+    ok(g2.min() > -0.006 and S2.min_self_distance() >= 0.6 * S2.thickness,
+       "ON / fast (real-time): holds the sheets apart (worst gap %.4f, dist %.4f)" % (g2.min(), S2.min_self_distance()))
+    # per-layer ignore: the two layers may pass through each other
+    S3, g3 = two_layer_drop(sc=True, layers='two', ignore=[(0, 1)], steps=40)
+    ok(g3.min() < -0.2, "layer ignore pair (0,1): layers pass through each other (min gap %.3f)" % g3.min())
+    S4, g4 = two_layer_drop(sc=True, layers='two', ignore=[(0, 0)], steps=40)
+    ok(g4.min() > -0.0005, "layer ignore of an unrelated pair does not disable layer-vs-layer contact")
+
+
+def test_self_collision_fast_layers_no_crossing():
+    # regression: a fast-moving separate layer (4 m/s down, 1.5 m/s sideways) must not leak through the layer below it
+    for mode, q in (('ACCURATE', 'BALANCED'), ('FAST', 'REALTIME')):
+        v1, t1, _ = CS.grid_mesh(24, 24, 1.2, 1.2, origin=(-0.4, -0.4, 0.0), axis='xy')
+        v2, t2, _ = CS.grid_mesh(13, 13, 0.45, 0.45, origin=(0.02, 0.017, 0.05), axis='xy')
+        v = np.concatenate([v1, v2]); t = np.concatenate([t1, t2 + len(v1)])
+        S = CS.ClothSolver(v, t, pins=np.arange(len(v1)), preset='COTTON', quality=q, self_collision=True,
+                           self_collision_mode=mode, thickness=0.004)
+        S.set_self_layers(np.r_[np.zeros(len(v1), int), np.ones(len(v2), int)], [])
+        S.v[len(v1):, 2] = -4.0
+        S.v[len(v1):, 0] = 1.5
+        worst = 9.0
+        for _ in range(30):
+            S.step(1 / 60.0)
+            worst = min(worst, float(S.x[len(v1):, 2].min() - S.x[:len(v1), 2].max()))
+        ok(worst > -0.002, "fast layer (%s): no crossing of the lower layer (worst gap %.4f m)" % (mode, worst))
+
+
+def test_self_collision_layered_rest_side():
+    # 'LAYERED' mode: a vertex that is already on the wrong side of a lower layer (6 mm below it, however it got there)
+    # is projected back to its rest side at >= thickness
+    v1, t1, _ = CS.grid_mesh(16, 16, 0.5, 0.5, origin=(0, 0, 0.0), axis='xy')
+    v2, t2, _ = CS.grid_mesh(13, 13, 0.45, 0.45, origin=(0.02, 0.017, 0.03), axis='xy')
+    v = np.concatenate([v1, v2]); t = np.concatenate([t1, t2 + len(v1)])
+    S = CS.ClothSolver(v, t, pins=np.arange(len(v1)), preset='COTTON', quality='BALANCED', self_collision=True,
+                       self_collision_mode='LAYERED', thickness=0.004, gravity=(0, 0, 0))
+    n1 = len(v1)
+    S.x[n1:, 2] = -0.006                       # upper sheet tunnelled below the pinned lower sheet
+    S.x_prev = S.x.copy()
+    S._self_collide(ref=S.x_prev, passes=1, substep_index=S.substeps - 1)
+    gap = float(S.x[n1:, 2].min() - S.x[:n1, 2].max())
+    ok(gap >= 0.9 * S.thickness, "LAYERED: tunnelled layer projected back above its lower layer (gap %.4f >= 0.9*%.4f)" % (gap, S.thickness))
+    # ACCURATE alone does not restore a layer that is already through (documents why the mode exists)
+    S2 = CS.ClothSolver(v, t, pins=np.arange(len(v1)), preset='COTTON', quality='BALANCED', self_collision=True,
+                        self_collision_mode='ACCURATE', thickness=0.004, gravity=(0, 0, 0))
+    S2.x[n1:, 2] = -0.006
+    S2.x_prev = S2.x.copy()
+    for _ in range(3):
+        S2._self_collide(ref=S2.x_prev, passes=1, substep_index=S2.substeps - 1)
+    gap2 = float(S2.x[n1:, 2].min() - S2.x[:n1, 2].max())
+    print("info: ACCURATE after the same tunnelling: gap %.4f" % gap2)
+    # fast drop with LAYERED never crosses
+    S3, g3 = two_layer_drop(sc=True, mode='LAYERED', layers='two', steps=40)
+    ok(g3.min() > -0.0005, "LAYERED: fast-thrown sheet never crosses (worst gap %.4f)" % g3.min())
+
+
+def test_self_collision_friction():
+    # an upper sheet sliding over a pinned one: higher friction slows it more
+    def run(mu):
+        v1, t1, _ = CS.grid_mesh(14, 14, 0.5, 0.5, origin=(0, 0, 0.0), axis='xy')
+        v2, t2, _ = CS.grid_mesh(11, 11, 0.3, 0.3, origin=(0.1, 0.1, 0.006), axis='xy')
+        v = np.concatenate([v1, v2]); t = np.concatenate([t1, t2 + len(v1)])
+        S = CS.ClothSolver(v, t, pins=np.arange(len(v1)), preset='COTTON', quality='BALANCED', self_collision=True,
+                           thickness=0.004, self_friction=mu, damping=0.0, stretch=2e5)
+        S.v[len(v1):, 0] = 0.5
+        for _ in range(30):
+            S.step(1 / 60.0)
+        return float(S.v[len(v1):, 0].mean()), S
+    v_lo, _ = run(0.0)
+    v_hi, _ = run(1.0)
+    ok(v_hi < v_lo - 0.01, "contact friction slows a sliding layer (mu=0: %.3f m/s, mu=1: %.3f m/s)" % (v_lo, v_hi))
+
+
+def bench_self_collision(sizes=(70, 141), steps=3):
+    """Time the self-collision pass and a whole step on two stacked cloth layers (~5k and ~20k vertices)."""
+    out = {}
+    for n in sizes:
+        v1, t1, _ = CS.grid_mesh(n, n, 1.4, 1.4, origin=(-0.7, -0.7, 0.0), axis='xy')
+        v2, t2, _ = CS.grid_mesh(n, n, 1.4, 1.4, origin=(-0.7, -0.7, 0.012), axis='xy')
+        v = np.concatenate([v1, v2]); t = np.concatenate([t1, t2 + len(v1)])
+        v[len(v1):, 2] += 0.002 * np.sin(8 * v[len(v1):, 0])
+        for mode, q in (('ACCURATE', 'BALANCED'), ('FAST', 'REALTIME')):
+            S = CS.ClothSolver(v, t, pins=np.arange(0, len(v1), 7), preset='SILK', quality=q, self_collision=True,
+                               self_collision_mode=mode, thickness=0.004)
+            S.step(1 / 60.0)
+            sc = S.self_collider()
+            t0 = time.perf_counter()
+            for k in range(steps * 4):
+                S._self_collide(substep_index=k)
+            sc_ms = 1000.0 * (time.perf_counter() - t0) / (steps * 4)
+            t0 = time.perf_counter()
+            for _ in range(steps):
+                S.step(1 / 60.0)
+            st_ms = 1000.0 * (time.perf_counter() - t0) / steps
+            out[(S.n, mode)] = (sc_ms, st_ms)
+            print("   bench %5d verts %-8s self-collision pass %7.1f ms, whole step %8.1f ms (pairs %d)"
+                  % (S.n, mode, sc_ms, st_ms, sc.stats['pairs']))
+    return out
 
 
 def test_package_and_snapshot():
@@ -314,6 +446,12 @@ if __name__ == '__main__':
     test_moving_rig_inertia()
     test_skin_weights()
     test_self_collision_pushout()
+    test_self_collision_layers_on_off()
+    test_self_collision_fast_layers_no_crossing()
+    test_self_collision_layered_rest_side()
+    test_self_collision_friction()
+    if os.environ.get('CLOTH_BENCH'):
+        bench_self_collision()
     test_package_and_snapshot()
     test_collider_tessellation()
     print("ALL PASS" if ok.fail == 0 else "FAILED %d" % ok.fail)

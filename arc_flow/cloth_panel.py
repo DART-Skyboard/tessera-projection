@@ -78,7 +78,14 @@ def draw_cloth_tab(layout, context):
         for k in ("density", "stretch", "shear", "bend", "damping", "drag", "lift",
                   "thickness", "margin", "friction"):
             phys.prop(g, k)
-        gb.prop(g, "self_collision")
+        sb = gb.box()
+        sb.prop(g, "self_collision")
+        sc = sb.column(align=True)
+        sc.enabled = bool(g.self_collision)
+        sc.prop(g, "self_collision_mode")
+        sc.prop(g, "self_thickness")
+        sc.prop(g, "self_friction")
+        sc.prop_search(g, "self_ignore_group", g.obj, "vertex_groups") if g.obj is not None else None
         gb.prop(g, "override_quality")
         q = gb.column(align=True)
         q.enabled = g.override_quality

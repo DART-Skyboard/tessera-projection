@@ -174,6 +174,12 @@ def _params(g):
                   tessellation_cap=g.tessellation_cap)
     # self-collision is a per-garment toggle (default on) and is never dropped by a quality profile
     kw['self_collision'] = bool(getattr(g, 'self_collision', True))
+    mode = getattr(g, 'self_collision_mode', 'AUTO')
+    if mode == 'AUTO':
+        mode = 'FAST' if g.quality == 'REALTIME' else 'LAYERED'
+    kw['self_collision_mode'] = mode
+    kw['self_thickness'] = float(getattr(g, 'self_thickness', 0.004))
+    kw['self_friction'] = float(getattr(g, 'self_friction', 0.3))
     kw.setdefault('thickness', float(g.thickness))
     kw.setdefault('margin', float(g.margin))
     return kw
@@ -185,7 +191,8 @@ def _signature(g, rest):
             tuple(round(float(getattr(g, k)), 6) for k in ("density", "stretch", "shear", "bend", "damping", "drag",
                                                             "lift", "thickness", "margin", "friction",
                                                             "tessellation_edge")),
-            int(g.substeps), int(g.iterations), bool(g.self_collision), bool(g.use_dihedral))
+            int(g.substeps), int(g.iterations), bool(g.self_collision), bool(g.use_dihedral),
+            g.self_collision_mode, round(float(g.self_thickness), 6), round(float(g.self_friction), 4), g.self_ignore_group)
 
 
 def _armature_pose(arm):
@@ -263,6 +270,10 @@ def build_solver(scene, g):
                 S.inv_mass[pins] = 0.0
             S._bone_names = names
     S._collider_sig = None
+    if g.self_ignore_group and obj.vertex_groups.get(g.self_ignore_group) is not None:
+        ign = _pin_weights(obj, g.self_ignore_group) >= 0.5
+        if ign.any():
+            S.set_self_layers(np.where(ign, -1, 0))
     RT.solvers[g.name] = S
     RT.sig[g.name] = _signature(g, rest)
     g.n_verts = S.n

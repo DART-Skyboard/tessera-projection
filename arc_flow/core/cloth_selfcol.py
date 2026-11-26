@@ -1,0 +1,485 @@
+"""Vectorised NumPy cloth self-collision (no bpy).
+
+Vertex-vs-triangle contact with thickness, built for XPBD position solvers:
+
+* broad phase  - uniform grid, triangles hashed into every cell their *swept* bounding box
+  touches (current + previous positions, plus thickness), vertices looked up by sorted
+  key / ``searchsorted``.  Exact integer cell keys, so there are no hash collisions.
+* narrow phase - Ericson closest point on triangle, all pairs at once.
+* topology     - triangles incident to the vertex, or sharing an edge with any vertex in its
+  1-ring (a 2-hop neighbourhood), are skipped; so are pairs whose layers are marked to
+  ignore each other (``set_layers``).
+* continuity   - the side of the triangle a vertex *should* be on is read from the previous
+  (collision-free) positions, so a vertex that tunnelled through a face in one step is pushed
+  back out the way it came, not further through.
+* response     - position corrections along the contact normal (mass weighted, barycentric
+  on the triangle side), Coulomb friction on the tangential relative motion, averaged
+  Jacobi style with ``np.bincount`` (no ``np.add.at``).
+
+Two modes: ``'ACCURATE'`` re-detects every substep and runs two response passes;
+``'FAST'`` re-detects every ``fast_period`` substeps (cached candidate pairs, slightly fatter
+swept boxes) with a single response pass, which is the real-time variant.
+
+Edge-edge contact is not modelled: with a thickness much smaller than the edge length,
+two crossing edges are caught one step later as a vertex-vs-face contact.
+"""
+import numpy as np
+
+
+# ----------------------------------------------------------------------------- geometry
+
+def closest_point_triangle(p, a, b, c):
+    """Closest point on triangle (a,b,c) to p, vectorised.  Returns (q (N,3), bary (N,3), inside (N,))
+    where ``inside`` is True when the closest point is in the triangle interior."""
+    ab, ac, ap = b - a, c - a, p - a
+    d1 = (ab * ap).sum(1)
+    d2 = (ac * ap).sum(1)
+    bp = p - b
+    d3 = (ab * bp).sum(1)
+    d4 = (ac * bp).sum(1)
+    cp = p - c
+    d5 = (ab * cp).sum(1)
+    d6 = (ac * cp).sum(1)
+    vc = d1 * d4 - d3 * d2
+    vb = d5 * d2 - d1 * d6
+    va = d3 * d6 - d5 * d4
+    den = va + vb + vc
+    den = np.where(np.abs(den) < 1e-30, 1e-30, den)
+    inv = 1.0 / den
+    v = vb * inv
+    w = vc * inv
+    u = 1.0 - v - w
+    inside = np.ones(len(p), bool)
+
+    def over(mask, uu, vv, ww):
+        nonlocal u, v, w, inside
+        u = np.where(mask, uu, u)
+        v = np.where(mask, vv, v)
+        w = np.where(mask, ww, w)
+        inside &= ~mask
+
+    one, zero = np.ones_like(d1), np.zeros_like(d1)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        # reverse priority of Ericson's tests (later override earlier)
+        t_bc = np.clip((d4 - d3) / np.where((d4 - d3) + (d5 - d6) == 0, 1e-30, (d4 - d3) + (d5 - d6)), 0, 1)
+        over((va <= 0) & ((d4 - d3) >= 0) & ((d5 - d6) >= 0), zero, 1 - t_bc, t_bc)
+        t_ac = np.clip(d2 / np.where(d2 - d6 == 0, 1e-30, d2 - d6), 0, 1)
+        over((vb <= 0) & (d2 >= 0) & (d6 <= 0), 1 - t_ac, zero, t_ac)
+        over((d6 >= 0) & (d5 <= d6), zero, zero, one)
+        t_ab = np.clip(d1 / np.where(d1 - d3 == 0, 1e-30, d1 - d3), 0, 1)
+        over((vc <= 0) & (d1 >= 0) & (d3 <= 0), 1 - t_ab, t_ab, zero)
+        over((d3 >= 0) & (d4 <= d3), zero, one, zero)
+        over((d1 <= 0) & (d2 <= 0), one, zero, zero)
+    q = a * u[:, None] + b * v[:, None] + c * w[:, None]
+    return q, np.stack([u, v, w], 1), inside
+
+
+def _ring_keys(n, edges, hops=1):
+    """Sorted int64 keys ``v*n+u`` of every ordered pair (v,u) with u within ``hops`` edges of v (incl. v)."""
+    ids = np.arange(n, dtype=np.int64)
+    e = np.asarray(edges, np.int64).reshape(-1, 2)
+    a = np.concatenate([ids, e[:, 0], e[:, 1]])
+    b = np.concatenate([ids, e[:, 1], e[:, 0]])
+    keys = np.unique(a * n + b)
+    for _ in range(hops - 1):
+        src, dst = keys // n, keys % n
+        # expand by composing with the 1-ring
+        order = np.argsort(a * n + b, kind='stable')
+        a1, b1 = a[order], b[order]
+        start = np.searchsorted(a1, np.arange(n + 1))
+        cnt = start[1:] - start[:-1]
+        rep = cnt[dst]
+        s = np.repeat(src, rep)
+        off = np.repeat(start[dst], rep)
+        loc = np.arange(len(s)) - np.repeat(np.cumsum(rep) - rep, rep)
+        keys = np.unique(np.concatenate([keys, s * n + b1[off + loc]]))
+    return keys
+
+
+def mesh_components(n, edges):
+    """Connected-component label per vertex (min-label propagation over the edges, vectorised)."""
+    lab = np.arange(n, dtype=np.int64)
+    e = np.asarray(edges, np.int64).reshape(-1, 2)
+    if len(e) == 0:
+        return lab
+    a, b = e[:, 0], e[:, 1]
+    for _ in range(4 * n + 8):
+        m = np.minimum(lab[a], lab[b])
+        new = lab.copy()
+        np.minimum.at(new, a, m)
+        np.minimum.at(new, b, m)
+        new = new[new]                       # pointer jumping
+        if np.array_equal(new, lab):
+            break
+        lab = new
+    return lab
+
+
+class SelfCollider:
+    """Self-collision state for one triangle mesh."""
+
+    def __init__(self, tris, edges, nverts, thickness=0.003, friction=0.2, mode='ACCURATE',
+                 fast_period=3, iterations=2):
+        self.tris = np.asarray(tris, np.int64).reshape(-1, 3)
+        self.n = int(nverts)
+        self.thickness = float(thickness)
+        self.friction = float(friction)
+        self.mode = mode
+        self.fast_period = int(fast_period)
+        self.iterations = int(iterations)
+        self.ring = _ring_keys(self.n, edges, 1)
+        self.comp = mesh_components(self.n, edges)   # disconnected pieces (garment layers) keep their rest-pose order
+        self.rest = None
+        self.layered = False       # 'LAYERED' mode: rest-side corrector for ordered pieces
+        self.layer_radius = 0.025
+        self.layer_period = 1      # run the rest-side corrector every N-th substep (the last of each step)
+        self.rest_nrm = None       # (v,u) with u in 1-ring(v) or u == v
+        self.layer = np.zeros(self.n, np.int32)
+        self.allow = np.ones((1, 1), bool)
+        self.vert_on = np.ones(self.n, bool)
+        self._cache = None
+        self.touched_idx = np.zeros(0, np.int64)
+        self.max_cells_per_tri = 64
+        self.max_pairs = 6_000_000
+        self.stats = dict(pairs=0, contacts=0, ms=0.0, last_depth=0.0)
+
+    # ------------------------------------------------------------------ configuration
+    def set_layers(self, layer_ids, ignore_pairs=()):
+        """Assign each vertex a layer id (>= 0); ``ignore_pairs`` [(a, b), ...] never collide.
+        A layer id of -1 removes the vertex (and every triangle that uses it) from self-collision."""
+        lid = np.asarray(layer_ids, np.int64).reshape(-1)
+        if len(lid) != self.n:
+            raise ValueError("one layer id per vertex")
+        self.vert_on = lid >= 0
+        k = int(max(lid.max(), 0)) + 1
+        allow = np.ones((k, k), bool)
+        for a, b in ignore_pairs:
+            if 0 <= a < k and 0 <= b < k:
+                allow[a, b] = allow[b, a] = False
+        self.layer = np.maximum(lid, 0).astype(np.int32)
+        self.allow = allow
+        self._cache = None
+
+    def set_rest(self, rest):
+        """Rest-pose positions: pairs from different connected pieces keep the side they had at rest."""
+        r = np.asarray(rest, float)
+        T = self.tris
+        n = np.cross(r[T[:, 1]] - r[T[:, 0]], r[T[:, 2]] - r[T[:, 0]])
+        self.rest_nrm = n / np.maximum(np.linalg.norm(n, axis=1), 1e-14)[:, None]
+        self.rest = r.copy()
+
+    def invalidate(self):
+        self._cache = None
+
+    # ------------------------------------------------------------------ broad phase
+    def _cells(self, lo, hi, origin, cs, dims, ids):
+        """Expand per-object boxes (lo, hi) into (object id, int64 cell key) rows."""
+        clo = np.floor((lo - origin) / cs).astype(np.int64)
+        chi = np.floor((hi - origin) / cs).astype(np.int64)
+        span = np.maximum(chi - clo + 1, 1)
+        cnt = span[:, 0] * span[:, 1] * span[:, 2]
+        bad = (cnt > self.max_cells_per_tri) | ~np.isfinite(lo).all(1) | ~np.isfinite(hi).all(1)
+        if bad.any():
+            cnt = np.where(bad, 0, cnt)
+            self.stats['dropped'] = int(bad.sum())
+        tot = int(cnt.sum())
+        oid = np.repeat(ids, cnt)
+        base = np.cumsum(cnt) - cnt
+        loc = np.arange(tot, dtype=np.int64) - np.repeat(base, cnt)
+        sx, sy = np.repeat(span[:, 0], cnt), np.repeat(span[:, 1], cnt)
+        cx = np.repeat(clo[:, 0], cnt) + loc % sx
+        cy = np.repeat(clo[:, 1], cnt) + (loc // sx) % sy
+        cz = np.repeat(clo[:, 2], cnt) + loc // (sx * sy)
+        return oid, (cx * dims[1] + cy) * dims[2] + cz
+
+    def _candidates(self, x, xp, slack):
+        """Swept broad phase: triangles and vertices both hashed over the box they sweep this substep
+        (current + previous positions) grown by thickness (+ ``slack`` for cached FAST candidates)."""
+        tris = self.tris
+        th = self.thickness
+        if not (np.isfinite(x).all() and np.isfinite(xp).all()):
+            self.stats['nonfinite'] = True
+            return np.zeros(0, np.int64), np.zeros(0, np.int64)
+        grow = th + slack
+        P = np.stack([x[tris[:, 0]], x[tris[:, 1]], x[tris[:, 2]], xp[tris[:, 0]], xp[tris[:, 1]], xp[tris[:, 2]]])
+        tlo = P.min(0) - grow
+        thi = P.max(0) + grow
+        vlo = np.minimum(x, xp) - grow
+        vhi = np.maximum(x, xp) + grow
+        ext = (thi - tlo).max(1)
+        cs = float(np.clip(np.median(ext) * 1.1, 2.0 * th, 1e3))
+        origin = np.minimum(tlo.min(0), vlo.min(0)) - cs
+        top = np.maximum(thi.max(0), vhi.max(0))
+        dims_f = (top - origin) / cs + 3.0
+        while float(np.prod(dims_f)) > 4.0e18:
+            cs *= 2.0
+            dims_f = (top - origin) / cs + 3.0
+        dims = np.floor(dims_f).astype(np.int64) + 1
+        t_id, tkey = self._cells(tlo, thi, origin, cs, dims, np.arange(len(tris), dtype=np.int64))
+        if len(t_id) == 0:
+            return np.zeros(0, np.int64), np.zeros(0, np.int64)
+        order = np.argsort(tkey, kind='stable')
+        tkey, t_sorted = tkey[order], t_id[order]
+        vids = np.nonzero(self.vert_on)[0].astype(np.int64)
+        v_id, vkey = self._cells(vlo[vids], vhi[vids], origin, cs, dims, vids)
+        left = np.searchsorted(tkey, vkey, 'left')
+        vcnt = np.searchsorted(tkey, vkey, 'right') - left
+        tot2 = int(vcnt.sum())
+        if tot2 > self.max_pairs:
+            self.stats['overflow'] = tot2
+            return np.zeros(0, np.int64), np.zeros(0, np.int64)
+        v_idx = np.repeat(v_id, vcnt)
+        base2 = np.cumsum(vcnt) - vcnt
+        loc2 = np.arange(tot2, dtype=np.int64) - np.repeat(base2, vcnt)
+        t_of = t_sorted[np.repeat(left, vcnt) + loc2]
+        if len(v_id) > len(vids):           # vertices that sweep several cells can pair twice
+            key = np.unique(v_idx * len(tris) + t_of)
+            v_idx, t_of = key // len(tris), key % len(tris)
+        return v_idx, t_of
+
+    def _filter_topology(self, v, t):
+        if len(v) == 0:
+            return v, t
+        tr = self.tris[t]
+        keep = np.ones(len(v), bool)
+        n = self.n
+        ring = self.ring
+        for k in range(3):
+            key = v * n + tr[:, k]
+            pos = np.searchsorted(ring, key)
+            pos = np.minimum(pos, len(ring) - 1)
+            keep &= ring[pos] != key
+        keep &= self.vert_on[tr[:, 0]] & self.vert_on[tr[:, 1]] & self.vert_on[tr[:, 2]]
+        if self.allow.shape[0] > 1:
+            keep &= self.allow[self.layer[v], self.layer[tr[:, 0]]]
+        return v[keep], t[keep]
+
+    # ------------------------------------------------------------------ one response pass
+    def _contacts(self, x, xp, v, t, w):
+        """Geometry for candidate pairs -> (mask, normal*sign, depth, bary, tri verts) of true contacts."""
+        th = self.thickness
+        tr = self.tris[t]
+        a, b, c = x[tr[:, 0]], x[tr[:, 1]], x[tr[:, 2]]
+        p = x[v]
+        nrm = np.cross(b - a, c - a)
+        nl = np.linalg.norm(nrm, axis=1)
+        good = nl > 1e-14
+        nrm = nrm / np.where(good, nl, 1.0)[:, None]
+        q, bary, inside = closest_point_triangle(p, a, b, c)
+        d = ((p - a) * nrm).sum(1)
+        # side the vertex was on before this step
+        pa, pb, pc = xp[tr[:, 0]], xp[tr[:, 1]], xp[tr[:, 2]]
+        n0 = np.cross(pb - pa, pc - pa)
+        n0l = np.linalg.norm(n0, axis=1)
+        n0 = n0 / np.where(n0l > 1e-14, n0l, 1.0)[:, None]
+        d0 = ((xp[v] - pa) * n0).sum(1)
+        s0 = np.where(d0 < 0.0, -1.0, 1.0)
+        cross = np.zeros(len(v), bool)
+        if self.rest is not None:
+            cross = self.comp[v] != self.comp[tr[:, 0]]
+            if cross.any():
+                dr = ((self.rest[v] - self.rest[tr[:, 0]]) * self.rest_nrm[t]).sum(1)
+                s0 = np.where(cross, np.where(dr < 0.0, -1.0, 1.0), s0)
+        sd = s0 * d
+        # projection test for the face region: point projects inside (closest point interior)
+        proj_in = inside
+        crossed = sd < 0.0
+        # slack for tunnelled vertices: they must still project inside and be within a bound
+        dtri = np.maximum(np.maximum(np.linalg.norm(a - pa, axis=1), np.linalg.norm(b - pb, axis=1)),
+                          np.linalg.norm(c - pc, axis=1))
+        move = np.linalg.norm(x[v] - xp[v], axis=1) + dtri
+        near_plane = (np.abs(d) < (th + 2.0 * move + 1e-6)) | (cross & (np.abs(d) < 0.25))
+        face = proj_in & good & (sd < th) & (near_plane | ~crossed)
+        # edge / vertex region: plain distance
+        diff = p - q
+        dist = np.linalg.norm(diff, axis=1)
+        edge = (~proj_in) & (dist < th) & good & (sd >= 0.0)
+        direction = np.where(face[:, None], s0[:, None] * nrm,
+                             diff / np.maximum(dist, 1e-12)[:, None])
+        depth = np.where(face, th - sd, th - dist)
+        m = (face | edge) & (depth > 1e-9)
+        # at least one side must be free to move
+        wsum_v = w[v]
+        wsum_t = (w[tr[:, 0]] * bary[:, 0] ** 2 + w[tr[:, 1]] * bary[:, 1] ** 2 + w[tr[:, 2]] * bary[:, 2] ** 2)
+        m &= (wsum_v + wsum_t) > 0.0
+        return m, direction, depth, bary, tr, wsum_v, wsum_t
+
+    def _respond(self, x, xp, w, v, t):
+        m, direction, depth, bary, tr, wv, wt = self._contacts(x, xp, v, t, w)
+        k = int(m.sum())
+        if k == 0:
+            self.stats['contacts'] = 0
+            return 0
+        vi, ti = v[m], t[m]
+        dr, dp, br, trm, wv, wt = direction[m], depth[m], bary[m], tr[m], wv[m], wt[m]
+        den = wv + wt
+        lam = dp / den
+        # friction: tangential relative displacement over the step
+        mu = self.friction
+        corr_v = (wv * lam)[:, None] * dr
+        if mu > 0.0:
+            disp_t = (x[trm[:, 0]] - xp[trm[:, 0]]) * br[:, 0:1] + (x[trm[:, 1]] - xp[trm[:, 1]]) * br[:, 1:2] \
+                + (x[trm[:, 2]] - xp[trm[:, 2]]) * br[:, 2:3]
+            rel = (x[vi] - xp[vi]) - disp_t
+            reln = (rel * dr).sum(1)
+            rel_t = rel - reln[:, None] * dr
+            rl = np.linalg.norm(rel_t, axis=1)
+            fac = np.minimum(1.0, mu * dp / np.maximum(rl, 1e-12))
+            fvec = -rel_t * fac[:, None]            # friction displacement applied to the pair (relative)
+            fv = (wv / den)[:, None] * fvec
+        else:
+            fv = 0.0
+        # accumulate (Jacobi average over contacts per vertex)
+        n = self.n
+        dx = np.zeros((n, 3))
+        cn = np.zeros(n)
+        dv = corr_v + (fv if mu > 0.0 else 0.0)
+        for j in range(3):
+            dx[:, j] += np.bincount(vi, weights=dv[:, j], minlength=n)
+        cn += np.bincount(vi, minlength=n)
+        for kk in range(3):
+            wk = w[trm[:, kk]] * br[:, kk]
+            cvec = (-(wk * lam))[:, None] * dr
+            if mu > 0.0:
+                cvec = cvec + (-(wk / den))[:, None] * fvec
+            for j in range(3):
+                dx[:, j] += np.bincount(trm[:, kk], weights=cvec[:, j], minlength=n)
+            cn += np.bincount(trm[:, kk], weights=(br[:, kk] > 1e-3).astype(float), minlength=n)
+        touched = cn > 0
+        x[touched] += dx[touched] / np.maximum(cn[touched], 1.0)[:, None] * np.minimum(cn[touched], 2.0)[:, None]
+        self.touched_idx = np.unique(np.concatenate([vi, trm.ravel()]))
+        self.stats['contacts'] = k
+        self.stats['last_depth'] = float(dp.max())
+        return k
+
+    # ------------------------------------------------------------------ public
+    def solve(self, x, xp, inv_mass, substep_index=0, speed_slack=None, reuse=False, passes=None):
+        """Resolve contacts in place on ``x`` (positions after constraint projection).
+        ``xp`` are the positions at the start of the substep.  Returns number of contacts."""
+        import time as _t
+        t0 = _t.perf_counter()
+        fast = self.mode == 'FAST'
+        refresh = (not reuse) and ((not fast) or self._cache is None or (substep_index % max(self.fast_period, 1) == 0))
+        if reuse and self._cache is None:
+            refresh = True
+        if fast and not refresh and not reuse:
+            # a cached candidate list is only valid while nothing moves much: fast movers force a re-detect
+            d99 = float(np.percentile(np.linalg.norm(x - xp, axis=1), 99.0))
+            if d99 > 0.5 * self.thickness:
+                refresh = True
+        if refresh:
+            if speed_slack is None:
+                disp = np.linalg.norm(x - xp, axis=1)
+                disp = disp[inv_mass > 0] if (inv_mass > 0).sum() > 100 else disp
+                # robust to a few runaway vertices: the 99th percentile bounds the swept box
+                speed_slack = float(np.percentile(disp, 99.0)) if len(disp) > 100 else float(disp.max())
+            slack = min(speed_slack * 3.0, 0.15) if fast else 0.0
+            v, t = self._candidates(x, xp, slack)
+            v, t = self._filter_topology(v, t)
+            # prefilter: plane distance first (cheap, a lower bound of the true distance), then closest point
+            if len(v):
+                T = self.tris
+                dall = np.linalg.norm(x - xp, axis=1)
+                dtri = np.maximum(np.maximum(dall[T[:, 0]], dall[T[:, 1]]), dall[T[:, 2]])
+                # a pair can only touch during the step if it is within thickness + both parties' travel
+                lim = self.thickness + (2.0 if fast else 1.0) * (dall[v] + dtri[t]) + 1e-6
+                A0, B0, C0 = x[T[:, 0]], x[T[:, 1]], x[T[:, 2]]
+                N = np.cross(B0 - A0, C0 - A0)
+                N /= np.maximum(np.linalg.norm(N, axis=1), 1e-14)[:, None]
+                pd = np.abs(((x[v] - A0[t]) * N[t]).sum(1))
+                k = pd < lim
+                v, t, lim = v[k], t[k], lim[k]
+                if len(v):
+                    tr = T[t]
+                    q, _bary, _in = closest_point_triangle(x[v], x[tr[:, 0]], x[tr[:, 1]], x[tr[:, 2]])
+                    k = np.linalg.norm(x[v] - q, axis=1) < lim
+                    v, t = v[k], t[k]
+            self._cache = (v, t)
+        else:
+            v, t = self._cache
+        self.stats['pairs'] = len(v)
+        total = 0
+        if len(v):
+            for _ in range(int(passes) if passes else (1 if fast else max(1, self.iterations))):
+                total += self._respond(x, xp, inv_mass, v, t)
+        if self.layered and (substep_index + 1) % max(int(self.layer_period), 1) == 0:
+            total += self.layered_correct(x, xp, inv_mass)
+        self.stats['ms'] = 1000.0 * (_t.perf_counter() - t0)
+        return total
+
+    def layered_correct(self, x, xp, w):
+        """Rest-side corrector for ordered pieces (garment layers).  A vertex of an upper piece must stay on the side
+        of every lower piece's nearest face that it had at rest, at >= thickness.  It is projected there whatever
+        way it got across (vertex-face, edge-edge, tunnelling).  Pieces are ordered by their lowest vertex index."""
+        if self.rest is None:
+            return 0
+        labels = np.unique(self.comp)
+        if len(labels) < 2:
+            return 0
+        rank = np.searchsorted(labels, self.comp)
+        th = self.thickness
+        R = max(float(self.layer_radius), 2.0 * th)
+        save_th, save_on = self.thickness, self.vert_on
+        try:
+            self.vert_on = save_on & (rank > 0)
+            for _try in range(3):             # a huge search radius can overflow the pair budget: shrink it
+                self.thickness = R
+                self.stats.pop('overflow', None)
+                v, t = self._candidates(x, xp, 0.0)
+                if 'overflow' not in self.stats or R <= 2.0 * th:
+                    break
+                R = max(0.5 * R, 2.0 * th)
+        finally:
+            self.thickness, self.vert_on = save_th, save_on
+        if len(v) == 0:
+            return 0
+        tr = self.tris[t]
+        k = rank[v] > rank[tr[:, 0]]
+        v, t, tr = v[k], t[k], tr[k]
+        if len(v) == 0:
+            return 0
+        a, b, c = x[tr[:, 0]], x[tr[:, 1]], x[tr[:, 2]]
+        p = x[v]
+        nrm = np.cross(b - a, c - a)
+        nl = np.linalg.norm(nrm, axis=1)
+        good = nl > 1e-14
+        nrm = nrm / np.where(good, nl, 1.0)[:, None]
+        q, bary, inside = closest_point_triangle(p, a, b, c)
+        d = ((p - a) * nrm).sum(1)
+        dr = ((self.rest[v] - self.rest[tr[:, 0]]) * self.rest_nrm[t]).sum(1)
+        s0 = np.where(dr < 0.0, -1.0, 1.0)
+        sd = s0 * d
+        diff = p - q
+        dist = np.linalg.norm(diff, axis=1)
+        face = inside & good & (np.abs(d) < R) & (sd < th)
+        edge = (~inside) & good & (dist < th) & (sd >= 0.0)
+        m = face | edge
+        if not m.any():
+            return 0
+        v, t, tr, nrm, s0, sd, diff, dist, face = v[m], t[m], tr[m], nrm[m], s0[m], sd[m], diff[m], dist[m], face[m]
+        direction = np.where(face[:, None], s0[:, None] * nrm, diff / np.maximum(dist, 1e-12)[:, None])
+        need = np.where(face, th - sd, th - dist)
+        order = np.argsort(-need, kind='stable')
+        v, tr, direction, need = v[order], tr[order], direction[order], need[order]
+        _u, first = np.unique(v, return_index=True)
+        v, tr, direction, need = v[first], tr[first], direction[first], need[first]
+        push = need[:, None] * direction
+        free = w[v] > 0.0
+        x[v[free]] += push[free]
+        pin = ~free
+        if pin.any():                      # the vertex cannot move: carry the lower face away instead
+            for kk in range(3):
+                x[tr[pin, kk]] -= push[pin] * (w[tr[pin, kk]] > 0.0)[:, None]
+        self.stats['layered_fixed'] = int(len(v))
+        return int(len(v))
+
+    def min_distance(self, x, limit=None):
+        """Smallest vertex-to-triangle distance over all non-excluded pairs (diagnostic, unsigned)."""
+        lim = float(limit if limit is not None else self.thickness * 4.0)
+        v, t = self._candidates(x, x, lim)
+        v, t = self._filter_topology(v, t)
+        if len(v) == 0:
+            return np.inf
+        tr = self.tris[t]
+        q, _b, _i = closest_point_triangle(x[v], x[tr[:, 0]], x[tr[:, 1]], x[tr[:, 2]])
+        return float(np.linalg.norm(x[v] - q, axis=1).min())
