@@ -151,6 +151,19 @@ if items:
     ms.regions.remove(ms.index)
 ms.regions.remove(bi)
 ms.index = qi
+# switching the detail level keeps the artist's completed muscles and their sliders
+reg['quadriceps'].flex = 1.3
+ms.detail = 'CARTOON'
+MO.apply_preset(sc)
+rq = next(r for r in ms.regions if r.key == 'quadriceps')
+ok(rq.completed and abs(rq.flex - 1.3) < 1e-6, "Cartoon keeps the completed quadriceps and its Flex slider")
+ms.detail = 'STANDARD'
+MO.apply_preset(sc)
+reg = {r.key: r for r in ms.regions}
+ok(reg['quadriceps'].completed and abs(reg['quadriceps'].flex - 1.3) < 1e-6 and len(ms.regions) == len(MS.regions_for('BIPED', 'STANDARD')),
+   "back to Standard: full list again, quadriceps still completed")
+reg['quadriceps'].flex = 1.0
+ms.index = [r.key for r in ms.regions].index('quadriceps')
 
 # ---- solve
 t0 = time.time()

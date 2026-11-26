@@ -169,6 +169,14 @@ def main():
     j = MS.result_to_json([ins], MS.regions_for('BIPED', 'STANDARD'))
     ins2, meta = MS.instances_from_json(j)
     ok(len(ins2) == 1 and np.allclose(ins2[0].bulge, ins.bulge, atol=1e-5) and meta['version'] == 1, "solve data round-trips through JSON")
+    # detail tiers: Cartoon < Standard < Realistic < Cinematic < Scientific, scientific lists every digit
+    cnt = [len(MS.regions_for('BIPED', d[0])) for d in MS.DETAIL_ITEMS]
+    ok(all(a < b for a, b in zip(cnt, cnt[1:])), "detail tiers grow strictly: %s" % cnt)
+    sci = {r['key'] for r in MS.regions_for('HUMAN_FEMALE', 'SCIENTIFIC')}
+    ok({'flexor_index', 'extensor_pinky', 'soleus', 'temporalis', 'biceps'} <= sci, "Scientific lists every digit and deep muscle")
+    ok(not ({'flexor_index', 'temporalis'} & {r['key'] for r in MS.regions_for('BIPED', 'REALISTIC')}), "Realistic leaves the finer tiers out")
+    ok(len({MS.region_color(i) for i in range(len(MS.CATALOG))}) == len(MS.CATALOG), "every catalog muscle has its own static colour")
+    ok(all(MS.card_of(r['group']) in {c[0] for c in MS.CARDS} for r in MS.CATALOG), "every catalog muscle sits on a card")
     # rig naming conventions map onto the catalog keywords (Mixamo / Meshy, Rigify, UE)
     lb2, _ = MS.auto_seed(pts, np.array(nrm), ['LeftArm'], [[0, 0, 0]], [[0, 0, 1.0]], Wt, reg2)
     ok((lb2 == lb).all(), "Mixamo / Meshy 'LeftArm' seeds the same biceps / triceps as 'upper_arm.L'")

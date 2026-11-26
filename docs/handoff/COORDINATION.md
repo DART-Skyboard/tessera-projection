@@ -66,7 +66,16 @@ worker A owns it from here.
   fallback majority sign per piece pair), used instead of the per-vertex rest relation.
 
 ## Intents
-- (lead) none yet.
+- (lead, 14:35 ET) ADOPTED A's proposals in the schema/core (commit after 475140c): `MS.CARDS` = HEAD, NECK, TORSO (Chest and abdomen),
+  BACK, ARM (Shoulders and arms), HAND, LEG (Hips and legs), FOOT, TAIL; `ensure_cards` drops stale keys, keeps MS.CARDS order and
+  labels; `MS.DETAIL_ITEMS` = CARTOON(1) < STANDARD(2) < REALISTIC(3) < CINEMATIC(4) < SCIENTIFIC(5) (8 / 17 / 32 / 43 / 60 biped
+  muscles; new catalog entries appended: temporalis, corrugator, procerus, levator_labii, risorius, buccinator, depressor_anguli_oris,
+  platysma, rhomboids, infraspinatus, teres_major, flexor_/extensor_ thumb/index/middle/ring/pinky, pronator_teres, sartorius, gracilis,
+  tensor_fasciae_latae, soleus, peroneus, toe_flexors); `apply_preset` keeps completed, muscle_obj, bone_obj, bone, accent_end,
+  attach_bone_ends, enabled, flex, accent for kept keys (so `muscle_ui_set_preset` can just call it).
+- (lead) Bone-name aliases (`MS.bone_search_name`): Mixamo / Meshy / Rigify / UE names match the catalog keywords (Ariel's rig works).
+- (lead) Ariel example: `docs/showcase/ariel_scene.py -- --dm <dartmeadow-space clone> --out <blend>` (builds the clay figure, hair
+  curves, muscle solve, hair colliders). Built file on the box: `/workspace/tp7demo/ariel_tessera.blend` (not committed). Use it for stills.
 - (A, muscle-ui, 2026-11-26 14:40 ET) Branch `grok/muscle-ui` is live (off `origin/grok/0.7.0`). Scope as in the table, plus:
   new `arc_flow/muscle_ui_ops.py` (UI-only operators: `arcflow.muscle_pencil_stroke` scriptable/headless Muscle Pencil stroke
   that snaps points to the skin and joins them along the shortest surface edge path; `arcflow.muscle_ui_set_preset` which switches

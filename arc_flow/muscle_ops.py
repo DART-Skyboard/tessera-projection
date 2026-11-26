@@ -183,11 +183,21 @@ def region_dicts(ms):
 def ensure_cards(ms):
     """Create the region category cards once (Head and face, Arms and hands, Torso and back, Legs and feet, Tail and
     custom).  Existing cards keep their sliders."""
+    valid = [c[0] for c in MS.CARDS]
+    for i in reversed(range(len(ms.cards))):            # drop cards that are no longer in MS.CARDS
+        if ms.cards[i].key not in valid:
+            ms.cards.remove(i)
     have = {c.key for c in ms.cards}
     for key, label, _icon, _groups in MS.CARDS:
         if key not in have:
             c = ms.cards.add()
             c.key, c.label = key, label
+    for c in ms.cards:                                   # labels follow MS.CARDS; keep MS.CARDS order
+        c.label = MS.CARD_LABEL[c.key]
+    for want, key in enumerate(valid):
+        cur = next(i for i, c in enumerate(ms.cards) if c.key == key)
+        if cur != want:
+            ms.cards.move(cur, want)
     return ms.cards
 
 
@@ -330,14 +340,22 @@ def apply_preset(scene):
     cr = dict(heads=ms.heads, arms=ms.arms, legs=ms.legs, tails=ms.tails, fingers=ms.fingers, toes=ms.toes,
               joints_per_limb=ms.joints_per_limb, spine_segments=3)
     regs = MS.regions_for(ms.preset, ms.detail, cr)
-    keep = {r.key: (r.flex, r.accent) for r in ms.regions}
+    # switching preset / detail keeps the artist's work on every muscle that stays in the list
+    keep = {r.key: dict(flex=r.flex, accent=r.accent, completed=r.completed, muscle_obj=r.muscle_obj, bone_obj=r.bone_obj,
+                        bone=r.bone, accent_end=r.accent_end, attach_bone_ends=r.attach_bone_ends, enabled=r.enabled)
+            for r in ms.regions}
     ms.regions.clear()
     for d in regs:
         r = ms.regions.add()
         r.key, r.label, r.group, r.cid = d['key'], d['label'], d['group'], d['cid']
         r.color = d['color']
         r.emphasis, r.tone, r.joint_range = d['emphasis'], d['tone'], d['range']
-        r.flex, r.accent = keep.get(d['key'], (1.0, d['accent']))
+        k = keep.get(d['key'])
+        if k is None:
+            r.flex, r.accent = 1.0, d['accent']
+        else:
+            for name, val in k.items():
+                setattr(r, name, val)
     ms.index = 0
     ms.solved = False
     ensure_cards(ms)

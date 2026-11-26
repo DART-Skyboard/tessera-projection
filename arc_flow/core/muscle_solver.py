@@ -84,12 +84,41 @@ _r("tail_base", "Tail", "Tail", 2, "BQ", ("tail",), (0.0, 1.0), 'any', 0.8, rng=
 _r("lower_leg_q", "Lower leg", "Calves", 2, "Q", ("shin", "calf", "leg_low", "forearm", "arm_low"), (0.0, 0.7), 'back', 0.8, rng=1.3)
 _r("limb_mid", "Limb belly (custom creatures)", "Custom", 2, "BQ", ("limb", "seg", "tentacle"), (0.1, 0.9), 'any', 0.8, rng=1.3)
 _r("head_mass", "Head mass (extra heads)", "Head and face", 2, "BQ", ("head",), (0.1, 0.9), 'any', 0.5, rng=0.8)
+# cinematic tier (4): finer face, neck and back muscles (appended: older colours stay stable)
+_r("temporalis", "Temple (temporalis)", "Head and face", 4, "BQ", ("head",), (0.55, 0.9), 'out', 0.5)
+_r("corrugator", "Brow (corrugator)", "Head and face", 4, "BQ", ("head",), (0.70, 0.82), 'front', 0.4)
+_r("procerus", "Nose bridge (procerus)", "Head and face", 4, "BQ", ("head",), (0.62, 0.74), 'front', 0.4)
+_r("levator_labii", "Upper lip raiser (levator labii)", "Head and face", 4, "BQ", ("head",), (0.38, 0.52), 'front', 0.5)
+_r("risorius", "Smile corner (risorius)", "Head and face", 4, "BQ", ("head",), (0.28, 0.42), 'out', 0.5)
+_r("buccinator", "Inner cheek (buccinator)", "Head and face", 4, "BQ", ("head",), (0.25, 0.45), 'out', 0.5)
+_r("depressor_anguli_oris", "Mouth corner down (depressor anguli oris)", "Head and face", 4, "BQ", ("head",), (0.12, 0.30), 'front', 0.4)
+_r("platysma", "Front of neck (platysma)", "Neck", 4, "BQ", ("neck",), (0.0, 1.0), 'front', 0.5, rng=0.9)
+_r("rhomboids", "Between shoulder blades (rhomboids)", "Back", 4, "BQ", ("chest", "spine"), (0.5, 1.0), 'back', 0.6, rng=0.9)
+_r("infraspinatus", "Shoulder blade (infraspinatus)", "Back", 4, "BQ", ("shoulder", "clavicle", "chest"), (0.0, 1.0), 'back', 0.6, rng=1.0)
+_r("teres_major", "Armpit back (teres major)", "Back", 4, "B", ("upper_arm", "arm_up", "shoulder"), (0.0, 0.3), 'back', 0.6, rng=1.2)
+# scientific tier (5): every digit, deep leg and forearm muscles
+for _dk, _dl, _dw in (("thumb", "Thumb", ("thumb",)), ("index", "Index finger", ("index",)),
+                      ("middle", "Middle finger", ("middle",)), ("ring", "Ring finger", ("ring",)),
+                      ("pinky", "Little finger", ("pinky", "little"))):
+    _r("flexor_" + _dk, "%s flexor" % _dl, "Hands", 5, "B", _dw, (0.0, 1.0), 'bottom', 0.4, rng=1.2)
+    _r("extensor_" + _dk, "%s extensor" % _dl, "Hands", 5, "B", _dw, (0.0, 1.0), 'top', 0.4, rng=1.2)
+_r("pronator_teres", "Forearm turner (pronator teres)", "Forearms", 5, "B", ("forearm", "arm_low"), (0.0, 0.35), 'in', 0.5, rng=1.2)
+_r("sartorius", "Sartorius", "Thighs", 5, "B", ("thigh", "leg_up"), (0.0, 1.0), 'in', 0.5, rng=1.5)
+_r("gracilis", "Gracilis", "Thighs", 5, "B", ("thigh", "leg_up"), (0.3, 1.0), 'in', 0.4, rng=1.5)
+_r("tensor_fasciae_latae", "Hip side (tensor fasciae latae)", "Hips and glutes", 5, "B", ("thigh", "leg_up", "hips"), (0.0, 0.3), 'out', 0.5, rng=1.2)
+_r("soleus", "Deep calf (soleus)", "Calves", 5, "BQ", ("shin", "calf", "leg_low"), (0.4, 0.9), 'back', 0.6, rng=1.4)
+_r("peroneus", "Outer shin (peroneus)", "Calves", 5, "B", ("shin", "calf", "leg_low"), (0.1, 0.8), 'out', 0.5, rng=1.4)
+_r("toe_flexors", "Toe flexors", "Feet", 5, "BQ", ("toe", "foot"), (0.5, 1.0), 'bottom', 0.4, rng=0.8)
 
 # bilateral muscles: a patch that crosses the skin's mid-plane is split into a left and a right muscle
 PAIRED = {"zygomaticus", "masseter", "orbicularis_oculi", "deltoid", "trapezius", "pectoralis", "serratus", "latissimus",
           "obliques", "gluteus", "quadriceps", "hamstrings", "adductors", "gastrocnemius", "tibialis", "haunch",
           "foreleg_shoulder", "lower_leg_q", "biceps", "triceps", "brachialis", "forearm_flexors", "forearm_extensors",
-          "brachioradialis", "thenar", "palm", "foot_arch", "toes", "erector_spinae", "sternocleidomastoid"}
+          "brachioradialis", "thenar", "palm", "foot_arch", "toes", "erector_spinae", "sternocleidomastoid",
+          "temporalis", "corrugator", "levator_labii", "risorius", "buccinator", "depressor_anguli_oris", "platysma",
+          "rhomboids", "infraspinatus", "teres_major", "pronator_teres", "sartorius", "gracilis", "tensor_fasciae_latae",
+          "soleus", "peroneus", "toe_flexors"} | {p + d for p in ("flexor_", "extensor_")
+                                                  for d in ("thumb", "index", "middle", "ring", "pinky")}
 for _d in _R:
     _d['pair'] = _d['key'] in PAIRED
 CATALOG = tuple(_R)
@@ -113,7 +142,9 @@ def region_color(key_or_index):
 
 DETAIL_ITEMS = (('CARTOON', "Cartoon", "A few big muscles: biceps, triceps, neck, chest, thighs, calves", 1),
                 ('STANDARD', "Standard", "Common game muscle set", 2),
-                ('CINEMATIC', "Cinematic / scientific", "Every catalog muscle: facial, finger and foot muscles included (research and cinematic)", 3))
+                ('REALISTIC', "Realistic", "Adds facial, hand-pad, foot and side-torso muscles", 3),
+                ('CINEMATIC', "Cinematic", "Adds the finer face (brow, lips, mouth corners), neck front and shoulder-blade muscles", 4),
+                ('SCIENTIFIC', "Scientific", "Every catalog muscle: each finger's flexor and extensor, deep leg and forearm muscles", 5))
 DETAIL_TIER = {d[0]: d[3] for d in DETAIL_ITEMS}
 
 # preset id -> dict(body, gender, label, per-region emphasis multipliers)
@@ -139,10 +170,14 @@ CREATURE_DEFAULT = dict(heads=1, arms=2, legs=2, tails=0, fingers=0, toes=0, spi
 # lists the muscles of its body region with their static colours and has its own Emphasis / Flex / Accent sliders that
 # multiply the per-muscle values.  fields: key, label, icon, groups
 CARDS = (
-    ('HEAD', "Head and face", 'MONKEY', ("Head and face", "Neck")),
-    ('ARM', "Arms and hands", 'BONE_DATA', ("Shoulders", "Arms", "Forearms", "Hands")),
-    ('TORSO', "Torso and back", 'ARMATURE_DATA', ("Chest", "Back", "Abdomen")),
-    ('LEG', "Legs and feet", 'CON_KINEMATIC', ("Hips and glutes", "Thighs", "Calves", "Feet")),
+    ('HEAD', "Head and face", 'MONKEY', ("Head and face",)),
+    ('NECK', "Neck", 'BONE_DATA', ("Neck",)),
+    ('TORSO', "Chest and abdomen", 'ARMATURE_DATA', ("Chest", "Abdomen")),
+    ('BACK', "Back", 'ARMATURE_DATA', ("Back",)),
+    ('ARM', "Shoulders and arms", 'BONE_DATA', ("Shoulders", "Arms", "Forearms")),
+    ('HAND', "Hands", 'VIEW_PAN', ("Hands",)),
+    ('LEG', "Hips and legs", 'CON_KINEMATIC', ("Hips and glutes", "Thighs", "Calves")),
+    ('FOOT', "Feet", 'CON_KINEMATIC', ("Feet",)),
     ('TAIL', "Tail and custom", 'OUTLINER_OB_ARMATURE', ("Tail", "Custom")),
 )
 CARD_OF_GROUP = {g: c[0] for c in CARDS for g in c[3]}
